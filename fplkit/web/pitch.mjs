@@ -10,10 +10,11 @@
  *
  *   * the *shape* of the pitch — one row per position, the XI laid out the way
  *     a formation is written, with the bench beneath it rather than mixed in;
- *   * what the number under each name is. A shirt has room for exactly one
- *     figure, so which one is a setting rather than a decision the page can make
- *     for you: xPts to rank on, xPPG to compare on, price to budget on, and the
- *     next fixture when the question is who is playing whom.
+ *   * what the numbers under each name are. A shirt holds up to three: the
+ *     first on a bar of its own, the other two sharing a row beneath it. Which
+ *     three is a setting rather than a decision the page makes for you — xPts to
+ *     rank on, xPPG to compare on, price to budget with, and the rest for the
+ *     question you happen to be asking.
  *
  * Shirts come from /shirts/<club code>.png, which the server mirrors off the
  * FPL CDN and caches on disk. They are decorative: `wireShirts` swaps in a
@@ -88,9 +89,34 @@ export const METRICS = {
     get: (p) => fmt(p.owned, 1) + "%",
     title: (p) => `owned by ${fmt(p.owned, 1)}% of managers`,
   },
+  start: {
+    label: "Start", head: "Chance he starts the next fixture",
+    get: (p) => fmt(p.p_start, 2),
+    title: (p) => `${Math.round((p.p_start || 0) * 100)}% chance of starting`,
+  },
+  mins: {
+    label: "Mins", head: "Expected minutes per fixture",
+    get: (p) => fmt(p.exp_minutes, 0),
+    title: (p) => `${fmt(p.exp_minutes, 0)} expected minutes per fixture`,
+  },
 };
 
 export const METRIC_KEYS = Object.keys(METRICS);
+
+/* Three is the ceiling, and it is a legibility limit rather than a round
+   number: a shirt is about 68px wide, the first figure gets a bar of its own and
+   the other two share a row beneath it, and a fourth would have to be smaller
+   than the smallest type on the page. */
+export const MAX_METRICS = 3;
+
+/** Normalise whatever is stored to a usable list: known keys, in the order the
+ *  metric bar shows them, at least one and at most three. */
+export function cleanMetrics(keys) {
+  const wanted = (Array.isArray(keys) ? keys : [keys])
+    .filter((k) => METRIC_KEYS.includes(k));
+  const ordered = METRIC_KEYS.filter((k) => wanted.includes(k));
+  return ordered.length ? ordered.slice(0, MAX_METRICS) : ["xpts"];
+}
 
 /** Where every player in a squad goes on the pitch.
  *
@@ -149,31 +175,51 @@ const STATUS_MARK = {
 };
 
 function card(player, opts) {
-  const { teams, metric, captain, vice, tag, remove, swap, badge } = opts;
-  const spec = METRICS[metric] || METRICS.xpts;
+  const { teams, metrics, captain, vice, tag, remove, swap, badge, versus } = opts;
+  const keys = metrics.length ? metrics : ["xpts"];
   const url = shirtUrl(teams, player);
   const mark = player.status && player.status !== "a" ? STATUS_MARK[player.status] : null;
   const role = player.id === captain ? "C" : player.id === vice ? "V" : "";
+  const summary = keys.map((k) => `${METRICS[k].label} ${METRICS[k].get(player, teams)}`)
+    .join(" · ");
 
+  // The first figure gets a bar to itself and the rest share a row under it.
+  // Three numbers on a 68px shirt is the point of the exercise -- one was the
+  // complaint -- but they still have to be readable, so they are not equals.
+  const [lead, ...rest] = keys;
+  const cell = (k) => `<span class="pcell" title="${escape(METRICS[k].head)}"
+    >${escape(METRICS[k].get(player, teams))}</span>`;
+
+  // The buttons live in a wrapper around the shirt rather than around the whole
+  // card: anchored to the card they drifted down past the numbers, and anchored
+  // inside the shirt they would be buttons inside a button. Four corners, four
+  // things, no two in the same one.
   return `
   <div class="pcard${tag ? " is" + tag.kind : ""}" data-id="${player.id}">
-    <button class="shirt" data-edit="${player.id}"
-            aria-label="${escape(player.full_name)} — ${escape(spec.title(player, teams))}"
-            title="${escape(player.full_name)} · ${escape(spec.title(player, teams))}">
-      ${url ? `<img class="kit" src="${url}" alt="" width="52" height="66" loading="lazy">` : ""}
-      <span class="kitfallback">${escape(player.team_short)}</span>
-      ${role ? `<span class="armband${role === "V" ? " vice" : ""}">${role}</span>` : ""}
-      ${mark ? `<span class="statusmark ${mark.cls}"
-                      title="${escape(player.news || "not fully available")}">${mark.text}</span>` : ""}
-      ${player.edited ? `<span class="editmark" title="You have edited this player's inputs">✎</span>` : ""}
-    </button>
-    ${remove ? `<button class="pcardrm" data-rm="${player.id}"
-                        aria-label="Remove ${escape(player.name)}" title="Remove">×</button>` : ""}
-    ${swap ? `<button class="pcardswap" data-swap="${player.id}"
-                      aria-label="Swap ${escape(player.name)} into your draft"
-                      title="Bring ${escape(player.name)} into your draft">→</button>` : ""}
-    <div class="pname">${escape(player.name)}</div>
-    <div class="pval">${escape(spec.get(player, teams))}</div>
+    <div class="shirtwrap">
+      <button class="shirt" data-edit="${player.id}"
+              aria-label="${escape(player.full_name)} — ${escape(summary)}"
+              title="${escape(player.full_name)} · ${escape(summary)}">
+        ${url ? `<img class="kit" src="${url}" alt="" width="52" height="66" loading="lazy">` : ""}
+        <span class="kitfallback">${escape(player.team_short)}</span>
+        ${role ? `<span class="armband${role === "V" ? " vice" : ""}">${role}</span>` : ""}
+        ${mark ? `<span class="statusmark ${mark.cls}"
+                        title="${escape(player.news || "not fully available")}">${mark.text}</span>` : ""}
+      </button>
+      ${remove ? `<button class="pcardrm" data-rm="${player.id}"
+                          aria-label="Remove ${escape(player.name)}" title="Remove">×</button>` : ""}
+      ${swap ? `<button class="pcardswap" data-swap="${player.id}"
+                        aria-label="Swap ${escape(player.name)} into your draft"
+                        title="Bring ${escape(player.name)} into your draft">→</button>` : ""}
+      ${versus ? `<button class="pcardvs" data-vs="${player.id}"
+                          aria-label="Compare ${escape(player.name)} with another player"
+                          title="Compare ${escape(player.name)} head to head">⇄</button>` : ""}
+    </div>
+    <div class="pname">${player.edited
+      ? `<span class="editmark" title="You have edited this player's inputs">●</span>` : ""
+      }${escape(player.name)} <i>${escape(player.team_short)}</i></div>
+    <div class="pval" title="${escape(METRICS[lead].head)}">${escape(METRICS[lead].get(player, teams))}</div>
+    ${rest.length ? `<div class="psub">${rest.map(cell).join("")}</div>` : ""}
     ${badge ? `<div class="pslot">${escape(badge)}</div>` : ""}
     ${tag ? `<div class="ptag ${tag.kind}">${escape(tag.text)}</div>` : ""}
   </div>`;
@@ -182,7 +228,7 @@ function card(player, opts) {
 const emptyCard = (pos, badge) => `
   <button class="pcard empty" data-add-pos="${pos || ""}"
           aria-label="Add a ${pos || "player"}" title="Add a ${pos || "player"}">
-    <span class="shirt ghost"><span class="plus">+</span></span>
+    <span class="shirtwrap"><span class="shirt ghost"><span class="plus">+</span></span></span>
     <div class="pname">${pos || "Empty"}</div>
     <div class="pval">add</div>
     ${badge ? `<div class="pslot">${escape(badge)}</div>` : ""}
@@ -194,11 +240,11 @@ const emptyCard = (pos, badge) => `
  *  squad is read through. Colour never carries it alone: a tagged shirt gets the
  *  word as well, for the same reason the list it replaces did.
  */
-export function pitchHTML({ layout, lookup, teams, metric = "xpts", captain = null,
+export function pitchHTML({ layout, teams, metrics = ["xpts"], captain = null,
                             vice = null, tags = null, remove = false, swap = false,
-                            benchLabels = true }) {
+                            versus = false, benchLabels = true }) {
   const opts = (player, badge) => ({
-    teams, metric, captain, vice, badge,
+    teams, metrics, captain, vice, badge, versus,
     tag: tags?.[player.id] || null,
     remove,
     swap: swap && tags?.[player.id]?.kind === "in",
@@ -226,10 +272,10 @@ export function pitchHTML({ layout, lookup, teams, metric = "xpts", captain = nu
 
 /** A loose group of shirts with no pitch under them — the players the solver
  *  dropped, which belong beside its squad without being part of it. */
-export function cardsHTML(players, { teams, metric = "xpts", tags = null,
-                                     swap = false, badge = null } = {}) {
+export function cardsHTML(players, { teams, metrics = ["xpts"], tags = null,
+                                     swap = false, versus = false, badge = null } = {}) {
   return `<div class="benchrow loose">${players.map((player) => card(player, {
-    teams, metric, captain: null, vice: null,
+    teams, metrics, captain: null, vice: null, versus,
     badge: badge ? badge(player) : "",
     tag: tags?.[player.id] || null,
     remove: false,

@@ -64,38 +64,64 @@ shirt is the player's club kit, with the captain's armband on the highest
 plan-weighted score in the XI and a **V** on the next one — which is where the
 double lands when the captain does not play.
 
-A shirt has room for one number, so which one is a control rather than a
-decision made for you: **xPts** to rank on, **xPPG** to compare on, **£** to
-budget with, **PPG** for last season, **Next** for the fixture (capitals are at
-home), **Own%** for who else holds him. The four figures above the pitch — the
-projected XI points with the captain doubled, what the squad costs and what is
-left in the bank, the XI's per-match rate and how much of the template you hold
-— follow whatever is on it.
+### Two squads, side by side
+
+A pitch needs about 600px and the page has 1600, so the other half holds a
+second squad: the solver's answer to the settings in force, or **any draft you
+have saved**, chosen from the picker above it. Both pitches carry the diff —
+players the other squad has and yours does not are ringed green and marked
+**in**, yours that it dropped are dimmed and marked **out** — and a → on any
+incoming shirt takes that one player, dropping the weakest player you hold in
+the same position that the other squad did not want either.
+
+Under the two pitches the trade is priced. Outs and ins are **paired by
+position**, because that is the swap you would actually make, and each row
+carries the two numbers it turns on:
+
+```text
+Out of yours          In from Optimal squad     xPts          Δ xPts   Price            Δ £m
+out Semenyo    MCI    in  B.Fernandes   MUN     15.0 → 21.5    +6.5    £8.5 → £12.0     +3.5
+out Szoboszlai LIV    in  Saka          ARS     14.7 → 20.1    +5.5    £7.0 → £9.5      +2.5
+All 2 changes                                                 +12.0                     +6.0
+```
+
+Set the picker to *Nothing* and the board drops to one pitch, which is what a
+narrow screen does for you anyway.
+
+### What each shirt carries
+
+Up to **three** figures, chosen rather than fixed: the first gets a bar of its
+own and the other two share a row beneath it, in the order the selector shows
+them. **xPts** to rank on, **xPPG** to compare on, **£** to budget with, **PPG**
+for last season, **Next** for the fixture (capitals are at home), **Own%**,
+**Start** and **Mins**. Clicking a fourth drops the oldest, which is what
+clicking a fourth means.
+
+The four figures above the pitches — projected XI points with the captain
+doubled, what the squad costs and what is left in the bank, the XI's per-match
+rate, and how much of the template you hold — follow whatever is on them.
+
+### Head to head
+
+The ⇄ on any shirt, or in any pool row, puts a player in the comparison; a
+second one opens it. Every number the board holds on both, side by side, with
+the gap signed so the better one reads as the better one — which for price and
+ownership is the *smaller* figure — and then the horizon gameweek by gameweek,
+because two players with the same total can have it arranged very differently.
+It is `fpl.py compare` without the terminal.
+
+### The pool, and the tabs
 
 Tap an empty shirt and the player pool opens as a drawer, filtered to that
 position. It is the same table it always was: every column, both constraint
 buttons, search and sort. Tap a filled shirt and the stat editor opens on him.
 The × drops him.
 
-Four tabs, because the squad should not have to share a screen with everything
-that describes it:
-
 | Tab | What is on it |
 | --- | --- |
-| **Squad** | the pitch, the legality checks, and the two buttons that fill or clear it |
-| **Optimal** | the solver's answer to the settings in force, on its own pitch |
-| **Analysis** | the weekly profile, the rank-risk list, the fixture timeline, the club lineups |
-| **Drafts** | saved squads, and the comparison between any two of them |
-
-The solver re-solves whenever a setting changes — move the budget, a bench
-weight or the template tilt and the optimal fifteen under the *new* settings
-replaces the one it found under the old ones. On its pitch, players it wants
-that you do not hold are ringed green and marked **in**, with a → to take one;
-the ones you hold that it dropped are named under the pitch and marked **out**.
-Taking a player one at a time drops the weakest player you hold in the same
-position that the solver did not want either, so the draft stays fifteen and
-legal by position. The tab itself carries the count, so the size of the
-disagreement is visible without opening it.
+| **Squad** | both pitches, the swap table, the legality checks. The badge counts how far you are from the solver |
+| **Analysis** | the weekly profile, the rank-risk list, the fixture timeline, and the club lineups — the expected XI drawn as a pitch too, ranked on start probability, with start / minutes / xPPG on each shirt |
+| **Drafts** | saved squads, and the overlaid weekly chart |
 
 **Settings** (top right) holds everything that scopes the numbers: horizon,
 half-life, budget, template tilt, minimum start probability, and behind *More
