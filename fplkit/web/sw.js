@@ -18,7 +18,7 @@
 // Bump whenever the shell changes. The shell is served cache-first, so an
 // installed phone keeps whatever it already has until this string moves --
 // which is the point on a train and a silent way to ship nothing otherwise.
-const SHELL_VERSION = "fpl-shell-v6";
+const SHELL_VERSION = "fpl-shell-v7";
 const DATA_CACHE = "fpl-data-v1";
 // Club shirts, kept apart from the shell: they are fetched as the pitch meets
 // each club rather than listed up front, and they outlive a shell version --

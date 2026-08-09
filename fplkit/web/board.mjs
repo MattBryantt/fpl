@@ -181,6 +181,15 @@ export function derivePool(snap, edits, { horizon, halfLife }) {
     // editor can always say what an override changed.
     const inputs = {};
     for (const field of overridable) if (field in raw) inputs[field] = raw[field];
+    // Last season's raw rate, unshrunk -- kept apart from `inputs` so the
+    // editor can show what a player actually did next to what the model
+    // believes about him. Only the rate stats have one, flat on the row as
+    // `raw_<field>`.
+    const rawInputs = {};
+    for (const field of overridable) {
+      const key = `raw_${field}`;
+      if (key in raw && raw[key] !== null && raw[key] !== undefined) rawInputs[field] = raw[key];
+    }
 
     const played = games[raw.team] || 0;
     const xptsRaw = sum(gw, count);
@@ -214,6 +223,7 @@ export function derivePool(snap, edits, { horizon, halfLife }) {
       p_play: pPlay,
       exp_minutes: expMinutes,
       inputs,
+      raw_inputs: rawInputs,
       edited: byUser,
       // Moved to keep his club at eleven starters, not by an opinion of yours.
       adjusted: edited && !byUser,

@@ -70,6 +70,14 @@ SCORING_FIELDS = [
     "yellow_per90", "penalties_order", "price",
 ]
 
+# The unshrunk rate each of these started from -- last season's actual per-90
+# numbers, before shrinkage pulled them toward the positional average. Only
+# the rate stats have one; there is no "raw" price or penalty order.
+RAW_FIELDS = [
+    "npxg_per90", "xa_per90", "dc_per90", "bonus_per90", "saves_per90",
+    "yellow_per90",
+]
+
 
 def _rules() -> dict[str, Any]:
     """The scoring constants, read out of config so the JS cannot drift from it.
@@ -228,6 +236,8 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
         # thing you feed to playerFixturePoints, exactly as the Python does.
         for field in SCORING_FIELDS:
             row[field] = _num(player.get(field), dp=INPUT_DP)
+        for field in RAW_FIELDS:
+            row[f"raw_{field}"] = _num(player.get(f"raw_{field}"), None, dp=INPUT_DP)
         rows.append(row)
 
     fixtures = [

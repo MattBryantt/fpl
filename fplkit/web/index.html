@@ -325,7 +325,7 @@ svg { display: block; max-width: 100%; height: auto; }
 .drawer {
   position: fixed; top: 0; right: 0; bottom: 0; width: 380px; max-width: 92vw;
   background: var(--surface-1); border-left: 1px solid var(--border);
-  box-shadow: -6px 0 28px rgba(0,0,0,0.16); z-index: 45;
+  box-shadow: -6px 0 28px rgba(0,0,0,0.16); z-index: 47;
   padding: 20px; overflow-y: auto; transform: translateX(100%); transition: transform .18s;
 }
 .drawer.open { transform: none; }
@@ -2905,12 +2905,16 @@ async function sendAsk(question) {
    in — the season-level buffer, or one gameweek's — so the same code renders
    both and they cannot drift in behaviour. `idPrefix` keeps element ids unique
    once the same field appears twelve times over. */
-function renderField(box, f, base, store, idPrefix, onChange, hint = "") {
+function renderField(box, f, base, store, idPrefix, onChange, hint = "", prevSeason) {
   const value = store[f.k] !== undefined ? store[f.k] : base;
   const changed = store[f.k] !== undefined && Math.abs(store[f.k] - base) > 1e-9;
   const rid = `${idPrefix}${f.k}`, nid = `${idPrefix}n_${f.k}`;
   const div = document.createElement("div");
   div.className = "field" + (changed ? " changed" : "");
+  // Last season's number as it actually was, before shrinkage pulled it toward
+  // the positional average -- shown once, on the season control only, since a
+  // per-match override has no season of its own to compare against.
+  const showPrev = idPrefix === "ed_" && prevSeason !== undefined && prevSeason !== null;
   div.innerHTML = `
     <div class="row">
       <label for="${rid}">${f.label}</label>
@@ -2920,6 +2924,7 @@ function renderField(box, f, base, store, idPrefix, onChange, hint = "") {
       <input type="range" id="${rid}" min="${f.min}" max="${f.max}" step="${f.step}" value="${value}">
       <input type="number" id="${nid}" min="${f.min}" max="${f.max}" step="${f.step}" value="${(+value).toFixed(f.dp)}">
     </div>
+    ${showPrev ? `<div class="orig" style="margin-top:3px">last season (unweighted): ${prevSeason.toFixed(f.dp)}</div>` : ""}
     ${f.help && idPrefix === "ed_" ? `<div class="orig" style="margin-top:3px">${f.help}</div>` : ""}`;
   box.appendChild(div);
 
@@ -2971,12 +2976,13 @@ function editableFields(player) {
     // An adjusted player opens on what he is being scored at, with the model's
     // own figure kept beside it -- the slider is the live value, and the note
     // says where it came from.
+    const prevSeason = player.raw_inputs?.[f.k];
     if (f.k === REBALANCED_FIELD && player.adjusted) {
       out.push({ f, base: player[f.k],
                  hint: `rebalanced from ${base.toFixed(f.dp)}` });
       continue;
     }
-    out.push({ f, base });
+    out.push({ f, base, prevSeason });
   }
   return out;
 }
@@ -2985,9 +2991,9 @@ function renderEditorFields() {
   const p = S.byId.get(editingId);
   const box = $("#edFields");
   box.innerHTML = "";
-  for (const { f, base, hint } of editableFields(p)) {
+  for (const { f, base, hint, prevSeason } of editableFields(p)) {
     renderField(box, f, base, editBuffer, "ed_",
-                () => { previewEdit(); renderMatches(); }, hint);
+                () => { previewEdit(); renderMatches(); }, hint, prevSeason);
   }
 }
 
