@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>FPL drafting board</title>
+<title>FPL squad board</title>
 <!-- Added to the home screen this launches without Safari's chrome, which is
      most of what makes it feel like an app rather than a bookmark. The two
      theme-colors match the light and dark page backgrounds so the status bar
@@ -144,31 +144,12 @@ select, input[type=search], input[type=number] {
 .btn.ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
 .btn:disabled { opacity: 0.5; cursor: default; }
 
-/* Stretch, so the pool column fills the height the squad column sets rather
-   than leaving a dead band under a short table. Three columns wide: pool, the
-   squad you are building, and the solver's answer to the settings currently in
-   force. The last two sit next to each other because the whole point of them is
-   the comparison -- a diff you have to scroll between is not a diff. */
-.main { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: stretch; }
 /* min-width:0 is load-bearing, not defensive. A grid item's default
-   min-width:auto refuses to shrink below its content's min-content width, so
-   the squad cards — whose rows carry a name plus four numbers plus two buttons
-   — held themselves ~50px wider than their track on a phone and spilled out of
-   the card. `overflow-x: clip` on the page then hid the evidence: the document
-   reported no overflow while the right-hand column was being cut off mid-word. */
-.main > .card { display: flex; flex-direction: column; min-width: 0; }
+   min-width:auto refuses to shrink below its content's min-content width, so a
+   card whose contents are wider than its track holds itself open and spills.
+   `overflow-x: clip` on the page then hides the evidence: the document reports
+   no overflow while the right-hand column is cut off mid-word. */
 .charts > .card { min-width: 0; }
-/* Below ~1400px three columns squeeze the pool table past legibility, so the
-   pool takes a full row of its own and the two squads keep their pairing. */
-@media (max-width: 1400px) {
-  .main { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .main > .poolcard { grid-column: 1 / -1; }
-  /* Full width means the pool is no longer competing for horizontal room, so
-     give the height back: the two squads below it are the comparison, and a
-     pool that fills the viewport puts them entirely off screen. */
-  .poolcard .scroll { max-height: 44vh; }
-}
-@media (max-width: 900px) { .main { grid-template-columns: minmax(0, 1fr); } }
 
 /* Pool */
 .poolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
@@ -199,10 +180,6 @@ tbody tr.picked { opacity: 0.4; }
 .flag { font-size: 10px; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
 
 /* Squad */
-.tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
-.tile { border: 1px solid var(--border); border-radius: 8px; padding: 10px 11px; }
-.tile .lab { font-size: 11px; color: var(--muted); }
-.tile .num { font-size: 20px; font-weight: 600; margin-top: 2px; }
 .hero { font-size: 48px; font-weight: 600; line-height: 1.05; letter-spacing: -0.02em; }
 .hero.empty { font-size: 22px; color: var(--muted); font-weight: 500; }
 .delta { font-size: 12px; margin-top: 2px; }
@@ -212,45 +189,13 @@ tbody tr.picked { opacity: 0.4; }
 .meter > div { height: 100%; background: var(--series-1); border-radius: 4px; }
 .meter.over > div { background: var(--critical); }
 
-.grouplabel { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin: 12px 0 5px; }
-.slot {
-  display: flex; align-items: center; gap: 9px; padding: 6px 9px;
-  border: 1px solid var(--border); border-radius: 7px; margin-bottom: 5px;
-  min-width: 0;
-}
-/* The numbers and buttons are fixed; the name is the elastic part and already
-   ellipsises. Saying so stops the row demanding its full min-content width. */
-.slot > :not(.nm) { flex: none; }
-.slot.empty { border-style: dashed; color: var(--muted); justify-content: center; font-size: 12.5px; }
-.slot .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.slot .pts { font-variant-numeric: tabular-nums; color: var(--text-secondary); font-size: 12.5px; }
-/* xPPG carries the emphasis in a squad row. It is the number you compare across
-   players on different fixture runs; the horizon total is a consequence of it
-   and of how many games they happen to have. */
-.slot .ppg { font-variant-numeric: tabular-nums; color: var(--text-primary); font-size: 12.5px; font-weight: 500; }
-.slot .last { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 11.5px; }
 td.thin-cell { color: var(--muted); }
 td.muted-cell { color: var(--axis); }
-.slot .rm { border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 15px; padding: 0 3px; }
-.slot .rm:hover { color: var(--critical); }
-.badge { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--mid); color: var(--text-secondary); }
-.badge.c { background: var(--series-1); color: #fff; }
-
-/* Optimal-squad column. Rows carry the diff: a player the solver wants and you
-   do not have is marked in, one you hold and it dropped is marked out. Colour
-   never carries it alone -- every marked row also gets a word. */
-.slot.isnew { border-color: var(--good); box-shadow: inset 3px 0 0 var(--good); }
-.slot.isgone { border-style: dashed; opacity: 0.62; }
-.tag { font-size: 10px; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); }
-.tag.in { color: var(--good); border-color: var(--good); }
-.tag.out { color: var(--critical); border-color: var(--critical); }
-.swap { border: 1px solid var(--border); background: transparent; color: var(--text-secondary);
-  border-radius: 5px; height: 22px; min-width: 22px; cursor: pointer; line-height: 1; padding: 0 4px; font-size: 12px; }
-.swap:hover { background: var(--good); color: #fff; border-color: var(--good); }
 .optstatus { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
 .optstatus.err { color: var(--critical); }
-.optbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
-.optlist.pending { opacity: 0.45; transition: opacity .15s; }
+/* A solve in flight fades its own answer rather than clearing it: the previous
+   squad is still the best thing to be looking at until the next one lands. */
+#comparePitch.pending { opacity: 0.45; transition: opacity .15s; }
 
 /* Bench weights: four sliders in a row, each labelled with the weight the
    objective actually uses for that slot. */
@@ -269,7 +214,10 @@ td.muted-cell { color: var(--axis); }
 .issue.bad { color: var(--critical); }
 
 /* Charts */
-.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(430px, 100%), 1fr)); gap: 16px; margin-top: 16px; }
+/* Two charts to a row on a wide screen, one on a narrow one -- and never three
+   tracks for two cards, which is what a smaller minimum produced: the pair sat
+   in two thirds of the width with the last third empty. */
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); gap: 16px; margin-top: 16px; }
 @media (max-width: 900px) { .charts { grid-template-columns: 1fr; } }
 .cardhead { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 10px; }
 .legend { display: flex; gap: 14px; font-size: 12px; color: var(--text-secondary); flex-wrap: wrap; }
@@ -307,10 +255,20 @@ svg { display: block; max-width: 100%; height: auto; }
   .ctl { flex: 1 1 140px; }
   .charts { grid-template-columns: 1fr; }
   .card { padding: 13px; }
-  .tiles { grid-template-columns: 1fr 1fr; }
-  .tile:first-child { grid-column: 1 / -1; }
   .hero { font-size: 38px; }
-  .scroll { max-height: 62vh; }
+  .scroll { max-height: none; }
+  /* A phone is the narrowest a pitch ever gets, and five defenders still have to
+     fit across it without wrapping into a sixth row that means nothing. */
+  .pitch { padding: 22px 4px 16px; gap: 10px; }
+  .pitchrow { gap: 3px; }
+  .pcard { --card: clamp(50px, 18vw, 68px); }
+  /* The club abbreviation is the first thing to go: the kit already says it,
+     and the name it was crowding does not repeat anywhere else on the shirt. */
+  .pname i { display: none; }
+  .pcardvs { display: none; }
+  .metricbar button { padding: 6px 9px; }
+  .tabs { gap: 0; }
+  .tab { padding: 9px 10px; font-size: 13px; }
   /* The pool keeps name, position, price and points; the rest is available by
      sorting or in the editor, and four columns is what fits legibly. */
   #pool [data-req], #pool [data-ban] { display: none; }
@@ -541,6 +499,348 @@ svg { display: block; max-width: 100%; height: auto; }
   border: 1px solid var(--border); color: var(--muted); vertical-align: 1px; }
 .ctl input[type=range].needsync { accent-color: var(--series-2); }
 #freshness { font-variant-numeric: tabular-nums; }
+
+/* ==========================================================================
+   The squad view
+   ==========================================================================
+   The board used to be three columns of numbers, which is the right shape for
+   comparing players and the wrong one for looking at a team. A squad is eleven
+   positions and four substitutes, and every app that shows one shows it as a
+   pitch, because that is the arrangement the thing being described actually
+   has. The numbers did not go anywhere -- the pool is a drawer, the charts are
+   a tab -- but the first thing on screen is now the team.
+
+   The turf is drawn rather than themed. A shirt has to sit on the same
+   background in light and dark mode or the kit images stop reading, so the
+   pitch keeps its own colours in both and every label on it is a pill with its
+   own contrast rather than page text laid on green. */
+.summary {
+  display: grid; grid-template-columns: minmax(210px, 1.1fr) repeat(3, minmax(0, 1fr));
+  gap: 12px; align-items: stretch; margin: 14px 0 12px;
+}
+.summary .tile { border: 0; padding: 0; }
+.summary .card { padding: 13px 15px; }
+.summary .hero { font-size: 40px; }
+.summary .hero.empty { font-size: 19px; }
+.sumlab { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.sumnum { font-size: 22px; font-weight: 600; margin-top: 3px; font-variant-numeric: tabular-nums; }
+.sumfoot { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+@media (max-width: 860px) {
+  .summary { grid-template-columns: 1fr 1fr; }
+  .summary > :first-child { grid-column: 1 / -1; }
+  .summary .hero { font-size: 34px; }
+}
+
+/* Tabs. The squad is the view; everything that used to compete with it for the
+   same screen is one tap away and none of it is gone. */
+.tabs {
+  display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0 14px;
+  border-bottom: 1px solid var(--border); padding-bottom: 0;
+}
+.tab {
+  background: none; border: 0; border-bottom: 2px solid transparent;
+  padding: 9px 14px; cursor: pointer; color: var(--text-secondary);
+  font-size: 13.5px; font-weight: 500; border-radius: 7px 7px 0 0;
+}
+.tab:hover { background: var(--hover); }
+.tab[aria-selected="true"] { color: var(--text-primary); border-bottom-color: var(--series-1); }
+.tab .count {
+  font-size: 10.5px; color: var(--muted); background: var(--mid);
+  border-radius: 999px; padding: 1px 6px; margin-left: 6px; font-variant-numeric: tabular-nums;
+}
+.panel[hidden] { display: none; }
+
+.pitchhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.pitchhead .grow { flex: 1; }
+/* Segmented control for the one number a shirt has room for. */
+.metricbar { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden; }
+.metricbar button {
+  background: transparent; border: 0; border-left: 1px solid var(--border);
+  padding: 6px 11px; cursor: pointer; color: var(--text-secondary); font-size: 12px;
+}
+.metricbar button:first-child { border-left: 0; }
+.metricbar button[aria-pressed="true"] { background: var(--series-1); color: #fff; }
+.shapetag {
+  font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums;
+  border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px;
+}
+
+.pitch {
+  --turf-a: #3f9a62; --turf-b: #388f5a; --line: rgba(255,255,255,0.34);
+  position: relative; overflow: hidden;
+  border-radius: 12px 12px 0 0; padding: 26px 8px 20px;
+  display: flex; flex-direction: column; gap: 14px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.10), rgba(0,0,0,0.10)),
+    repeating-linear-gradient(180deg, var(--turf-a) 0 40px, var(--turf-b) 40px 80px);
+}
+/* Dark mode gets a darker turf rather than the same green dimmed: a bright
+   pitch is the one element that would glow out of a dark board, and the shirts
+   sit on it either way. */
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .pitch {
+    --turf-a: #1d4f33; --turf-b: #19452c; --line: rgba(255,255,255,0.26);
+  }
+}
+:root[data-theme="dark"] .pitch {
+  --turf-a: #1d4f33; --turf-b: #19452c; --line: rgba(255,255,255,0.26);
+}
+/* The goalmouth and the halfway line, drawn rather than imported. Purely
+   decorative, so they are pseudo-elements and never in the accessibility tree. */
+.pitch::before {
+  content: ""; position: absolute; top: -34px; left: 50%; transform: translateX(-50%);
+  width: min(280px, 56%); height: 74px;
+  border: 2px solid var(--line); border-radius: 0 0 6px 6px;
+}
+.pitch::after {
+  content: ""; position: absolute; bottom: -46px; left: 50%; transform: translateX(-50%);
+  width: min(200px, 42%); aspect-ratio: 2 / 1; border: 2px solid var(--line);
+  border-radius: 50% 50% 0 0 / 100% 100% 0 0;
+}
+.pitchrow {
+  display: flex; justify-content: center; align-items: flex-start;
+  gap: clamp(4px, 1.6vw, 16px); flex-wrap: wrap; position: relative; z-index: 1;
+}
+
+.pcard {
+  --card: clamp(56px, 6.6vw, 76px);
+  width: var(--card); display: flex; flex-direction: column; align-items: center;
+  position: relative; background: none; border: 0; padding: 0; color: inherit; font: inherit;
+}
+.shirtwrap { position: relative; width: 100%; display: block; }
+.shirt {
+  position: relative; display: grid; place-items: center;
+  width: 100%; aspect-ratio: 5 / 6; background: none; border: 0; padding: 0; cursor: pointer;
+}
+.shirt img.kit { width: 100%; height: 100%; object-fit: contain;
+  filter: drop-shadow(0 2px 3px rgba(0,0,0,0.35)); }
+.shirt:hover img.kit { transform: translateY(-1px); }
+/* The lettered tile that stands in for a shirt that would not load. Sized to the
+   same box, so a club with no image never moves the row. */
+.kitfallback {
+  display: none; place-items: center; width: 78%; aspect-ratio: 1 / 1.15;
+  border-radius: 6px; background: rgba(0,0,0,0.42); color: #fff;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.03em;
+}
+.shirt.nokit img.kit { display: none; }
+.shirt.nokit .kitfallback { display: grid; }
+/* The same box a shirt occupies, so an empty slot beside a filled one does not
+   sit its name pill 20px higher than its neighbour's. */
+.shirt.ghost {
+  border: 2px dashed rgba(255,255,255,0.55); border-radius: 8px;
+  width: 100%; aspect-ratio: 5 / 6;
+}
+.shirt.ghost .plus { color: rgba(255,255,255,0.8); font-size: 20px; line-height: 1; }
+.pcard.empty { cursor: pointer; }
+.pcard.empty .pname { background: rgba(255,255,255,0.72); color: #1a1a19; }
+.pcard.empty .pval { background: rgba(0,0,0,0.35); }
+
+/* Name and number are pills rather than text on grass: the turf is a fixed
+   colour in both themes, so these carry their own contrast instead of
+   inheriting a page colour that only works against one of them. */
+.pname {
+  width: 100%; margin-top: 4px; padding: 2px 3px; border-radius: 4px 4px 0 0;
+  background: #fbfbf9; color: #0b0b0b; font-size: 9.5px; font-weight: 600;
+  text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  letter-spacing: -0.01em;
+}
+/* The club, on the name pill rather than in a metric slot. It is the one piece
+   of context you read constantly and never sort by, and the kit only tells you
+   which club if you happen to know the kit. */
+.pname i { font-style: normal; font-weight: 500; color: #6f6d67; font-size: 8.5px; }
+.pval {
+  width: 100%; padding: 1px 3px;
+  background: #2a78d6; color: #fff; font-size: 10.5px; text-align: center;
+  font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pcard > .pval:last-child { border-radius: 0 0 4px 4px; }
+/* The second and third figures, sharing a row under the first. Hairline-split
+   rather than labelled: the metric bar above the pitch names them in the same
+   order, and a label per cell would cost more room than the numbers. */
+.psub {
+  width: 100%; display: flex; border-radius: 0 0 4px 4px; overflow: hidden;
+  background: var(--mid); color: var(--text-secondary);
+}
+.psub .pcell {
+  flex: 1; min-width: 0; padding: 1px 2px; text-align: center; font-size: 9.5px;
+  font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.psub .pcell + .pcell { border-left: 1px solid var(--border); }
+/* On the turf the sub-row cannot borrow the page's surface colour -- it would be
+   a grey block on green. It gets its own, dark enough for white numerals. */
+.pitch .psub { background: rgba(11,11,11,0.66); color: #fbfbf9; }
+.pitch .psub .pcell + .pcell { border-left-color: rgba(255,255,255,0.18); }
+.pslot {
+  position: absolute; top: -7px; left: 50%; transform: translateX(-50%);
+  font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase;
+  background: rgba(0,0,0,0.55); color: #fff; border-radius: 999px; padding: 1px 7px;
+}
+.armband {
+  position: absolute; top: 2px; right: 2px; width: 18px; height: 18px;
+  border-radius: 50%; display: grid; place-items: center;
+  background: #fbfbf9; color: #0b0b0b; font-size: 10px; font-weight: 700;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+}
+.armband.vice { background: rgba(0,0,0,0.62); color: #fff; }
+.statusmark {
+  position: absolute; top: 2px; left: 2px; width: 17px; height: 17px;
+  border-radius: 50%; display: grid; place-items: center;
+  font-size: 10px; font-weight: 700; color: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+}
+.statusmark.doubt { background: #fab219; color: #241a00; }
+.statusmark.out { background: #d03b3b; }
+/* An edited player is marked on the name rather than on the kit: the corners
+   are spoken for, and a dot in front of a name is where a change reads. */
+.editmark { color: var(--series-2); font-size: 12px; line-height: 1; }
+.pcardrm, .pcardswap {
+  position: absolute; bottom: 0; right: -2px; width: 20px; height: 20px;
+  border-radius: 50%; border: 0; cursor: pointer; line-height: 1; padding: 0;
+  font-size: 12px; opacity: 0; transition: opacity .12s;
+  background: var(--critical); color: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+}
+.pcardswap { top: -4px; bottom: auto; right: -4px; background: var(--good); opacity: 1; }
+.pcard:hover .pcardrm, .pcard:focus-within .pcardrm { opacity: 1; }
+/* A thumb needs the buttons permanently visible, and a 3px gap between shirts
+   means they cannot also hang outside the card -- they would sit on the
+   neighbour. Inside the corners, and the compare button gives way entirely on a
+   phone, where the pool's own ⇄ is the way in. */
+@media (pointer: coarse) {
+  .pcardrm, .pcardvs { opacity: 1; width: 22px; height: 22px; }
+}
+
+/* The diff, when a pitch is showing the solver's answer rather than yours. */
+.pcard.isin .pname { box-shadow: 0 0 0 2px var(--good); }
+.pcard.isout { opacity: 0.55; }
+.ptag {
+  margin-top: 3px; font-size: 9.5px; font-weight: 700; letter-spacing: 0.05em;
+  text-transform: uppercase; border-radius: 3px; padding: 0 5px;
+}
+.ptag.in { background: #0ca30c; color: #fff; }
+.ptag.out { background: rgba(0,0,0,0.5); color: #fff; }
+
+.benchband {
+  border-radius: 0 0 12px 12px; padding: 11px 10px 13px;
+  background: var(--surface-1); border: 1px solid var(--border); border-top: 0;
+}
+.benchlabel {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap;
+}
+.benchnote { text-transform: none; letter-spacing: 0; }
+/* `subsrow`, not `benchrow`: the lineup table has had a `benchrow` class on its
+   non-starters since long before there was a pitch, and a `display: flex` landing
+   on a <tr> collapses that row into the first column of the one above it. Two
+   things called the same thing in one stylesheet is a bug waiting for the second
+   one to be written. */
+.subsrow { display: flex; justify-content: center; gap: clamp(6px, 2vw, 20px); flex-wrap: wrap; }
+/* A group with no bench slots to line up under reads as a list, so it starts
+   where a list starts. */
+.subsrow.loose { justify-content: flex-start; }
+/* Off the turf the pills would be an island of fixed colour in a themed card, so
+   on the bench they take the page's own. */
+.subsrow .pname { background: var(--mid); color: var(--text-primary); }
+.subsrow .pcard.empty .pname { background: var(--mid); color: var(--text-secondary); }
+.subsrow .shirt.ghost { border-color: var(--axis); }
+.subsrow .shirt.ghost .plus { color: var(--muted); }
+
+.pitchfoot { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+
+/* ------------------------------------------------------------ two pitches
+   A pitch needs about 600px and the page has 1600, which was most of the
+   complaint: the rest was grass. So the second half holds a second squad --
+   the solver's answer, or any draft you saved -- and the comparison stops
+   being a thing you hold in your head between two screens. */
+.pitchpair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.pitchpair.solo { grid-template-columns: minmax(0, 1fr); max-width: 760px; }
+@media (max-width: 1080px) { .pitchpair { grid-template-columns: minmax(0, 1fr); } }
+.pitchside { min-width: 0; display: flex; flex-direction: column; }
+.sidehead {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;
+  min-height: 32px;
+}
+.sidehead h2 { margin: 0; font-size: 13px; }
+.sidehead .num {
+  font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+.sidehead .sep { color: var(--axis); }
+.sidehead .grow { flex: 1; }
+.sidehead select { font-size: 12.5px; padding: 4px 7px; min-width: 0; }
+
+/* The swap, as a table. Colour marks the direction and the word says it, and
+   every row carries the two numbers the trade is actually made on. */
+.swaptable { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 4px; }
+.swaptable th {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
+  font-weight: 500; text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.swaptable th:first-child, .swaptable th:nth-child(2),
+.swaptable td:first-child, .swaptable td:nth-child(2) { text-align: left; }
+.swaptable td { padding: 5px 6px; text-align: right; border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums; }
+.swaptable tr:last-child td { border-bottom: 0; }
+.swaptable .who { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.swaptable .arrow { color: var(--muted); }
+.swaptable .gain { color: var(--good); }
+.swaptable .loss { color: var(--critical); }
+.swaptable tfoot td { font-weight: 600; border-top: 1px solid var(--border); border-bottom: 0; }
+.dirtag {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  border-radius: 3px; padding: 0 5px; color: #fff;
+}
+.dirtag.in { background: var(--good); }
+.dirtag.out { background: var(--muted); }
+
+/* Head to head. Two players, every number the board holds on either, and the
+   gap between them signed the way the better one reads. */
+.pcardvs {
+  position: absolute; bottom: 0; left: -2px; width: 20px; height: 20px;
+  border-radius: 50%; border: 0; cursor: pointer; line-height: 1; padding: 0;
+  font-size: 11px; opacity: 0; transition: opacity .12s;
+  background: var(--series-2); color: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+}
+.pcard:hover .pcardvs, .pcard:focus-within .pcardvs { opacity: 1; }
+.pcard.vspicked .pcardvs { opacity: 1; background: var(--text-primary); }
+.pcard.vspicked .pname { box-shadow: 0 0 0 2px var(--series-2); }
+@media (pointer: coarse) { .pcardvs { opacity: 1; width: 24px; height: 24px; } }
+.vsbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  border: 1px solid var(--border); border-left: 3px solid var(--series-2);
+  border-radius: 8px; padding: 8px 12px; margin: 12px 0; font-size: 12.5px;
+}
+.vstable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.vstable th { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); font-weight: 500; padding: 5px 6px; text-align: right;
+  border-bottom: 1px solid var(--border); }
+.vstable th:first-child, .vstable td:first-child { text-align: left; }
+.vstable td { padding: 5px 6px; text-align: right; border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums; }
+.vstable td.lab { color: var(--text-secondary); font-variant-numeric: normal; }
+.vstable td.better { font-weight: 600; }
+.vstable .gap { color: var(--muted); font-size: 11.5px; }
+.vshead { display: flex; align-items: center; gap: 8px; }
+.vshead img { width: 26px; height: 33px; object-fit: contain; }
+
+/* The pool, now a drawer. It kept every column, every filter and both
+   constraint buttons -- it changed where it lives, not what it does. */
+.pooldrawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 720px; max-width: 96vw;
+  background: var(--surface-1); border-left: 1px solid var(--border);
+  box-shadow: -6px 0 28px rgba(0,0,0,0.18); z-index: 46;
+  padding: 18px 20px; overflow-y: auto; transform: translateX(100%); transition: transform .18s;
+  display: flex; flex-direction: column;
+}
+.pooldrawer.open { transform: none; }
+.poolhead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.pooldrawer .scroll { max-height: none; }
+@media (max-width: 720px) { .pooldrawer { padding: 14px; } }
+
+/* Settings live behind a button now: they scope the whole board, and a board
+   whose first screen is a squad should open on the squad. */
+.settingscard { margin-bottom: 14px; }
+.appbtn { display: inline-flex; align-items: center; gap: 6px; }
 </style>
 </head>
 <body>
@@ -548,17 +848,19 @@ svg { display: block; max-width: 100%; height: auto; }
 <div class="wrap">
 
 <header>
-  <h1>FPL drafting board</h1>
+  <h1>FPL squad board</h1>
   <span class="sub" id="meta"></span>
   <span style="flex:1"></span>
   <span class="sub" id="freshness" title="The board runs on a frozen projection — this is how old it is"></span>
+  <button class="btn ghost" id="settingsBtn" aria-expanded="false"
+          title="Horizon, budget and everything else that scopes the numbers">Settings ▾</button>
   <button class="btn ghost" id="syncBtn" title="Re-run the projection on the laptop and pull it down">Sync</button>
   <a class="btn ghost" href="/data" id="dataLink" title="Every number traced back to its source"
-     style="text-decoration:none">Where the data comes from</a>
+     style="text-decoration:none">Data</a>
   <button class="btn ghost" id="theme" title="Toggle theme">◐</button>
 </header>
 
-<div class="card controls">
+<div class="card controls hidden settingscard" id="settingsRow">
   <div class="ctl">
     <label for="horizon">Horizon</label>
     <select id="horizon">
@@ -581,14 +883,6 @@ svg { display: block; max-width: 100%; height: auto; }
   <div class="ctl">
     <label for="minstart">Min start prob <span class="val" id="msval">0.30</span></label>
     <input type="range" id="minstart" min="0" max="0.9" step="0.05" value="0.3">
-  </div>
-  <div class="ctl">
-    <label>&nbsp;</label>
-    <button class="btn" id="optimise" title="Take the whole optimal squad as your draft">Copy optimal →</button>
-  </div>
-  <div class="ctl">
-    <label>&nbsp;</label>
-    <button class="btn ghost" id="clear">Clear</button>
   </div>
   <div class="ctl">
     <label>&nbsp;</label>
@@ -680,120 +974,107 @@ svg { display: block; max-width: 100%; height: auto; }
   <button class="btn ghost" id="clearEdits">Discard all edits</button>
 </div>
 
-<div class="main">
-  <section class="card poolcard">
-    <div class="cardhead"><h2 style="margin:0">Player pool</h2><span class="sub" id="poolcount"></span></div>
-    <div class="poolbar">
-      <input type="search" id="search" placeholder="Search name or club…" style="flex:1;min-width:150px">
-      <button class="chip" data-pos="ALL" aria-pressed="true">All</button>
-      <button class="chip" data-pos="GKP" aria-pressed="false">GKP</button>
-      <button class="chip" data-pos="DEF" aria-pressed="false">DEF</button>
-      <button class="chip" data-pos="MID" aria-pressed="false">MID</button>
-      <button class="chip" data-pos="FWD" aria-pressed="false">FWD</button>
-    </div>
-    <div class="scroll">
-      <table id="pool">
-        <thead><tr>
-          <th data-sort="name">Player</th>
-          <th data-sort="pos">Pos</th>
-          <th data-sort="team_short">Team</th>
-          <th data-sort="price">£</th>
-          <th data-sort="xpts_plan" class="sorted">xPts</th>
-          <th data-sort="xppg" title="Projected points per match over the horizon, undecayed — comparable with last season's PPG">xPPG</th>
-          <th data-sort="ppg" title="Last season's points per appearance, as the FPL API reports it. Hover a value to see it per fixture, which is the basis xPPG uses.">PPG</th>
-          <th data-sort="value">xPts/£m</th>
-          <th data-sort="p_start">Start</th>
-          <th data-sort="cs" title="Expected clean sheets over the horizon">xCS</th>
-          <th data-sort="owned">Own%</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
+<!-- The four numbers that describe a squad, above the squad they describe. They
+     used to be tiles inside the draft column; a pitch is the widest thing on
+     the page, so they sit across the top of it instead. -->
+<div class="summary">
+  <div class="card">
+    <div class="sumlab">Projected XI points, captain doubled</div>
+    <div class="hero" id="heroPts">—</div>
+    <div class="delta" id="heroDelta"></div>
+  </div>
+  <div class="card">
+    <div class="sumlab">Squad cost</div>
+    <div class="sumnum" id="tCost">—</div>
+    <div class="meter" id="budMeter"><div style="width:0"></div></div>
+    <div class="sumfoot" id="tBank"></div>
+  </div>
+  <div class="card">
+    <div class="sumlab">XI xPPG</div>
+    <div class="sumnum" id="tXppg">—</div>
+    <div class="sumfoot">points per match, captain doubled</div>
+  </div>
+  <div class="card">
+    <div class="sumlab">Field coverage</div>
+    <div class="sumnum" id="tCov">—</div>
+    <div class="sumfoot">share of the template you hold</div>
+  </div>
+</div>
 
-  <section class="card">
-    <h2>Your draft</h2>
-    <div class="tiles">
-      <div class="tile" style="grid-column: 1 / -1">
-        <div class="lab">Projected XI points, captain doubled</div>
-        <div class="hero" id="heroPts">—</div>
-        <div class="delta" id="heroDelta"></div>
-      </div>
-      <div class="tile">
-        <div class="lab">Squad cost</div><div class="num" id="tCost">—</div>
-        <div class="meter" id="budMeter"><div style="width:0"></div></div>
-      </div>
-      <div class="tile">
-        <div class="lab">XI xPPG</div><div class="num" id="tXppg">—</div>
-      </div>
-      <div class="tile">
-        <div class="lab">Field coverage</div><div class="num" id="tCov">—</div>
-      </div>
-    </div>
-    <div id="slots"></div>
-    <div class="issues" id="issues"></div>
-  </section>
+<div class="tabs" role="tablist" aria-label="Board sections">
+  <button class="tab" role="tab" data-tab="squad" aria-selected="true">Squad<span class="count" id="tabOptCount"></span></button>
+  <button class="tab" role="tab" data-tab="analysis" aria-selected="false">Analysis</button>
+  <button class="tab" role="tab" data-tab="drafts" aria-selected="false">Drafts<span class="count" id="tabDraftCount"></span></button>
+</div>
 
-  <section class="card">
+<section class="panel" id="panel-squad" role="tabpanel" aria-label="Your squad">
+  <div class="pitchhead">
+    <div class="metricbar" id="metricBar" role="group"
+         aria-label="Which numbers each shirt carries"></div>
+    <span class="sub" id="metricHint"></span>
+    <span class="grow"></span>
+    <button class="btn" id="addPlayer">Add players</button>
+  </div>
+
+  <!-- Two squads, side by side. The left one is yours; the right one is
+       whatever you want to hold it against -- the solver's answer to the
+       settings in force, or any draft you saved. -->
+  <div class="pitchpair" id="pitchPair">
+    <div class="pitchside">
+      <div class="sidehead">
+        <h2>Your squad</h2>
+        <span class="shapetag" id="shapeTag">no squad yet</span>
+        <span class="grow"></span>
+        <span class="num" id="sideMinePts">—</span>
+        <span class="sep">·</span>
+        <span class="sub" id="sideMineCost">—</span>
+      </div>
+      <div id="squadPitch"></div>
+    </div>
+
+    <div class="pitchside" id="compareSide">
+      <div class="sidehead">
+        <label class="sub" for="compareWith">Against</label>
+        <select id="compareWith" aria-label="Squad to compare against"></select>
+        <span class="shapetag" id="optShapeTag">—</span>
+        <span class="optstatus" id="optStatus"></span>
+        <span class="grow"></span>
+        <span class="num" id="sideThemPts">—</span>
+        <span class="sep">·</span>
+        <span class="sub" id="sideThemCost">—</span>
+      </div>
+      <div id="comparePitch"></div>
+    </div>
+  </div>
+
+  <div class="issues" id="issues"></div>
+
+  <!-- The trade itself, with the numbers it is made on. The pitches say who;
+       this says what it costs and what it buys. -->
+  <div class="card" id="swapCard" style="margin-top:16px">
     <div class="cardhead">
-      <h2 style="margin:0">Optimal under these settings</h2>
-      <span class="optstatus" id="optStatus"></span>
-    </div>
-    <div class="tiles">
-      <div class="tile" style="grid-column: 1 / -1">
-        <div class="lab">Projected XI points, captain doubled</div>
-        <div class="hero" id="optPts">—</div>
-        <div class="delta" id="optDelta"></div>
+      <div>
+        <h2 style="margin:0 0 3px" id="swapTitle">The difference</h2>
+        <div class="sub" id="swapNote"></div>
       </div>
-      <div class="tile">
-        <div class="lab">Squad cost</div><div class="num" id="optCost">—</div>
-      </div>
-      <div class="tile">
-        <div class="lab">Changes vs your draft</div><div class="num" id="optChanges">—</div>
+      <div class="lineupctl">
+        <button class="btn" id="optCopy">Copy that squad to mine</button>
+        <button class="btn ghost" id="optResolve" title="Solve again now">Re-solve</button>
       </div>
     </div>
-    <div class="optbar">
-      <button class="btn" id="optCopy">Copy whole squad to my draft</button>
-      <button class="btn ghost" id="optResolve" title="Solve again now">Re-solve</button>
-    </div>
-    <div id="optSlots" class="optlist"></div>
-  </section>
-</div>
-
-<div class="card" style="margin-top:16px">
-  <div class="cardhead">
-    <div>
-      <h2 style="margin:0 0 3px">Team lineups</h2>
-      <div class="sub">Who the model expects to start, and for how long. Minutes are a
-        fixed pool — eleven players start — so overriding one man's start probability
-        takes the minutes off his team-mates rather than inventing a twelfth starter.</div>
-    </div>
-    <div class="lineupctl">
-      <select id="lineupTeam" aria-label="Club"></select>
-      <button class="toggle" id="lineupEdited">Only edited clubs</button>
-    </div>
+    <div id="swapBox"></div>
+    <div class="sub" id="optSettings" style="margin-top:10px"></div>
   </div>
-  <div id="lineupBox"></div>
-</div>
 
-<div class="card" style="margin-top:16px">
-  <div class="cardhead">
-    <div>
-      <h2 style="margin:0 0 3px">Drafts</h2>
-      <div class="sub">Save a squad, then tick two or more to compare. Every draft is
-        scored under the settings currently in force, so the comparison is always like for like.</div>
-    </div>
+  <div class="pitchfoot">
+    <button class="btn ghost" id="optimise" title="Take the whole optimal squad as your draft">Copy optimal squad →</button>
+    <button class="btn ghost" id="clear">Clear squad</button>
+    <span class="sub">Tap a shirt for the numbers behind him · ⇄ compares two players.</span>
   </div>
-  <div class="draftbar">
-    <input type="text" id="draftName" placeholder="Name this draft…" maxlength="40">
-    <button class="btn" id="saveDraft">Save current</button>
-    <span class="sub" id="draftHint"></span>
-  </div>
-  <div class="draftlist" id="draftList"></div>
-  <div class="cmp hidden" id="cmpBox"></div>
-</div>
+</section>
 
-<div class="charts">
+<section class="panel" id="panel-analysis" role="tabpanel" aria-label="Analysis" hidden>
+<div class="charts" style="margin-top:0">
   <div class="card">
     <div class="cardhead">
       <div>
@@ -831,7 +1112,101 @@ svg { display: block; max-width: 100%; height: auto; }
   </div>
 </div>
 
+<div class="card" style="margin-top:16px">
+  <div class="cardhead">
+    <div>
+      <h2 style="margin:0 0 3px">Team lineups</h2>
+      <div class="sub">Who the model expects to start, and for how long. Minutes are a
+        fixed pool — eleven players start — so overriding one man's start probability
+        takes the minutes off his team-mates rather than inventing a twelfth starter.</div>
+    </div>
+    <div class="lineupctl">
+      <select id="lineupTeam" aria-label="Club"></select>
+      <button class="toggle" id="lineupEdited">Only edited clubs</button>
+    </div>
+  </div>
+  <!-- The same pitch, drawn from expected minutes rather than from a draft:
+       the eleven this club is likeliest to field, the four next in line
+       beneath them. The table under it keeps every number and the whole
+       squad; this is the shape of the rotation at a glance. -->
+  <div class="pitchpair solo" style="margin-bottom:14px">
+    <div class="pitchside"><div id="lineupPitch"></div></div>
+  </div>
+  <div id="lineupBox"></div>
 </div>
+</section>
+
+<section class="panel" id="panel-drafts" role="tabpanel" aria-label="Drafts" hidden>
+  <div class="card">
+    <div class="cardhead">
+      <div>
+        <h2 style="margin:0 0 3px">Drafts</h2>
+        <div class="sub">Save a squad, then tick two or more to compare. Every draft is
+          scored under the settings currently in force, so the comparison is always like for like.</div>
+      </div>
+    </div>
+    <div class="draftbar">
+      <input type="text" id="draftName" placeholder="Name this draft…" maxlength="40">
+      <button class="btn" id="saveDraft">Save current</button>
+      <span class="sub" id="draftHint"></span>
+    </div>
+    <div class="draftlist" id="draftList"></div>
+    <div class="cmp hidden" id="cmpBox"></div>
+  </div>
+</section>
+
+</div>
+
+<!-- The pool, on call. It is where a squad comes from, so it opens from the
+     "Add players" button and from any empty slot on the pitch — pre-filtered to
+     the position of the slot you tapped, because the reason you opened it is
+     usually the reason it should already be filtered. -->
+<aside class="pooldrawer" id="poolDrawer" aria-label="Player pool" aria-hidden="true">
+    <div class="poolhead">
+      <h2 style="margin:0">Player pool</h2><span class="sub" id="poolcount"></span>
+      <span style="flex:1"></span>
+      <button class="btn ghost" id="poolClose">Done</button>
+    </div>
+    <div class="poolbar">
+      <input type="search" id="search" placeholder="Search name or club…" style="flex:1;min-width:150px">
+      <button class="chip" data-pos="ALL" aria-pressed="true">All</button>
+      <button class="chip" data-pos="GKP" aria-pressed="false">GKP</button>
+      <button class="chip" data-pos="DEF" aria-pressed="false">DEF</button>
+      <button class="chip" data-pos="MID" aria-pressed="false">MID</button>
+      <button class="chip" data-pos="FWD" aria-pressed="false">FWD</button>
+    </div>
+    <div class="scroll">
+      <table id="pool">
+        <thead><tr>
+          <th data-sort="name">Player</th>
+          <th data-sort="pos">Pos</th>
+          <th data-sort="team_short">Team</th>
+          <th data-sort="price">£</th>
+          <th data-sort="xpts_plan" class="sorted">xPts</th>
+          <th data-sort="xppg" title="Projected points per match over the horizon, undecayed — comparable with last season's PPG">xPPG</th>
+          <th data-sort="ppg" title="Last season's points per appearance, as the FPL API reports it. Hover a value to see it per fixture, which is the basis xPPG uses.">PPG</th>
+          <th data-sort="value">xPts/£m</th>
+          <th data-sort="p_start">Start</th>
+          <th data-sort="cs" title="Expected clean sheets over the horizon">xCS</th>
+          <th data-sort="owned">Own%</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+</aside>
+
+<!-- Head to head. Two players, every number the board holds on either, and the
+     gap between them — the browser's answer to `fpl.py compare`. -->
+<aside class="pooldrawer" id="vsDrawer" aria-label="Compare two players" aria-hidden="true"
+       style="width:560px">
+  <div class="poolhead">
+    <h2 style="margin:0">Head to head</h2>
+    <span style="flex:1"></span>
+    <button class="btn ghost" id="vsClear">Clear</button>
+    <button class="btn ghost" id="vsClose">Done</button>
+  </div>
+  <div id="vsBox"></div>
+</aside>
 
 <div class="scrim hidden" id="scrim"></div>
 <aside class="drawer" id="drawer" aria-label="Edit player stats">
@@ -899,6 +1274,8 @@ svg { display: block; max-width: 100%; height: auto; }
 "use strict";
 import { derivePool, editPlayer, explainPlayer, clubLineup, checkOverridable,
          age, POINT_SOURCES } from "/assets/board.mjs";
+import { pitchHTML, cardsHTML, squadLayout, wireShirts, shirtUrl,
+         METRICS, METRIC_KEYS, MAX_METRICS, cleanMetrics } from "/assets/pitch.mjs";
 
 const $ = (s) => document.querySelector(s);
 
@@ -957,6 +1334,12 @@ const S = {
   edits: loadLocal(STORE.edits, {}), drafts: loadLocal(STORE.drafts, []),
   compare: [], draftsPath: "", include: [], exclude: [],
   views: { gw: "chart", exp: "chart", tl: "chart" },
+  // How you have chosen to look at the board: which section, which numbers ride
+  // on a shirt, which squad the right-hand pitch holds, and any two players
+  // being read against each other. All saved -- re-choosing them on every load
+  // is the thing that makes a phone app feel like a web page.
+  tab: "squad", metrics: ["xpts", "xppg", "price"],
+  compareWith: "optimal", versus: [],
 };
 S.squad = loadLocal(STORE.squad, []);
 
@@ -1010,11 +1393,85 @@ function markSortedHeader() {
     th.classList.toggle("sorted", th.dataset.sort === S.sort));
 }
 
-function showMoreOptions(open) {
-  $("#moreRow").classList.toggle("hidden", !open);
-  $("#benchRow").classList.toggle("hidden", !open);
-  $("#moreBtn").setAttribute("aria-expanded", String(open));
-  $("#moreBtn").textContent = open ? "Fewer options ▴" : "More options ▾";
+/* ------------------------------------------------------------------- chrome
+   Settings, tabs and the pool drawer. All three exist for the same reason: the
+   squad is the view now, and everything that used to sit permanently beside it
+   is a keystroke away instead of competing with it for the first screen. */
+let settingsOpen = false, moreOpen = false;
+
+function renderChrome() {
+  $("#settingsRow").classList.toggle("hidden", !settingsOpen);
+  // The extra rows are inside settings, so they can only be open when it is.
+  $("#moreRow").classList.toggle("hidden", !(settingsOpen && moreOpen));
+  $("#benchRow").classList.toggle("hidden", !(settingsOpen && moreOpen));
+  $("#settingsBtn").setAttribute("aria-expanded", String(settingsOpen));
+  $("#settingsBtn").textContent = settingsOpen ? "Settings ▴" : "Settings ▾";
+  $("#moreBtn").setAttribute("aria-expanded", String(moreOpen));
+  $("#moreBtn").textContent = moreOpen ? "Fewer options ▴" : "More options ▾";
+}
+
+const TABS = ["squad", "analysis", "drafts"];
+
+function setTab(name) {
+  if (!TABS.includes(name)) name = "squad";
+  S.tab = name;
+  for (const tab of TABS) {
+    $(`#panel-${tab}`).hidden = tab !== name;
+  }
+  document.querySelectorAll(".tab[data-tab]").forEach((b) =>
+    b.setAttribute("aria-selected", String(b.dataset.tab === name)));
+  // An SVG laid out against a hidden container is laid out against nothing, so
+  // the charts are drawn when their tab appears rather than while it is away.
+  // Guarded on the pool, because tabs are restored from settings before the
+  // snapshot has landed and there is nothing to draw yet.
+  if (name === "analysis" && S.meta) { renderGwChart(); renderExposure(); renderTimeline(); }
+}
+
+/** Open the pool over the board. `pos` pre-filters it, which is what makes an
+ *  empty slot on the pitch a shortcut rather than just another way in. */
+function openPool(pos = null) {
+  if (pos && pos !== S.pos) { setPosFilter(pos); renderPool(); saveSettings(); }
+  $("#poolDrawer").classList.add("open");
+  $("#poolDrawer").setAttribute("aria-hidden", "false");
+  $("#scrim").classList.remove("hidden");
+  $("#search").focus({ preventScroll: true });
+}
+
+function closePool() {
+  $("#poolDrawer").classList.remove("open");
+  $("#poolDrawer").setAttribute("aria-hidden", "true");
+  if (!$("#drawer").classList.contains("open") && !versusOpen()) {
+    $("#scrim").classList.add("hidden");
+  }
+}
+
+const poolOpen = () => $("#poolDrawer").classList.contains("open");
+
+/* Which figures ride on a shirt. Up to three, chosen rather than fixed: the
+   first gets a bar of its own and the other two share a row beneath it, so the
+   order of selection is the order they appear. Rendered from the metric table
+   rather than written out in the markup, so adding a metric is one entry in
+   pitch.mjs and not three places that have to agree. */
+function renderMetricBar() {
+  $("#metricBar").innerHTML = METRIC_KEYS.map((key) => `
+    <button data-metric="${key}" aria-pressed="${S.metrics.includes(key)}"
+            title="${METRICS[key].head}">${METRICS[key].label}</button>`).join("");
+  const [lead, ...rest] = S.metrics;
+  $("#metricHint").textContent = rest.length
+    ? `${METRICS[lead].label} large, then ${rest.map((k) => METRICS[k].label).join(" and ")}`
+    : `${METRICS[lead].label} only — pick up to ${MAX_METRICS}`;
+}
+
+/** Toggle one metric on or off, keeping the list legal: at least one, never
+    more than three, always in the bar's own order. Asking for a fourth drops
+    the oldest rather than refusing, which is what a person means by clicking
+    it. */
+function toggleMetric(key) {
+  const has = S.metrics.includes(key);
+  let next = has ? S.metrics.filter((k) => k !== key) : [...S.metrics, key];
+  if (!next.length) next = [key];
+  if (next.length > MAX_METRICS) next = next.slice(next.length - MAX_METRICS);
+  S.metrics = cleanMetrics(next);
 }
 
 /** Every value label next to a slider, rewritten from the slider itself, so
@@ -1038,8 +1495,9 @@ function readSettings() {
     bench: Object.fromEntries(BENCH_KEYS.map((k) => [k, $(`#bw_${k}`).value])),
     benchTouched,
     theme: document.documentElement.getAttribute("data-theme") || "",
-    moreOpen: !$("#moreRow").classList.contains("hidden"),
+    settingsOpen, moreOpen,
     views: { ...S.views },
+    tab: S.tab, metrics: [...S.metrics], compareWith: S.compareWith,
     pos: S.pos, sort: S.sort, dir: S.dir,
     include: [...S.include], exclude: [...S.exclude],
   };
@@ -1068,7 +1526,13 @@ function applySettings(saved) {
       if (saved.bench[k] != null) $(`#bw_${k}`).value = saved.bench[k];
     }
   }
-  if (saved.moreOpen) showMoreOptions(true);
+  settingsOpen = !!saved.settingsOpen;
+  moreOpen = !!saved.moreOpen;
+  renderChrome();
+  if (saved.metrics || saved.metric) S.metrics = cleanMetrics(saved.metrics || saved.metric);
+  if (typeof saved.compareWith === "string") S.compareWith = saved.compareWith;
+  renderMetricBar();
+  setTab(saved.tab || "squad");
   for (const [which, mode] of Object.entries(saved.views || {})) setView(which, mode);
   if (saved.pos) setPosFilter(saved.pos);
   if (saved.sort) { S.sort = saved.sort; S.dir = saved.dir === 1 ? 1 : -1; }
@@ -1092,7 +1556,11 @@ function restoreDefaults() {
   S.search = ""; $("#search").value = "";
   S.sort = "xpts_plan"; S.dir = -1; markSortedHeader();
   for (const which of Object.keys(VIEW_PANES)) setView(which, "chart");
-  showMoreOptions(false);
+  settingsOpen = moreOpen = false;
+  renderChrome();
+  S.metrics = ["xpts", "xppg", "price"]; renderMetricBar();
+  S.compareWith = "optimal"; S.versus = [];
+  setTab("squad");
   renderControlValues();
   try { localStorage.removeItem(STORE.settings); } catch (_) { /* private mode */ }
   clampHorizon();
@@ -1270,6 +1738,8 @@ function renderPool() {
                 title="Require this player in the optimal squad" aria-label="Require ${p.name}">⊕</button>
         <button class="editbtn ${S.exclude.includes(p.id) ? "off" : ""}" data-ban="${p.id}"
                 title="Bar this player from the optimal squad" aria-label="Bar ${p.name}">⊘</button>
+        <button class="editbtn ${S.versus.includes(p.id) ? "on" : ""}" data-vs="${p.id}"
+                title="Compare this player head to head" aria-label="Compare ${p.name}">⇄</button>
         <span>${p.name}</span>${flags.join("")}
       </div></td>
       <td>${p.pos}</td><td>${p.team_short}</td><td>${fmt(p.price, 1)}</td>
@@ -1283,49 +1753,47 @@ function renderPool() {
   $("#poolcount").textContent = `${rows.length} shown`;
 }
 
+/* Captain and vice are the XI's two best plan-weighted players — the same rule
+   the projection already applies when it doubles the top score, said out loud on
+   the shirt. Vice is not free information: it is who the double falls to when
+   the captain does not play, which is a reason to look at the fixture beside it. */
+function captaincy(ids) {
+  const ranked = planXI(ids).ids
+    .map((id) => S.byId.get(id))
+    .filter(Boolean)
+    .sort((a, b) => (b.xpts_plan || 0) - (a.xpts_plan || 0));
+  return { captain: ranked[0]?.id ?? null, vice: ranked[1]?.id ?? null };
+}
+
 function renderSquad() {
-  const box = $("#slots");
-  box.innerHTML = "";
-  const xi = new Set(planXI(S.squad).ids);
-  const order = benchSlots(S.squad);
-  let captain = null, bestPts = -1;
-  for (const id of xi) {
-    const p = S.byId.get(id);
-    if ((p.xpts_plan || 0) > bestPts) { bestPts = p.xpts_plan; captain = id; }
+  const layout = squadLayout({
+    ids: S.squad, lookup: S.byId, need: S.meta.squad_by_pos,
+    xiIds: planXI(S.squad).ids, benchOrder: benchSlots(S.squad),
+  });
+  const { captain, vice } = captaincy(S.squad);
+
+  // A player the other pitch does not want is marked here too, so the diff reads
+  // from either side rather than only from the solver's.
+  const other = comparisonSquad();
+  const tags = {};
+  if (other && other.ids.length && S.squad.length) {
+    const theirs = new Set(other.ids);
+    for (const id of S.squad) if (!theirs.has(id)) tags[id] = { kind: "out", text: "out" };
   }
 
-  for (const pos of POS_ORDER) {
-    const need = S.meta.squad_by_pos[pos];
-    const mine = S.squad.map((id) => S.byId.get(id)).filter((p) => p.pos === pos)
-      .sort((a, b) => (b.xpts_plan || 0) - (a.xpts_plan || 0));
-    const head = document.createElement("div");
-    head.className = "grouplabel";
-    head.textContent = `${pos} · ${mine.length}/${need}`;
-    box.appendChild(head);
+  const box = $("#squadPitch");
+  box.innerHTML = pitchHTML({
+    layout, teams: S.snapshot?.teams, metrics: S.metrics,
+    captain, vice, tags, remove: true, versus: true,
+  });
+  wireShirts(box);
+  markVersus(box);
 
-    for (const p of mine) {
-      const row = document.createElement("div");
-      row.className = "slot";
-      const role = id2role(p.id, xi, captain, order);
-      row.innerHTML = `
-        <span class="badge ${role === "C" ? "c" : ""}">${role}</span>
-        <span class="nm">${p.name} <span class="sub">${p.team_short}</span></span>
-        <span class="pts" title="expected clean sheets over the horizon">${fmt(p.cs, 1)}cs</span>
-        <span class="pts">£${fmt(p.price, 1)}</span>
-        <span class="last" title="${p.ppg ? "points per game last season" : "no games last season"}">${p.ppg ? fmt(p.ppg, 1) : "—"}</span>
-        <span class="ppg" title="projected points per match, ${p.games} game${p.games === 1 ? "" : "s"} over the horizon">${fmt(p.xppg, 2)}</span>
-        <span class="pts" title="plan-weighted total over the horizon">${fmt(p.xpts_plan, 1)}</span>
-        <button class="editbtn" data-edit="${p.id}" title="Edit stats" aria-label="Edit ${p.name}">✎</button>
-        <button class="rm" data-rm="${p.id}" aria-label="Remove ${p.name}">×</button>`;
-      box.appendChild(row);
-    }
-    for (let i = mine.length; i < need; i++) {
-      const row = document.createElement("div");
-      row.className = "slot empty";
-      row.textContent = `empty ${pos} slot`;
-      box.appendChild(row);
-    }
-  }
+  $("#shapeTag").textContent = layout.complete
+    ? `${layout.shape} · ${S.squad.length}/15`
+    : `${S.squad.length}/15 picked`;
+  $("#sideMinePts").textContent = S.squad.length ? fmt(squadTotal(S.squad), 1) : "—";
+  $("#sideMineCost").textContent = "£" + fmt(squadCost(S.squad), 1);
 
   const v = validity(S.squad);
   const budget = +$("#budget").value;
@@ -1333,6 +1801,12 @@ function renderSquad() {
   const meter = $("#budMeter");
   meter.classList.toggle("over", v.cost > budget);
   meter.firstElementChild.style.width = Math.min(100, (v.cost / budget) * 100) + "%";
+  // What is left, which is the number you buy the next player with -- and the
+  // one the cost alone makes you do arithmetic for.
+  const bank = budget - v.cost;
+  $("#tBank").textContent = S.squad.length
+    ? (bank < 0 ? `£${fmt(-bank, 1)}m over budget` : `£${fmt(bank, 1)}m in the bank`)
+    : `£${fmt(budget, 1)}m to spend`;
 
   const total = squadTotal(S.squad);
   const hero = $("#heroPts");
@@ -1363,7 +1837,7 @@ function renderSquad() {
   const list = $("#issues");
   list.innerHTML = "";
   if (!S.squad.length) {
-    list.innerHTML = `<div class="issue" style="color:var(--muted)"><span class="ico">·</span><span>Add players from the pool, or copy the optimal squad across and edit it.</span></div>`;
+    list.innerHTML = `<div class="issue" style="color:var(--muted)"><span class="ico">·</span><span>Tap an empty shirt to pick for that position, or copy the optimal squad across and argue with it.</span></div>`;
   } else if (!v.issues.length) {
     list.innerHTML = `<div class="issue ok"><span class="ico">✓</span><span>Legal squad — 15 players, budget and club limits satisfied.</span></div>`;
   } else {
@@ -1650,9 +2124,17 @@ function renderTimeline() {
 }
 
 function renderAll() {
-  renderPool(); renderSquad(); renderOptimal(); renderConstraints();
+  // Order matters once: the squad pitch marks its own players against whatever
+  // the comparison holds, so the picker has to be settled before it draws.
+  renderCompareOptions();
+  renderPool(); renderSquad(); renderCompare(); renderConstraints();
   renderLineup();
-  renderDrafts(); renderGwChart(); renderExposure(); renderTimeline();
+  renderDrafts();
+  $("#tabDraftCount").textContent = S.drafts.length ? String(S.drafts.length) : "";
+  // The charts are the one part that cannot be drawn out of sight: an SVG sized
+  // against a hidden container has no width to size against. setTab draws them
+  // when the tab appears, so here they are drawn only if it already has.
+  if (S.tab === "analysis") { renderGwChart(); renderExposure(); renderTimeline(); }
 }
 
 /* ------------------------------------------------------------- constraints
@@ -1817,7 +2299,8 @@ async function deleteDraft(name) {
   try {
     await api(`/api/drafts/${encodeURIComponent(name)}`, { method: "DELETE" });
   } catch (_) { /* offline; it is gone here, and stays gone locally */ }
-  renderDrafts(); renderGwChart();
+  if (S.compareWith === `draft:${name}`) S.compareWith = "optimal";
+  renderDrafts(); renderSquad(); renderCompare(); renderGwChart();
 }
 
 function loadDraft(name) {
@@ -1840,7 +2323,12 @@ function toggleCompare(name) {
   renderDrafts(); renderGwChart();
 }
 
+/* Saved drafts are also candidates for the right-hand pitch, so the picker is
+   rebuilt whenever the list changes rather than only on a full render --
+   otherwise a draft you just saved cannot be compared against until something
+   else happens to redraw the board. */
 function renderDrafts() {
+  renderCompareOptions();
   // The drafts list and the pool are fetched in parallel and the drafts always
   // win, being a small local file against a projection. Scoring a draft needs
   // the pool's rules, so on a cold server this ran first and threw; loadPool's
@@ -1982,7 +2470,10 @@ function closeEditor() {
   editingId = null;
   editBuffer = {};
   $("#drawer").classList.remove("open");
-  $("#scrim").classList.add("hidden");
+  // The pool or the comparison can be open underneath — a player is usually
+  // edited on the way to deciding whether to buy him — so the scrim belongs to
+  // whichever is left rather than to whoever closed last.
+  if (!poolOpen() && !versusOpen()) $("#scrim").classList.add("hidden");
 }
 
 /* --------------------------------------------------------------- explain ---
@@ -2005,7 +2496,8 @@ function renderExplain() {
   let x;
   try {
     x = explainPlayer(S.snapshot, S.snapshot.players.find((r) => r.id === editingId),
-      tidy(editBuffer), { horizon: +$("#horizon").value, halfLife: +$("#halflife").value });
+      scoringEdit(p, editBuffer),
+      { horizon: +$("#horizon").value, halfLife: +$("#halflife").value });
   } catch {
     box.innerHTML = `<p class="exnote">Cannot break these points down right now.</p>`;
     return;
@@ -2086,6 +2578,44 @@ function teamsInPool() {
   return [...new Set(S.players.map((p) => p.team))].sort();
 }
 
+/* The club as a pitch: the eleven it is likeliest to field, in a legal shape,
+   with the next four beneath. Same renderer as a squad, because it is the same
+   question asked of a different fifteen -- and expected minutes is exactly the
+   sort of thing a column of numbers hides and a shape does not.
+
+   Ranked on start probability rather than points: this is who plays, not who
+   scores. `bestXI` enumerates the same formations the optimiser is allowed, so
+   the shape on screen is one a manager could actually field. */
+function renderLineupPitch(line) {
+  const host = $("#lineupPitch");
+  const ids = line.players.map((p) => p.id);
+  const xi = bestXI(ids, (p) => p.p_start || 0);
+  if (!xi.ids.length) { host.innerHTML = ""; return; }
+
+  const chosen = new Set(xi.ids);
+  const next = line.players.filter((p) => !chosen.has(p.id))
+    .sort((a, b) => (b.p_start || 0) - (a.p_start || 0));
+  const keeper = next.find((p) => p.pos === "GKP");
+  const outfield = next.filter((p) => p.pos !== "GKP").slice(0, 3);
+  const bench = [keeper, ...outfield].filter(Boolean);
+  const benchOrder = {};
+  if (keeper) benchOrder[keeper.id] = "GKP";
+  outfield.forEach((p, i) => { benchOrder[p.id] = String(i + 1); });
+
+  const layout = squadLayout({
+    ids: [...xi.ids, ...bench.map((p) => p.id)], lookup: S.byId,
+    need: S.meta.squad_by_pos, xiIds: xi.ids, benchOrder,
+  });
+  // Fixed, and not the squad's metrics: this section is about who plays and for
+  // how long, so those lead whatever you happen to be reading a squad by.
+  const metrics = ["start", "mins", "xppg"];
+  host.innerHTML = pitchHTML({
+    layout, teams: S.snapshot?.teams, metrics, versus: true, benchLabels: false,
+  });
+  wireShirts(host);
+  markVersus(host);
+}
+
 function renderLineup() {
   const box = $("#lineupBox"), select = $("#lineupTeam");
   if (!S.players?.length) { box.innerHTML = ""; return; }
@@ -2105,8 +2635,13 @@ function renderLineup() {
   select.value = lineupTeam ?? "";
   $("#lineupEdited").setAttribute("aria-pressed", String(lineupOnlyEdited));
 
-  if (!lineupTeam) { box.innerHTML = `<p class="lineupfoot">No clubs to show.</p>`; return; }
+  if (!lineupTeam) {
+    box.innerHTML = `<p class="lineupfoot">No clubs to show.</p>`;
+    $("#lineupPitch").innerHTML = "";
+    return;
+  }
   const line = clubLineup(S.players, lineupTeam);
+  renderLineupPitch(line);
 
   // A club fields eleven. Say so plainly when the overrides in force do not.
   const off = line.starters - 11;
@@ -2319,7 +2854,7 @@ async function sendAsk(question) {
    in — the season-level buffer, or one gameweek's — so the same code renders
    both and they cannot drift in behaviour. `idPrefix` keeps element ids unique
    once the same field appears twelve times over. */
-function renderField(box, f, base, store, idPrefix, onChange) {
+function renderField(box, f, base, store, idPrefix, onChange, hint = "") {
   const value = store[f.k] !== undefined ? store[f.k] : base;
   const changed = store[f.k] !== undefined && Math.abs(store[f.k] - base) > 1e-9;
   const rid = `${idPrefix}${f.k}`, nid = `${idPrefix}n_${f.k}`;
@@ -2328,7 +2863,7 @@ function renderField(box, f, base, store, idPrefix, onChange) {
   div.innerHTML = `
     <div class="row">
       <label for="${rid}">${f.label}</label>
-      <span class="orig">${idPrefix === "ed_" ? "model" : "season"}: ${base.toFixed(f.dp)}</span>
+      <span class="orig">${hint || `${idPrefix === "ed_" ? "model" : "season"}: ${base.toFixed(f.dp)}`}</span>
     </div>
     <div class="inp">
       <input type="range" id="${rid}" min="${f.min}" max="${f.max}" step="${f.step}" value="${value}">
@@ -2353,6 +2888,25 @@ function renderField(box, f, base, store, idPrefix, onChange) {
 }
 
 /** Fields that mean something for this player, with the model's value. */
+/* The one field the club rebalance moves on its own. Overriding a team-mate's
+   minutes takes minutes off everyone else at that club, and the board scores,
+   lists and draws the player at the moved value -- so the editor has to open on
+   the moved value too. It did not, and a shirt reading 0.31 next to a slider
+   reading 0.49 is the board contradicting itself about the number that matters
+   most. */
+const REBALANCED_FIELD = "p_start";
+
+/** The overrides this player is actually being scored with: yours, plus the
+ *  start probability his club's books owe him. `renormaliseMinutes` produced it;
+ *  everything in the drawer has to agree with it. */
+function scoringEdit(player, buffer) {
+  const edit = tidy(buffer || {});
+  if (player?.adjusted && edit[REBALANCED_FIELD] === undefined) {
+    edit[REBALANCED_FIELD] = player[REBALANCED_FIELD];
+  }
+  return edit;
+}
+
 function editableFields(player) {
   const out = [];
   for (const f of EDIT_FIELDS) {
@@ -2363,6 +2917,14 @@ function editableFields(player) {
     let base = player.inputs?.[f.k];
     if ((base === null || base === undefined) && f.k === "penalties_order") base = 0;
     if (base === null || base === undefined) continue;
+    // An adjusted player opens on what he is being scored at, with the model's
+    // own figure kept beside it -- the slider is the live value, and the note
+    // says where it came from.
+    if (f.k === REBALANCED_FIELD && player.adjusted) {
+      out.push({ f, base: player[f.k],
+                 hint: `rebalanced from ${base.toFixed(f.dp)}` });
+      continue;
+    }
     out.push({ f, base });
   }
   return out;
@@ -2372,8 +2934,9 @@ function renderEditorFields() {
   const p = S.byId.get(editingId);
   const box = $("#edFields");
   box.innerHTML = "";
-  for (const { f, base } of editableFields(p)) {
-    renderField(box, f, base, editBuffer, "ed_", () => { previewEdit(); renderMatches(); });
+  for (const { f, base, hint } of editableFields(p)) {
+    renderField(box, f, base, editBuffer, "ed_",
+                () => { previewEdit(); renderMatches(); }, hint);
   }
 }
 
@@ -2505,7 +3068,7 @@ function previewEdit() {
     let r;
     try {
       checkOverridable(editBuffer, S.snapshot);
-      r = editPlayer(S.snapshot, editingId, tidy(editBuffer),
+      r = editPlayer(S.snapshot, editingId, scoringEdit(p, editBuffer),
         { horizon: +$("#horizon").value, halfLife: +$("#halflife").value });
     } catch (error) {
       $("#edPts").innerHTML = `<span class="down">${error.message}</span>`;
@@ -2804,7 +3367,7 @@ async function solveOptimal() {
     S.optimalState = "error";
     S.optimalError = String(error.message || error);
     S.optimal = []; S.optimalPts = null; S.optimalCost = null; S.optimalBench = {};
-    renderOptimal(); renderSquad(); renderGwChart();
+    renderCompare(); renderSquad(); renderGwChart();
     return;
   }
   if (seq !== solveSeq) return;
@@ -2815,7 +3378,7 @@ async function solveOptimal() {
   S.optimalCost = data.cost;
   S.optimalSolveMs = data.ms;
   S.optimalState = "ready";
-  renderOptimal();
+  renderCompare();
   renderSquad();
   renderGwChart();
 }
@@ -2872,122 +3435,364 @@ const optDiff = () => {
 
 function renderOptStatus() {
   const box = $("#optStatus");
-  box.classList.toggle("err", S.optimalState === "error");
-  box.textContent = {
+  const showing = S.compareWith === "optimal";
+  box.classList.toggle("err", showing && S.optimalState === "error");
+  box.textContent = !showing ? "" : {
     idle: "", pending: "settings changed…", solving: "solving…",
     ready: "up to date", error: "no solution",
   }[S.optimalState] || "";
-  $("#optSlots").classList.toggle("pending", S.optimalState !== "ready");
+  $("#comparePitch").classList.toggle("pending", showing && S.optimalState !== "ready");
   const ready = S.optimal.length === 15;
-  $("#optCopy").disabled = !ready;
+  $("#optResolve").disabled = !showing;
   $("#optimise").disabled = !ready;
+  // How far your squad is from the solver's, on the tab, so it is visible from
+  // whichever section you happen to be reading.
+  const diff = ready ? optDiff() : null;
+  $("#tabOptCount").textContent =
+    !diff || !S.squad.length ? "" : diff.incoming.length ? String(diff.incoming.length) : "✓";
 }
 
-function renderOptimal() {
+/* The settings the solver's answer is an answer *to*. The controls that
+   produced it are behind a button, and a squad with no statement of what it was
+   optimised for is a squad you have to take on trust. */
+function optSettingsText() {
+  const bits = [
+    `${$("#horizon").value} gameweeks`,
+    `£${(+$("#budget").value).toFixed(1)}m`,
+    `half-life ${(+$("#halflife").value).toFixed(1)}`,
+    `max ${$("#maxclub").value}/club`,
+  ];
+  if (+$("#ownw").value) bits.push(`template tilt ${(+$("#ownw").value).toFixed(2)}`);
+  if ($("#formation").value) bits.push($("#formation").value);
+  if (S.include.length) bits.push(`${S.include.length} required`);
+  if (S.exclude.length) bits.push(`${S.exclude.length} barred`);
+  return "Solved for: " + bits.join(" · ");
+}
+
+/* ------------------------------------------------------------ the other squad
+   The right-hand pitch. It is the solver's answer by default, because that is
+   the comparison the board exists to make, but any saved draft can take its
+   place -- the interesting question is often "is this better than the one I had
+   yesterday?", and that used to be answerable only through a line chart. */
+function comparisonSquad() {
+  if (S.compareWith === "none") return null;
+  if (S.compareWith.startsWith("draft:")) {
+    const name = S.compareWith.slice(6);
+    const draft = S.drafts.find((d) => d.name === name);
+    if (!draft) return null;
+    const ids = draft.squad.filter((id) => S.byId.has(id));
+    return { ids, label: draft.name, kind: "draft",
+             bench: benchSlots(ids), cost: ids.reduce((a, id) => a + S.byId.get(id).price, 0) };
+  }
+  return { ids: S.optimal, label: "Optimal squad", kind: "optimal",
+           bench: S.optimalBench,
+           cost: S.optimalCost ?? S.optimal.reduce((a, id) => a + (S.byId.get(id)?.price || 0), 0) };
+}
+
+/** The picker above the right pitch: the solver, every draft you have saved,
+    and the option of no second squad at all on a narrow screen. */
+function renderCompareOptions() {
+  const select = $("#compareWith");
+  const options = [
+    ["optimal", "Optimal squad"],
+    ...S.drafts.map((d) => [`draft:${d.name}`, d.name]),
+    ["none", "Nothing — one pitch"],
+  ];
+  const wanted = options.some(([v]) => v === S.compareWith) ? S.compareWith : "optimal";
+  S.compareWith = wanted;
+  select.innerHTML = options.map(([value, label]) =>
+    `<option value="${value}"${value === wanted ? " selected" : ""}>${label}</option>`).join("");
+}
+
+const squadCost = (ids) => ids.reduce((a, id) => a + (S.byId.get(id)?.price || 0), 0);
+
+function renderCompare() {
+  renderCompareOptions();
   renderOptStatus();
-  const box = $("#optSlots");
+  const box = $("#comparePitch");
   box.innerHTML = "";
+  $("#optSettings").textContent = S.compareWith === "optimal" ? optSettingsText() : "";
 
-  if (S.optimalState === "error") {
-    $("#optPts").className = "hero empty"; $("#optPts").textContent = "no legal squad";
-    $("#optDelta").textContent = ""; $("#optCost").textContent = "—";
-    $("#optChanges").textContent = "—";
+  const other = comparisonSquad();
+  $("#pitchPair").classList.toggle("solo", !other);
+  $("#compareSide").hidden = !other;
+  $("#swapCard").hidden = !other;
+  $("#optCopy").disabled = !other || other.ids.length !== 15;
+
+  if (!other) { renderSwap(null); return; }
+
+  if (S.compareWith === "optimal" && S.optimalState === "error") {
+    $("#optShapeTag").textContent = "—";
+    $("#sideThemPts").textContent = "—"; $("#sideThemCost").textContent = "";
     box.innerHTML = `<div class="issue bad"><span class="ico">!</span><span>${S.optimalError}</span></div>`;
+    renderSwap(null);
     return;
   }
-  if (!S.optimal.length) {
-    $("#optPts").className = "hero empty"; $("#optPts").textContent = "—";
-    $("#optDelta").textContent = ""; $("#optCost").textContent = "—";
-    $("#optChanges").textContent = "—";
+  if (!other.ids.length) {
+    $("#optShapeTag").textContent = "—";
+    $("#sideThemPts").textContent = "—"; $("#sideThemCost").textContent = "";
+    renderSwap(null);
     return;
   }
 
-  const total = S.optimalPts || 0;
-  $("#optPts").className = "hero";
-  $("#optPts").textContent = fmt(total, 1);
-  $("#optCost").textContent = "£" + fmt(S.optimalCost, 1);
-
-  const mineTotal = squadTotal(S.squad);
-  const diff = optDiff();
-  const delta = $("#optDelta");
-  if (S.squad.length === 15) {
-    const gain = total - mineTotal;
-    if (gain > 0.05) {
-      delta.className = "delta up"; delta.style.color = "";
-      delta.textContent = `+${gain.toFixed(1)} more than your draft`;
-    } else if (gain < -0.05) {
-      // The solver never loses to a legal squad under the same settings, so a
-      // draft that scores more is a draft that breaks one of them -- almost
-      // always the budget. Say which rather than implying the solver was beaten.
-      delta.className = "delta"; delta.style.color = "var(--critical)";
-      delta.textContent = `your draft scores ${(-gain).toFixed(1)} more — it breaks a rule the solver kept`;
-    } else {
-      delta.className = "delta"; delta.style.color = "var(--muted)";
-      delta.textContent = "your draft already matches it";
-    }
-  } else {
-    delta.className = "delta"; delta.style.color = "var(--muted)";
-    delta.textContent = "finish your draft to compare";
-  }
-  $("#optChanges").textContent = !S.squad.length ? "—"
-    : diff.incoming.length ? `${diff.incoming.length} in / ${diff.outgoing.length} out`
-    : "none";
-
-  const xi = new Set(planXI(S.optimal).ids);
-  let captain = null, bestPts = -1;
-  for (const id of xi) {
-    const p = S.byId.get(id);
-    if ((p.xpts_plan || 0) > bestPts) { bestPts = p.xpts_plan; captain = id; }
-  }
   // With nothing drafted there is nothing to diff against, and marking all
   // fifteen as incoming says only "this squad exists".
-  const diffing = S.squad.length > 0;
   const mine = new Set(S.squad);
-
-  for (const pos of POS_ORDER) {
-    const members = S.optimal.map((id) => S.byId.get(id)).filter((p) => p && p.pos === pos)
-      .sort((a, b) => (b.xpts_plan || 0) - (a.xpts_plan || 0));
-    const head = document.createElement("div");
-    head.className = "grouplabel";
-    head.textContent = pos;
-    box.appendChild(head);
-
-    for (const p of members) {
-      const isNew = diffing && !mine.has(p.id);
-      const row = document.createElement("div");
-      row.className = "slot" + (isNew ? " isnew" : "");
-      const role = id2role(p.id, xi, captain, S.optimalBench);
-      row.innerHTML = `
-        <span class="badge ${role === "C" ? "c" : ""}">${role}</span>
-        <span class="nm">${p.name} <span class="sub">${p.team_short}</span></span>
-        ${isNew ? `<span class="tag in">in</span>` : ""}
-        <span class="pts">£${fmt(p.price, 1)}</span>
-        <span class="ppg" title="projected points per match">${fmt(p.xppg, 2)}</span>
-        <span class="pts" title="plan-weighted total">${fmt(p.xpts_plan, 1)}</span>
-        ${isNew ? `<button class="swap" data-swap="${p.id}"
-             title="Bring ${p.name} into your draft" aria-label="Swap ${p.name} into your draft">→</button>`
-          : `<span class="swap" style="visibility:hidden">→</span>`}`;
-      box.appendChild(row);
-    }
-
-    // Players you hold that the solver dropped, listed under the position they
-    // came from so the trade is legible in one place.
-    for (const id of diff.outgoing) {
-      const p = S.byId.get(id);
-      if (!p || p.pos !== pos) continue;
-      const row = document.createElement("div");
-      row.className = "slot isgone";
-      row.innerHTML = `
-        <span class="badge">—</span>
-        <span class="nm">${p.name} <span class="sub">${p.team_short}</span></span>
-        <span class="tag out">out</span>
-        <span class="pts">£${fmt(p.price, 1)}</span>
-        <span class="ppg">${fmt(p.xppg, 2)}</span>
-        <span class="pts">${fmt(p.xpts_plan, 1)}</span>
-        <span class="swap" style="visibility:hidden">→</span>`;
-      box.appendChild(row);
-    }
+  const tags = {};
+  if (S.squad.length) {
+    for (const id of other.ids) if (!mine.has(id)) tags[id] = { kind: "in", text: "in" };
   }
+
+  const layout = squadLayout({
+    ids: other.ids, lookup: S.byId, need: S.meta.squad_by_pos,
+    xiIds: planXI(other.ids).ids, benchOrder: other.bench,
+  });
+  const { captain, vice } = captaincy(other.ids);
+  box.innerHTML = pitchHTML({
+    layout, teams: S.snapshot?.teams, metrics: S.metrics,
+    captain, vice, tags, swap: true, versus: true,
+  });
+  wireShirts(box);
+  markVersus(box);
+
+  $("#optShapeTag").textContent = layout.shape || `${other.ids.length}/15`;
+  const total = S.compareWith === "optimal" && S.optimalPts !== null
+    ? S.optimalPts : squadTotal(other.ids);
+  $("#sideThemPts").textContent = other.ids.length ? fmt(total, 1) : "—";
+  $("#sideThemCost").textContent = "£" + fmt(other.cost ?? squadCost(other.ids), 1);
+
+  renderSwap(other);
+}
+
+/* The trade, priced. Outs and ins are paired by position and then by rank
+   within it, because that is the swap you would actually make: the defender you
+   drop is replaced by a defender, and pairing them puts the two numbers that
+   decide it on one line instead of in two lists. */
+function renderSwap(other) {
+  const box = $("#swapBox");
+  if (!other || !other.ids.length) {
+    box.innerHTML = `<div class="empty-note">Pick a squad to compare against.</div>`;
+    $("#swapTitle").textContent = "The difference";
+    $("#swapNote").textContent = "";
+    return;
+  }
+  if (!S.squad.length) {
+    box.innerHTML = `<div class="empty-note">Draft a squad, or copy this one across,
+      and every change between the two will be priced here.</div>`;
+    $("#swapTitle").textContent = `${other.label} — nothing to compare yet`;
+    $("#swapNote").textContent = "";
+    return;
+  }
+
+  const mine = new Set(S.squad), theirs = new Set(other.ids);
+  const rank = (p) => POS_ORDER.indexOf(p.pos);
+  const byPos = (a, b) => rank(a) - rank(b) || (b.xpts_plan || 0) - (a.xpts_plan || 0);
+  const outs = S.squad.filter((id) => !theirs.has(id)).map((id) => S.byId.get(id))
+    .filter(Boolean).sort(byPos);
+  const ins = other.ids.filter((id) => !mine.has(id)).map((id) => S.byId.get(id))
+    .filter(Boolean).sort(byPos);
+
+  $("#swapTitle").textContent = outs.length || ins.length
+    ? `${ins.length} in, ${outs.length} out vs ${other.label}`
+    : `Identical to ${other.label}`;
+  $("#swapNote").textContent = outs.length || ins.length
+    ? "Paired by position — the swap you would actually make."
+    : "Same fifteen players.";
+
+  if (!outs.length && !ins.length) {
+    box.innerHTML = `<div class="issue ok"><span class="ico">✓</span><span>The two squads
+      hold the same fifteen players.</span></div>`;
+    return;
+  }
+
+  // Pair within a position, longest side first, so nothing is dropped from the
+  // table when the two squads have different shapes.
+  const pairs = [];
+  const pool = [...ins];
+  for (const out of outs) {
+    const match = pool.findIndex((p) => p.pos === out.pos);
+    pairs.push({ out, in: match >= 0 ? pool.splice(match, 1)[0] : null });
+  }
+  for (const left of pool) pairs.push({ out: null, in: left });
+  pairs.sort((a, b) => rank(a.out || a.in) - rank(b.out || b.in));
+
+  const cell = (p, kind) => p
+    ? `<span class="who"><span class="dirtag ${kind}">${kind}</span>
+         <b>${p.name}</b> <span class="sub">${p.team_short}</span></span>`
+    : `<span class="sub">—</span>`;
+  const delta = (value, digits = 1) => {
+    if (!isFinite(value)) return `<span class="sub">—</span>`;
+    const cls = value > 0.049 ? "gain" : value < -0.049 ? "loss" : "";
+    const sign = value > 0 ? "+" : "";
+    return `<span class="${cls}">${sign}${value.toFixed(digits)}</span>`;
+  };
+  const num = (p, pick, digits) => p ? fmt(pick(p), digits) : "—";
+
+  const rows = pairs.map((pair) => {
+    const gainPts = (pair.in?.xpts_plan || 0) - (pair.out?.xpts_plan || 0);
+    const gainCost = (pair.in?.price || 0) - (pair.out?.price || 0);
+    return `<tr>
+      <td>${cell(pair.out, "out")}</td>
+      <td>${cell(pair.in, "in")}</td>
+      <td>${num(pair.out, (p) => p.xpts_plan, 1)} → ${num(pair.in, (p) => p.xpts_plan, 1)}</td>
+      <td>${delta(gainPts)}</td>
+      <td>${num(pair.out, (p) => p.xppg, 2)} → ${num(pair.in, (p) => p.xppg, 2)}</td>
+      <td>£${num(pair.out, (p) => p.price, 1)} → £${num(pair.in, (p) => p.price, 1)}</td>
+      <td>${delta(gainCost)}</td>
+    </tr>`;
+  }).join("");
+
+  const sum = (list, pick) => list.reduce((a, p) => a + (pick(p) || 0), 0);
+  const totalPts = sum(ins, (p) => p.xpts_plan) - sum(outs, (p) => p.xpts_plan);
+  const totalCost = sum(ins, (p) => p.price) - sum(outs, (p) => p.price);
+
+  box.innerHTML = `
+    <div class="chartbox">
+      <table class="swaptable">
+        <thead><tr>
+          <th>Out of yours</th><th>In from ${other.label}</th>
+          <th>xPts</th><th>Δ xPts</th><th>xPPG</th><th>Price</th><th>Δ £m</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr>
+          <td colspan="2">All ${pairs.length} change${pairs.length === 1 ? "" : "s"}</td>
+          <td></td><td>${delta(totalPts)}</td><td></td><td></td><td>${delta(totalCost)}</td>
+        </tr></tfoot>
+      </table>
+    </div>`;
+}
+
+/* ------------------------------------------------------------- head to head
+   `fpl.py compare`, in the browser. Two players, every number the board holds
+   on either, and the gap signed so the better one reads as the better one --
+   which for price and ownership is the smaller figure, and the table has to
+   know that or it would call the expensive player the winner every time. */
+const VS_ROWS = [
+  { label: "Position", get: (p) => p.pos, text: true },
+  { label: "Club", get: (p) => p.team, text: true },
+  { label: "Price", get: (p) => p.price, digits: 1, prefix: "£", lower: true },
+  { label: "xPts over the horizon", get: (p) => p.xpts_plan, digits: 1, lead: true },
+  { label: "xPPG, per match", get: (p) => p.xppg, digits: 2 },
+  { label: "xPts per £m", get: (p) => (p.xpts_plan || 0) / (p.price || 1), digits: 2 },
+  { label: "PPG last season", get: (p) => p.ppg, digits: 1 },
+  { label: "Minutes last season", get: (p) => p.minutes_last, digits: 0 },
+  { label: "Start probability", get: (p) => p.p_start, digits: 2 },
+  { label: "Expected minutes", get: (p) => p.exp_minutes, digits: 0 },
+  { label: "Expected clean sheets", get: (p) => p.cs, digits: 1 },
+  { label: "Owned by", get: (p) => p.owned, digits: 1, suffix: "%", lower: true },
+  { label: "Fixtures in the horizon", get: (p) => p.games, digits: 0 },
+];
+
+function toggleVersus(id) {
+  if (!S.byId.has(id)) return;
+  if (S.versus.includes(id)) S.versus = S.versus.filter((x) => x !== id);
+  // Two is the comparison; a third replaces the older of the pair, which is
+  // what clicking a third shirt means.
+  else S.versus = [...S.versus, id].slice(-2);
+  renderSquad(); renderCompare(); renderLineup(); renderVersus();
+  if (S.versus.length === 2) openVersus();
+}
+
+/** Mark the shirts currently being compared, wherever they are drawn. */
+function markVersus(root) {
+  for (const id of S.versus) {
+    root.querySelector(`.pcard[data-id="${id}"]`)?.classList.add("vspicked");
+  }
+}
+
+const versusOpen = () => $("#vsDrawer").classList.contains("open");
+
+function openVersus() {
+  renderVersus();
+  $("#vsDrawer").classList.add("open");
+  $("#vsDrawer").setAttribute("aria-hidden", "false");
+  $("#scrim").classList.remove("hidden");
+}
+
+function closeVersus() {
+  $("#vsDrawer").classList.remove("open");
+  $("#vsDrawer").setAttribute("aria-hidden", "true");
+  if (!poolOpen() && !$("#drawer").classList.contains("open")) {
+    $("#scrim").classList.add("hidden");
+  }
+}
+
+function renderVersus() {
+  const box = $("#vsBox");
+  const players = S.versus.map((id) => S.byId.get(id)).filter(Boolean);
+  if (players.length < 2) {
+    box.innerHTML = `<div class="empty-note">Pick the ⇄ on two shirts, or two rows in
+      the pool, and every number the board holds on both appears here.
+      ${players.length === 1 ? `<br><br>Holding <b>${players[0].name}</b> — pick one more.` : ""}
+    </div>`;
+    return;
+  }
+
+  const [a, b] = players;
+  const head = (p) => {
+    const url = shirtUrl(S.snapshot?.teams, p);
+    return `<span class="vshead">${url ? `<img src="${url}" alt="">` : ""}
+      <span><b>${p.name}</b><br><span class="sub">${p.team_short} · ${p.pos} · £${fmt(p.price, 1)}</span></span></span>`;
+  };
+
+  const rows = VS_ROWS.map((row) => {
+    const av = row.get(a), bv = row.get(b);
+    if (row.text) {
+      return `<tr><td class="lab">${row.label}</td><td>${av}</td><td>${bv}</td><td></td></tr>`;
+    }
+    const gap = (av || 0) - (bv || 0);
+    // "Better" is the bigger number except where it is the smaller one: paying
+    // less and being less owned are both wins, and a table that did not know
+    // that would bold the wrong column half the time.
+    const aBetter = row.lower ? gap < -1e-9 : gap > 1e-9;
+    const bBetter = row.lower ? gap > 1e-9 : gap < -1e-9;
+    const show = (v) => (row.prefix || "") + fmt(v, row.digits) + (row.suffix || "");
+    const sign = gap > 0 ? "+" : "";
+    return `<tr${row.lead ? ` class="lead"` : ""}>
+      <td class="lab">${row.label}</td>
+      <td class="${aBetter ? "better" : ""}">${show(av)}</td>
+      <td class="${bBetter ? "better" : ""}">${show(bv)}</td>
+      <td class="gap">${sign}${fmt(gap, row.digits)}</td>
+    </tr>`;
+  }).join("");
+
+  // The horizon, gameweek by gameweek, because two players with the same total
+  // can have it arranged very differently -- and the arrangement is what decides
+  // when you buy which.
+  const weekly = S.gameweeks.map((gw, i) => {
+    const av = a.gw[i] || 0, bv = b.gw[i] || 0;
+    const lead = av - bv;
+    return `<tr>
+      <td class="lab">GW${gw}</td>
+      <td class="${lead > 1e-9 ? "better" : ""}">${fmt(av, 1)}</td>
+      <td class="${lead < -1e-9 ? "better" : ""}">${fmt(bv, 1)}</td>
+      <td class="gap">${(a.opp || [])[i] ? shortFixture(a, i) : "—"} / ${(b.opp || [])[i] ? shortFixture(b, i) : "—"}</td>
+    </tr>`;
+  }).join("");
+
+  box.innerHTML = `
+    <table class="vstable">
+      <thead><tr><th></th><th>${head(a)}</th><th>${head(b)}</th><th>Gap</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="exsec">
+      <div class="exhead"><h4>Gameweek by gameweek</h4>
+        <span class="sub">points, and who each plays</span></div>
+      <table class="vstable"><tbody>${weekly}</tbody></table>
+    </div>
+    <div class="drawerfoot">
+      <button class="btn ghost" data-edit="${a.id}">Open ${a.name}</button>
+      <button class="btn ghost" data-edit="${b.id}">Open ${b.name}</button>
+    </div>`;
+}
+
+/* An opponent label written for a table, shortened for a cell. */
+function shortFixture(player, index) {
+  const label = (player.opp || [])[index] || "";
+  const match = /^(.*?)\s*\((H|A)\)/.exec(label);
+  if (!match) return label.slice(0, 6);
+  const short = S.snapshot?.teams?.[match[1]]?.short || match[1].slice(0, 3).toUpperCase();
+  return match[2] === "H" ? short : short.toLowerCase();
 }
 
 function copyOptimal() {
@@ -3028,20 +3833,58 @@ $("#pool").addEventListener("click", (e) => {
   if (req) return toggleConstraint(+req.dataset.req, "include");
   const ban = e.target.closest("[data-ban]");
   if (ban) return toggleConstraint(+ban.dataset.ban, "exclude");
+  const vs = e.target.closest("[data-vs]");
+  if (vs) return toggleVersus(+vs.dataset.vs);
   const add = e.target.closest("[data-id]");
   if (!add) return;
   const id = +add.dataset.id;
   if (S.squad.includes(id) || S.squad.length >= 15) return;
   S.squad.push(id);
   saveSquad(); renderAll();
+  // The fifteenth pick is the end of the job the drawer was opened for, so it
+  // gets out of the way and shows you the team you just finished.
+  if (S.squad.length === 15) closePool();
 });
-$("#slots").addEventListener("click", (e) => {
-  const edit = e.target.closest("[data-edit]");
-  if (edit) return openEditor(+edit.dataset.edit);
+/* The pitch is one delegated listener per pitch, because its contents are
+   rewritten wholesale on every render. Four things are clickable on a shirt:
+   the shirt itself (open the numbers behind him), the × (drop him), the → on
+   the solver's pitch (take him), and an empty slot (open the pool at that
+   position, which is the shortest path from "I need a defender" to having one). */
+$("#squadPitch").addEventListener("click", (e) => {
+  const add = e.target.closest("[data-add-pos]");
+  if (add) return openPool(add.dataset.addPos || null);
+  const vs = e.target.closest("[data-vs]");
+  if (vs) return toggleVersus(+vs.dataset.vs);
   const rm = e.target.closest("[data-rm]");
-  if (!rm) return;
-  S.squad = S.squad.filter((id) => id !== +rm.dataset.rm);
-  saveSquad(); renderAll();
+  if (rm) {
+    S.squad = S.squad.filter((id) => id !== +rm.dataset.rm);
+    saveSquad(); renderAll();
+    return;
+  }
+  const edit = e.target.closest("[data-edit]");
+  if (edit) openEditor(+edit.dataset.edit);
+});
+$("#addPlayer").addEventListener("click", () => openPool());
+$("#poolClose").addEventListener("click", closePool);
+document.querySelectorAll(".tab[data-tab]").forEach((b) => b.addEventListener("click", () => {
+  setTab(b.dataset.tab); saveSettings();
+}));
+$("#metricBar").addEventListener("click", (e) => {
+  const button = e.target.closest("[data-metric]");
+  if (!button) return;
+  toggleMetric(button.dataset.metric);
+  renderMetricBar();
+  renderSquad(); renderCompare(); renderLineup();
+  saveSettings();
+});
+$("#compareWith").addEventListener("change", (e) => {
+  S.compareWith = e.target.value;
+  renderSquad(); renderCompare();
+  saveSettings();
+});
+$("#settingsBtn").addEventListener("click", () => {
+  settingsOpen = !settingsOpen;
+  renderChrome(); saveSettings();
 });
 document.querySelectorAll(".chip[data-pos]").forEach((c) => c.addEventListener("click", () => {
   setPosFilter(c.dataset.pos); renderPool(); saveSettings();
@@ -3094,7 +3937,11 @@ $("#askSuggest").addEventListener("click", (e) => {
   if (button) sendAsk(button.dataset.ask);
 });
 $("#edClose").addEventListener("click", closeEditor);
-$("#scrim").addEventListener("click", closeEditor);
+$("#scrim").addEventListener("click", () => {
+  if ($("#drawer").classList.contains("open")) closeEditor();
+  else if (versusOpen()) closeVersus();
+  else closePool();
+});
 $("#edReset").addEventListener("click", async () => {
   if (editingId === null) return;
   const id = editingId;
@@ -3106,8 +3953,8 @@ $("#edReset").addEventListener("click", async () => {
   renderAll();
 });
 $("#moreBtn").addEventListener("click", () => {
-  showMoreOptions($("#moreRow").classList.contains("hidden"));
-  saveSettings();
+  moreOpen = !moreOpen;
+  renderChrome(); saveSettings();
 });
 $("#resetSettings").addEventListener("click", restoreDefaults);
 
@@ -3163,9 +4010,32 @@ $("#constraintChips").addEventListener("click", (e) => {
   saveSettings();
   renderPool(); renderConstraints(); scheduleSolve(0);
 });
-$("#optSlots").addEventListener("click", (e) => {
+$("#comparePitch").addEventListener("click", (e) => {
+  const vs = e.target.closest("[data-vs]");
+  if (vs) return toggleVersus(+vs.dataset.vs);
   const swap = e.target.closest("[data-swap]");
-  if (swap) swapIn(+swap.dataset.swap);
+  if (swap) return swapIn(+swap.dataset.swap);
+  const edit = e.target.closest("[data-edit]");
+  if (edit) openEditor(+edit.dataset.edit);
+});
+$("#swapBox").addEventListener("click", (e) => {
+  const edit = e.target.closest("[data-edit]");
+  if (edit) openEditor(+edit.dataset.edit);
+});
+$("#lineupPitch").addEventListener("click", (e) => {
+  const vs = e.target.closest("[data-vs]");
+  if (vs) return toggleVersus(+vs.dataset.vs);
+  const edit = e.target.closest("[data-edit]");
+  if (edit) openEditor(+edit.dataset.edit);
+});
+$("#vsBox").addEventListener("click", (e) => {
+  const edit = e.target.closest("[data-edit]");
+  if (edit) openEditor(+edit.dataset.edit);
+});
+$("#vsClose").addEventListener("click", closeVersus);
+$("#vsClear").addEventListener("click", () => {
+  S.versus = [];
+  renderSquad(); renderCompare(); renderLineup(); renderVersus();
 });
 $("#optCopy").addEventListener("click", copyOptimal);
 $("#optResolve").addEventListener("click", () => solveOptimal());
@@ -3191,7 +4061,14 @@ $("#clearEdits").addEventListener("click", async () => {
   await recomputeEdited(ids);
   renderAll();
 });
-addEventListener("keydown", (e) => { if (e.key === "Escape") closeEditor(); });
+addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  // Innermost first: the editor opens over the pool, so Escape should peel one
+  // layer rather than dismiss both and lose the search you had typed.
+  if ($("#drawer").classList.contains("open")) closeEditor();
+  else if (versusOpen()) closeVersus();
+  else if (poolOpen()) closePool();
+});
 $("#optimise").addEventListener("click", copyOptimal);
 $("#horizon").addEventListener("change", () => { rebuildPool(); renderAll(); scheduleSolve(0); });
 $("#halflife").addEventListener("input", (e) => { $("#hlval").textContent = (+e.target.value).toFixed(1); });
@@ -3257,6 +4134,10 @@ if ("serviceWorker" in navigator) {
 // straight off the controls, so restoring them afterwards would mean deriving
 // the whole pool twice on every load.
 applySettings(loadLocal(STORE.settings, null));
+// The chrome is drawn whether or not there was anything saved: a first visit has
+// no settings blob and still needs a metric bar, a tab and a settings button
+// that agrees with what is on screen.
+renderMetricBar(); renderChrome(); setTab(S.tab);
 loadPool();
 </script>
 </body>

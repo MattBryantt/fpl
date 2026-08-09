@@ -135,6 +135,21 @@ def _num(value: Any, default: float | None = 0.0, dp: int = DISPLAY_DP) -> Any:
     return round(number, dp)
 
 
+def _teams(force_refresh: bool = False) -> dict[str, Any]:
+    """Club name -> short name and FPL club code.
+
+    The code is the one the shirt images are filed under, and it is not the team
+    id: Arsenal are team 1 and code 3, and the two diverge again every time a
+    club is promoted. Keyed by the club name the player rows already carry, so
+    the pitch can find a shirt without a second join.
+    """
+    return {
+        str(team["name"]): {"short": str(team["short_name"]),
+                            "code": int(team["code"])}
+        for team in fpl_api.bootstrap(force_refresh)["teams"]
+    }
+
+
 def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
           recency: float = 0.0, force_refresh: bool = False) -> dict:
     """Run the projection and reduce it to what the browser needs."""
@@ -241,6 +256,7 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
         "players": rows,
         "fixtures": fixtures,
         "strength": strength,
+        "teams": _teams(force_refresh),
         "rules": _rules(),
         "meta": {
             "start_gw": gameweeks[0],
