@@ -1,0 +1,13 @@
+requests>=2.32
+pandas>=2.2
+numpy>=1.26
+scipy>=1.13
+pulp>=2.8
+python-dotenv>=1.0
+rich>=13.7
+rapidfuzz>=3.9
+
+# Drafting board (`fpl.py serve`)
+fastapi>=0.115
+uvicorn[standard]>=0.30
+qrcode>=7.4          # optional: prints a scannable link for `serve --lan`

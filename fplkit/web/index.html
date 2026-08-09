@@ -1,0 +1,3263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FPL drafting board</title>
+<!-- Added to the home screen this launches without Safari's chrome, which is
+     most of what makes it feel like an app rather than a bookmark. The two
+     theme-colors match the light and dark page backgrounds so the status bar
+     blends into the board instead of sitting on a white strip above it. -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="FPL board">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+<link rel="apple-touch-icon" href="/icon.png">
+<!-- The saved theme has to land before the first paint, or a light board on a
+     dark phone opens with a black flash. Everything else in the saved settings
+     is applied by the module below; only this one is worth an inline script. -->
+<script>
+  try {
+    const theme = JSON.parse(localStorage.getItem("fpl.settings") || "{}").theme;
+    if (theme === "dark" || theme === "light") {
+      document.documentElement.setAttribute("data-theme", theme);
+    }
+  } catch (_) { /* private mode, or nothing saved yet */ }
+</script>
+<style>
+/* Palette from the data-viz reference instance. Both modes are selected, not
+   flipped: the dark column is the same hues re-stepped for the dark surface.
+   Validated with scripts/validate_palette.js -- all checks pass in both modes
+   (worst CVD dE 24.7 light / 26.8 dark against a target of 8). */
+:root {
+  color-scheme: light;
+  --surface-1: #fcfcfb;
+  --page: #f9f9f7;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.10);
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --pos: #2a78d6;
+  --neg: #e34948;
+  --mid: #f0efec;
+  --good: #0ca30c;
+  --warning: #fab219;
+  --critical: #d03b3b;
+  --hover: rgba(11, 11, 11, 0.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --pos: #3987e5;
+    --neg: #e66767;
+    --mid: #383835;
+    --hover: rgba(255, 255, 255, 0.06);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-1: #1a1a19;
+  --page: #0d0d0d;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255, 255, 255, 0.10);
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --pos: #3987e5;
+  --neg: #e66767;
+  --mid: #383835;
+  --hover: rgba(255, 255, 255, 0.06);
+}
+
+* { box-sizing: border-box; }
+/* The stat editor is an off-canvas panel parked at translateX(100%), which
+   otherwise widens the document and gives the whole page a sideways scroll on a
+   phone. `clip` removes that without creating a scroll container the way
+   `hidden` would. Verified that the drawer is the only thing outside the
+   viewport, so this hides no real overflow. */
+html, body { overflow-x: clip; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text-primary);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+h2 { font-size: 13px; margin: 0 0 12px; font-weight: 600; color: var(--text-secondary); }
+button, select, input { font: inherit; color: inherit; }
+
+/* Safe-area insets, because the home-screen build runs under a translucent
+   status bar (viewport-fit=cover). Without these the header sits behind the
+   clock on a notched phone. env() resolves to 0 everywhere else, so the desktop
+   padding is unchanged. */
+.wrap {
+  max-width: 1600px; margin: 0 auto;
+  padding: calc(20px + env(safe-area-inset-top)) calc(20px + env(safe-area-inset-right))
+           calc(20px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));
+}
+header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }
+.sub { color: var(--muted); font-size: 12.5px; }
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+/* One filter row above everything it scopes. */
+.controls {
+  display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-end;
+  margin: 14px 0 16px; padding: 14px 16px;
+}
+.ctl { display: flex; flex-direction: column; gap: 5px; }
+.ctl label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.ctl input[type=range] { width: 120px; accent-color: var(--series-1); }
+.ctl .val { font-variant-numeric: tabular-nums; color: var(--text-secondary); font-size: 12px; }
+select, input[type=search], input[type=number] {
+  background: var(--page); border: 1px solid var(--border);
+  border-radius: 7px; padding: 6px 9px; min-width: 90px;
+}
+.btn {
+  background: var(--series-1); color: #fff; border: 0; border-radius: 7px;
+  padding: 8px 14px; cursor: pointer; font-weight: 500;
+}
+.btn:hover { filter: brightness(1.08); }
+.btn.ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+/* Stretch, so the pool column fills the height the squad column sets rather
+   than leaving a dead band under a short table. Three columns wide: pool, the
+   squad you are building, and the solver's answer to the settings currently in
+   force. The last two sit next to each other because the whole point of them is
+   the comparison -- a diff you have to scroll between is not a diff. */
+.main { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: stretch; }
+/* min-width:0 is load-bearing, not defensive. A grid item's default
+   min-width:auto refuses to shrink below its content's min-content width, so
+   the squad cards — whose rows carry a name plus four numbers plus two buttons
+   — held themselves ~50px wider than their track on a phone and spilled out of
+   the card. `overflow-x: clip` on the page then hid the evidence: the document
+   reported no overflow while the right-hand column was being cut off mid-word. */
+.main > .card { display: flex; flex-direction: column; min-width: 0; }
+.charts > .card { min-width: 0; }
+/* Below ~1400px three columns squeeze the pool table past legibility, so the
+   pool takes a full row of its own and the two squads keep their pairing. */
+@media (max-width: 1400px) {
+  .main { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .main > .poolcard { grid-column: 1 / -1; }
+  /* Full width means the pool is no longer competing for horizontal room, so
+     give the height back: the two squads below it are the comparison, and a
+     pool that fills the viewport puts them entirely off screen. */
+  .poolcard .scroll { max-height: 44vh; }
+}
+@media (max-width: 900px) { .main { grid-template-columns: minmax(0, 1fr); } }
+
+/* Pool */
+.poolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.chip {
+  background: transparent; border: 1px solid var(--border); border-radius: 999px;
+  padding: 4px 12px; cursor: pointer; color: var(--text-secondary); font-size: 12.5px;
+}
+.chip[aria-pressed="true"] { background: var(--series-1); border-color: var(--series-1); color: #fff; }
+.scroll { flex: 1; min-height: 340px; max-height: 76vh; overflow: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th {
+  text-align: right; font-weight: 500; color: var(--muted); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.04em; padding: 6px 5px;
+  position: sticky; top: 0; background: var(--surface-1); cursor: pointer;
+  border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+th:first-child, td:first-child { text-align: left; }
+th.sorted { color: var(--text-primary); }
+td { padding: 5px 5px; text-align: right; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+tbody tr:hover { background: var(--hover); }
+tbody tr.picked { opacity: 0.4; }
+.namecell { display: flex; align-items: center; gap: 5px; }
+.add {
+  border: 1px solid var(--border); background: transparent; color: var(--text-secondary);
+  border-radius: 5px; width: 22px; height: 22px; cursor: pointer; line-height: 1; padding: 0;
+}
+.add:hover { background: var(--series-1); color: #fff; border-color: var(--series-1); }
+.flag { font-size: 10px; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
+
+/* Squad */
+.tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.tile { border: 1px solid var(--border); border-radius: 8px; padding: 10px 11px; }
+.tile .lab { font-size: 11px; color: var(--muted); }
+.tile .num { font-size: 20px; font-weight: 600; margin-top: 2px; }
+.hero { font-size: 48px; font-weight: 600; line-height: 1.05; letter-spacing: -0.02em; }
+.hero.empty { font-size: 22px; color: var(--muted); font-weight: 500; }
+.delta { font-size: 12px; margin-top: 2px; }
+.up { color: var(--good); } .down { color: var(--critical); }
+
+.meter { height: 7px; background: var(--mid); border-radius: 4px; overflow: hidden; margin-top: 7px; }
+.meter > div { height: 100%; background: var(--series-1); border-radius: 4px; }
+.meter.over > div { background: var(--critical); }
+
+.grouplabel { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin: 12px 0 5px; }
+.slot {
+  display: flex; align-items: center; gap: 9px; padding: 6px 9px;
+  border: 1px solid var(--border); border-radius: 7px; margin-bottom: 5px;
+  min-width: 0;
+}
+/* The numbers and buttons are fixed; the name is the elastic part and already
+   ellipsises. Saying so stops the row demanding its full min-content width. */
+.slot > :not(.nm) { flex: none; }
+.slot.empty { border-style: dashed; color: var(--muted); justify-content: center; font-size: 12.5px; }
+.slot .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot .pts { font-variant-numeric: tabular-nums; color: var(--text-secondary); font-size: 12.5px; }
+/* xPPG carries the emphasis in a squad row. It is the number you compare across
+   players on different fixture runs; the horizon total is a consequence of it
+   and of how many games they happen to have. */
+.slot .ppg { font-variant-numeric: tabular-nums; color: var(--text-primary); font-size: 12.5px; font-weight: 500; }
+.slot .last { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 11.5px; }
+td.thin-cell { color: var(--muted); }
+td.muted-cell { color: var(--axis); }
+.slot .rm { border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 15px; padding: 0 3px; }
+.slot .rm:hover { color: var(--critical); }
+.badge { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--mid); color: var(--text-secondary); }
+.badge.c { background: var(--series-1); color: #fff; }
+
+/* Optimal-squad column. Rows carry the diff: a player the solver wants and you
+   do not have is marked in, one you hold and it dropped is marked out. Colour
+   never carries it alone -- every marked row also gets a word. */
+.slot.isnew { border-color: var(--good); box-shadow: inset 3px 0 0 var(--good); }
+.slot.isgone { border-style: dashed; opacity: 0.62; }
+.tag { font-size: 10px; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); }
+.tag.in { color: var(--good); border-color: var(--good); }
+.tag.out { color: var(--critical); border-color: var(--critical); }
+.swap { border: 1px solid var(--border); background: transparent; color: var(--text-secondary);
+  border-radius: 5px; height: 22px; min-width: 22px; cursor: pointer; line-height: 1; padding: 0 4px; font-size: 12px; }
+.swap:hover { background: var(--good); color: #fff; border-color: var(--good); }
+.optstatus { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+.optstatus.err { color: var(--critical); }
+.optbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+.optlist.pending { opacity: 0.45; transition: opacity .15s; }
+
+/* Bench weights: four sliders in a row, each labelled with the weight the
+   objective actually uses for that slot. */
+.benchgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 200px));
+  gap: 10px 18px; width: 100%; justify-content: start; }
+.bslot { display: flex; flex-direction: column; gap: 3px; }
+.bslot span { font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; gap: 6px; }
+.bslot b { color: var(--text-secondary); font-variant-numeric: tabular-nums; font-weight: 500; }
+.bslot input[type=range] { width: 100%; accent-color: var(--series-1); }
+.bslot.master b { color: var(--text-primary); }
+
+.issues { margin-top: 12px; display: flex; flex-direction: column; gap: 5px; }
+.issue { font-size: 12.5px; display: flex; gap: 7px; align-items: flex-start; }
+.issue .ico { flex: none; }
+.issue.ok { color: var(--good); }
+.issue.bad { color: var(--critical); }
+
+/* Charts */
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(430px, 100%), 1fr)); gap: 16px; margin-top: 16px; }
+@media (max-width: 900px) { .charts { grid-template-columns: 1fr; } }
+.cardhead { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--text-secondary); flex-wrap: wrap; }
+.key { display: inline-flex; align-items: center; gap: 6px; }
+.key i { width: 14px; height: 2px; border-radius: 1px; display: inline-block; }
+.toggle { font-size: 11.5px; color: var(--muted); background: none; border: 1px solid var(--border); border-radius: 5px; padding: 2px 8px; cursor: pointer; }
+.chartbox { overflow-x: auto; }
+svg { display: block; max-width: 100%; height: auto; }
+.tip {
+  position: fixed; pointer-events: none; z-index: 40; opacity: 0;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 7px;
+  padding: 7px 10px; font-size: 12.5px; box-shadow: 0 4px 14px rgba(0,0,0,0.13);
+  transition: opacity .1s; max-width: 260px;
+}
+.tip b { font-weight: 600; }
+.tip .r { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+/* Utility class, so it has to beat any component rule that also sets display
+   regardless of source order -- .loading below is exactly that case, and left
+   unqualified the overlay stays up and swallows every click. */
+.hidden { display: none !important; }
+
+/* ------------------------------------------------------------------ phones
+   The board is usable on a phone, which mainly means three things: nothing may
+   force the page itself to scroll sideways, the columns that only make sense
+   side by side have to stack, and every tap target has to clear ~24px. Wide
+   content (the timeline, the pool) scrolls inside its own container instead. */
+@media (max-width: 720px) {
+  .wrap {
+    padding: calc(12px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right))
+             calc(12px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left));
+  }
+  h1 { font-size: 16px; }
+  .controls { gap: 12px; padding: 12px; }
+  .ctl input[type=range] { width: 100%; min-width: 130px; }
+  .ctl { flex: 1 1 140px; }
+  .charts { grid-template-columns: 1fr; }
+  .card { padding: 13px; }
+  .tiles { grid-template-columns: 1fr 1fr; }
+  .tile:first-child { grid-column: 1 / -1; }
+  .hero { font-size: 38px; }
+  .scroll { max-height: 62vh; }
+  /* The pool keeps name, position, price and points; the rest is available by
+     sorting or in the editor, and four columns is what fits legibly. */
+  #pool [data-req], #pool [data-ban] { display: none; }
+  .namecell { gap: 5px; }
+  #pool th:nth-child(3), #pool td:nth-child(3),
+  #pool th:nth-child(8), #pool td:nth-child(8),
+  #pool th:nth-child(9), #pool td:nth-child(9),
+  #pool th:nth-child(11), #pool td:nth-child(11) { display: none; }
+  .draftrow { gap: 7px; }
+  .draftrow .dname { min-width: 0; flex: 1 1 100%; }
+  .draftrow .spacer, .draftrow .dmeta:last-of-type { display: none; }
+  .diffgrid { grid-template-columns: 1fr; }
+  .drawer { width: 100%; max-width: none; padding: 16px; }
+  .cmp table { font-size: 12px; }
+  header .btn { padding: 6px 10px; font-size: 12.5px; }
+}
+/* Touch targets: a 22px button is fine for a mouse and not for a thumb. */
+@media (pointer: coarse) {
+  .add, .editbtn { width: 30px; height: 30px; font-size: 14px; }
+  .slot .rm { font-size: 20px; padding: 0 8px; }
+  .mini { padding: 7px 12px; }
+  .chip { padding: 7px 14px; }
+  input[type=checkbox] { width: 20px; height: 20px; }
+}
+
+/* Drafts */
+.draftbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.draftbar input[type=text] { min-width: 170px; }
+.draftlist { display: flex; flex-direction: column; gap: 6px; }
+.draftrow {
+  display: flex; align-items: center; gap: 10px; padding: 8px 11px;
+  border: 1px solid var(--border); border-radius: 8px; flex-wrap: wrap;
+}
+.draftrow.sel { border-color: var(--series-1); box-shadow: inset 3px 0 0 var(--series-1); }
+.draftrow .dname { font-weight: 600; min-width: 120px; }
+.draftrow .dmeta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.draftrow .dnum { font-variant-numeric: tabular-nums; font-size: 13px; }
+.draftrow .spacer { flex: 1; }
+.swatch { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
+.mini { font-size: 11.5px; padding: 3px 9px; border-radius: 6px; border: 1px solid var(--border);
+  background: transparent; color: var(--text-secondary); cursor: pointer; }
+.mini:hover { background: var(--hover); }
+.mini.danger:hover { background: var(--critical); color: #fff; border-color: var(--critical); }
+.cmp { margin-top: 14px; }
+.cmp table td.pos-in { color: var(--good); }
+.cmp table td.pos-out { color: var(--critical); }
+.diffgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-top: 12px; }
+.diffcol { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.diffcol h4 { margin: 0 0 7px; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
+.diffcol ul { margin: 0; padding-left: 16px; font-size: 12.5px; color: var(--text-secondary); }
+.diffcol .none { color: var(--muted); font-size: 12.5px; }
+
+/* Stat editor */
+.drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 380px; max-width: 92vw;
+  background: var(--surface-1); border-left: 1px solid var(--border);
+  box-shadow: -6px 0 28px rgba(0,0,0,0.16); z-index: 45;
+  padding: 20px; overflow-y: auto; transform: translateX(100%); transition: transform .18s;
+}
+.drawer.open { transform: none; }
+.drawer h3 { margin: 0 0 2px; font-size: 16px; font-weight: 600; }
+.drawer .who { color: var(--muted); font-size: 12.5px; margin-bottom: 4px; }
+.drawer .why {
+  font-size: 12px; color: var(--text-secondary); background: var(--page);
+  border: 1px solid var(--border); border-radius: 7px; padding: 9px 11px; margin: 12px 0 16px;
+}
+.field { margin-bottom: 13px; }
+.field .row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.field label { font-size: 12.5px; }
+.field .orig { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.field .inp { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.field input[type=range] { flex: 1; accent-color: var(--series-1); }
+.field input[type=number] { width: 76px; text-align: right; font-variant-numeric: tabular-nums; }
+.field.changed label::after { content: " ●"; color: var(--series-1); }
+
+/* Per-match editor. One row per gameweek, collapsed to the lever that actually
+   gets used — start probability — with the rest a disclosure away. Twelve
+   gameweeks times eight fields is ninety-six controls; showing them all would
+   make the common edit harder, not easier. */
+.matchhead { display: flex; align-items: baseline; justify-content: space-between;
+  gap: 8px; margin: 20px 0 6px; border-top: 1px solid var(--border); padding-top: 14px; }
+.matchhead h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.mrow { border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px; margin-bottom: 6px; }
+.mrow.set { border-color: var(--series-2); box-shadow: inset 3px 0 0 var(--series-2); }
+.mtop { display: flex; align-items: center; gap: 8px; }
+.mgw { font-size: 11.5px; color: var(--muted); width: 34px; flex: none;
+  font-variant-numeric: tabular-nums; }
+.mopp { font-size: 12px; flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.mpts { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-secondary);
+  width: 34px; text-align: right; flex: none; }
+.mrow .more { border: 1px solid var(--border); background: transparent; color: var(--muted);
+  border-radius: 5px; width: 22px; height: 22px; cursor: pointer; padding: 0; font-size: 11px; flex: none; }
+.mrow .more[aria-expanded="true"] { background: var(--series-2); color: #fff; border-color: var(--series-2); }
+.mstart { display: flex; align-items: center; gap: 7px; margin-top: 5px; }
+.mstart input[type=range] { flex: 1; accent-color: var(--series-2); }
+.mstart .lab { font-size: 11px; color: var(--muted); width: 52px; flex: none; }
+.mstart .val { font-size: 11.5px; font-variant-numeric: tabular-nums; width: 30px;
+  text-align: right; flex: none; }
+.mextra { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.mextra .field { margin-bottom: 9px; }
+.mblank { color: var(--muted); font-size: 12px; font-style: italic; }
+@media (pointer: coarse) { .mrow .more { width: 30px; height: 30px; } }
+.drawerfoot { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; position: sticky; bottom: 0;
+  background: var(--surface-1); padding-top: 12px; border-top: 1px solid var(--border); }
+.editpts { font-size: 12.5px; color: var(--text-secondary); margin: 6px 0 0; }
+.editpts b { font-size: 17px; color: var(--text-primary); }
+
+/* --- the explain panel -----------------------------------------------------
+   A breakdown is only an explanation if it adds up in front of you, so every
+   figure here is printed as well as drawn: the bar is for comparing at a
+   glance, the number beside it is the value, and no quantity is reachable only
+   through length or colour. */
+.exsec { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
+.exhead { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.exhead h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+.linkbtn {
+  background: none; border: 0; padding: 0; cursor: pointer; font: inherit;
+  font-size: 11.5px; color: var(--muted); text-decoration: underline;
+}
+.linkbtn:hover { color: var(--text-primary); }
+.exrow { display: grid; grid-template-columns: 1fr 46px; gap: 8px; align-items: center; margin: 3px 0; }
+.exlabel { font-size: 12px; color: var(--text-secondary); }
+.exlabel .note { display: block; color: var(--muted); font-size: 10.5px; }
+.exval { font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+.exbar { height: 5px; border-radius: 3px; background: var(--series-1); margin-top: 3px; }
+.exbar.neg { background: var(--critical); }
+.exsum {
+  display: grid; grid-template-columns: 1fr 46px; gap: 8px; margin-top: 8px;
+  padding-top: 7px; border-top: 1px solid var(--border); font-size: 12px; font-weight: 600;
+}
+.exsum span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.exnote { font-size: 11.5px; color: var(--muted); margin: 8px 0 0; line-height: 1.45; }
+.extable { width: 100%; border-collapse: collapse; font-size: 11.5px; margin-top: 6px; }
+.extable th, .extable td { padding: 3px 4px; text-align: right; font-variant-numeric: tabular-nums; }
+.extable th { color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border); }
+.extable td:first-child, .extable th:first-child { text-align: left; }
+.extable tr.faded td { color: var(--muted); }
+
+/* --- team lineups ----------------------------------------------------------
+   A roster, so it is read down rather than across: name and role on the left,
+   the two numbers that matter on the right, and a bar for expected minutes so
+   the shape of a rotation is visible without reading every row. */
+.lineupctl { display: flex; gap: 8px; align-items: center; }
+.lineupctl select {
+  padding: 5px 8px; font: inherit; font-size: 12.5px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary);
+}
+.lineuphead {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin: 2px 0 10px; font-size: 12.5px; color: var(--text-secondary);
+}
+.pill {
+  border-radius: 999px; padding: 1px 9px; font-size: 11.5px; font-weight: 600;
+  border: 1px solid transparent;
+}
+.pill.ok { background: rgba(12,163,12,0.13); color: var(--good); }
+.pill.warn { background: rgba(208,59,59,0.13); color: var(--critical); }
+.lineup { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.lineup th {
+  text-align: right; font-weight: 500; color: var(--muted); font-size: 11px;
+  padding: 0 6px 5px; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.lineup th:first-child, .lineup td:first-child { text-align: left; }
+.lineup td { padding: 4px 6px; text-align: right; font-variant-numeric: tabular-nums; }
+.lineup tbody tr { border-bottom: 1px solid var(--border); }
+.lineup tbody tr:last-child { border-bottom: 0; }
+.lineup tr.benchrow td { color: var(--muted); }
+.lineup .who2 { display: flex; align-items: center; gap: 6px; }
+.lineup .posn {
+  font-size: 10px; color: var(--muted); border: 1px solid var(--border);
+  border-radius: 4px; padding: 0 4px;
+}
+.minbar { height: 4px; border-radius: 2px; background: var(--series-1); margin-top: 3px; }
+.minbar.sub { background: var(--axis); }
+.tag {
+  font-size: 10px; border-radius: 4px; padding: 0 5px; font-weight: 600; white-space: nowrap;
+}
+.tag.you { background: var(--series-2); color: #fff; }
+.tag.adj { background: var(--mid); color: var(--text-secondary); }
+.lineupfoot { font-size: 11.5px; color: var(--muted); margin-top: 9px; line-height: 1.45; }
+
+/* --- ask ------------------------------------------------------------------ */
+.asklog { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.asklog:empty { display: none; }
+.askmsg { font-size: 12px; line-height: 1.5; border-radius: 7px; padding: 7px 9px; }
+.askmsg.me { background: var(--series-2); color: #fff; align-self: flex-end; max-width: 85%; }
+.askmsg.ai { background: var(--surface-2, rgba(127,127,127,0.12)); color: var(--text-primary); }
+.askmsg.err { background: transparent; color: var(--critical); padding-left: 0; }
+.askmsg p { margin: 0 0 6px; }
+.askmsg p:last-child { margin-bottom: 0; }
+.askrow { display: flex; gap: 6px; }
+.askrow input {
+  flex: 1; min-width: 0; padding: 6px 8px; font: inherit; font-size: 12px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface, transparent); color: var(--text-primary);
+}
+.asksuggest { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.asksuggest button {
+  background: none; border: 1px solid var(--border); border-radius: 999px;
+  padding: 2px 9px; font: inherit; font-size: 11px; color: var(--muted); cursor: pointer;
+}
+.asksuggest button:hover { color: var(--text-primary); border-color: var(--muted); }
+.asksec.off { opacity: 0.65; }
+.edited-dot { color: var(--series-2); font-weight: 700; }
+.scrim { position: fixed; inset: 0; background: rgba(0,0,0,0.28); z-index: 44; }
+.editbtn {
+  border: 1px solid var(--border); background: transparent; color: var(--muted);
+  border-radius: 5px; width: 22px; height: 22px; cursor: pointer; line-height: 1; padding: 0; font-size: 11px;
+}
+.editbtn:hover { background: var(--series-2); color: #fff; border-color: var(--series-2); }
+.editbtn.on { background: var(--good); color: #fff; border-color: var(--good); }
+.editbtn.off { background: var(--critical); color: #fff; border-color: var(--critical); }
+/* Hover previews the action: green for require, red for bar. */
+.editbtn[data-req]:hover { background: var(--good); border-color: var(--good); }
+.editbtn[data-ban]:hover { background: var(--critical); border-color: var(--critical); }
+.banner {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  border: 1px solid var(--border); border-left: 3px solid var(--series-2);
+  border-radius: 8px; padding: 9px 13px; margin-bottom: 14px; font-size: 13px;
+}
+.empty-note { color: var(--muted); font-size: 13px; padding: 22px 0; text-align: center; }
+.loading { position: fixed; inset: 0; display: grid; place-items: center; background: var(--page); z-index: 50; }
+.stale { opacity: 0.45; transition: opacity .15s; }
+/* Marks the two controls that cannot be applied in the browser: they change the
+   projection rather than how it is weighted, so they need the laptop. */
+.needs { font-size: 9px; letter-spacing: 0.06em; padding: 1px 4px; border-radius: 3px;
+  border: 1px solid var(--border); color: var(--muted); vertical-align: 1px; }
+.ctl input[type=range].needsync { accent-color: var(--series-2); }
+#freshness { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="loading" id="loading">Projecting…</div>
+<div class="wrap">
+
+<header>
+  <h1>FPL drafting board</h1>
+  <span class="sub" id="meta"></span>
+  <span style="flex:1"></span>
+  <span class="sub" id="freshness" title="The board runs on a frozen projection — this is how old it is"></span>
+  <button class="btn ghost" id="syncBtn" title="Re-run the projection on the laptop and pull it down">Sync</button>
+  <a class="btn ghost" href="/data" id="dataLink" title="Every number traced back to its source"
+     style="text-decoration:none">Where the data comes from</a>
+  <button class="btn ghost" id="theme" title="Toggle theme">◐</button>
+</header>
+
+<div class="card controls">
+  <div class="ctl">
+    <label for="horizon">Horizon</label>
+    <select id="horizon">
+      <option>4</option><option>5</option><option>6</option>
+      <option selected>8</option><option>10</option><option>12</option>
+    </select>
+  </div>
+  <div class="ctl">
+    <label for="halflife">Half-life <span class="val" id="hlval">3.0</span></label>
+    <input type="range" id="halflife" min="1" max="8" step="0.5" value="3">
+  </div>
+  <div class="ctl">
+    <label for="budget">Budget <span class="val" id="budval">100.0</span></label>
+    <input type="range" id="budget" min="80" max="110" step="0.5" value="100">
+  </div>
+  <div class="ctl">
+    <label for="ownw">Template tilt <span class="val" id="ownval">0.00</span></label>
+    <input type="range" id="ownw" min="0" max="0.6" step="0.05" value="0">
+  </div>
+  <div class="ctl">
+    <label for="minstart">Min start prob <span class="val" id="msval">0.30</span></label>
+    <input type="range" id="minstart" min="0" max="0.9" step="0.05" value="0.3">
+  </div>
+  <div class="ctl">
+    <label>&nbsp;</label>
+    <button class="btn" id="optimise" title="Take the whole optimal squad as your draft">Copy optimal →</button>
+  </div>
+  <div class="ctl">
+    <label>&nbsp;</label>
+    <button class="btn ghost" id="clear">Clear</button>
+  </div>
+  <div class="ctl">
+    <label>&nbsp;</label>
+    <button class="btn ghost" id="moreBtn" aria-expanded="false">More options ▾</button>
+  </div>
+</div>
+
+<div class="card controls hidden" id="moreRow">
+  <div class="ctl">
+    <label for="startgw">First gameweek <span class="needs">sync</span></label>
+    <select id="startgw"><option value="">next</option></select>
+  </div>
+  <div class="ctl">
+    <label for="maxclub">Max per club <span class="val" id="mcval">3</span></label>
+    <input type="range" id="maxclub" min="1" max="5" step="1" value="3">
+  </div>
+  <div class="ctl">
+    <label for="recency">Recent-form half-life <span class="val" id="recval">off</span> <span class="needs">sync</span></label>
+    <input type="range" id="recency" min="0" max="38" step="1" value="0">
+  </div>
+  <div class="ctl">
+    <label for="formation">Force formation</label>
+    <select id="formation">
+      <option value="">any legal</option>
+      <option>3-4-3</option><option>3-5-2</option><option>4-3-3</option>
+      <option>4-4-2</option><option>4-5-1</option><option>5-3-2</option>
+      <option>5-4-1</option><option>5-2-3</option>
+    </select>
+  </div>
+  <div class="ctl">
+    <label>&nbsp;</label>
+    <button class="btn ghost" id="refreshData" title="Bypass the cache and refetch every source">Refresh sources</button>
+  </div>
+  <div class="ctl">
+    <label>&nbsp;</label>
+    <button class="btn ghost" id="loadOverrides"
+            title="Replace your edits with whatever is in out/overrides.csv">Load overrides.csv</button>
+  </div>
+  <div class="ctl">
+    <label>&nbsp;</label>
+    <button class="btn ghost" id="resetSettings"
+            title="Put every knob back to its default — your squad, drafts and edits are untouched">Restore defaults</button>
+  </div>
+  <div class="ctl" style="flex:1;min-width:230px">
+    <label>Constraints — use ⊕ / ⊘ in the pool</label>
+    <div id="constraintChips" class="sub">none set</div>
+  </div>
+</div>
+
+<div class="card controls hidden" id="benchRow">
+  <div class="ctl" style="flex:1 1 100%">
+    <label style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+      Bench weights — what a projected point is worth on each bench slot
+      <button class="mini" type="button" id="benchReset">Reset to default</button>
+      <span class="sub" style="text-transform:none;letter-spacing:0">FPL auto-subs work down
+        the bench in order, so the first outfield sub comes on far more often than the third.
+        Set all four to 0 and the solver buys the four cheapest legal bodies.</span>
+    </label>
+    <div class="benchgrid">
+      <div class="bslot master">
+        <span><label for="benchw">Overall</label><b id="bwval">0.12</b></span>
+        <input type="range" id="benchw" min="0" max="1" step="0.01" value="0.12"
+               title="Scales all four slots at once, keeping the default shape">
+      </div>
+      <div class="bslot">
+        <span><label for="bw_GKP">GK sub</label><b id="bwv_GKP">0.030</b></span>
+        <input type="range" id="bw_GKP" data-slot="GKP" min="0" max="1.5" step="0.005" value="0.03">
+      </div>
+      <div class="bslot">
+        <span><label for="bw_1">1st sub</label><b id="bwv_1">0.240</b></span>
+        <input type="range" id="bw_1" data-slot="1" min="0" max="1.5" step="0.005" value="0.24">
+      </div>
+      <div class="bslot">
+        <span><label for="bw_2">2nd sub</label><b id="bwv_2">0.100</b></span>
+        <input type="range" id="bw_2" data-slot="2" min="0" max="1.5" step="0.005" value="0.10">
+      </div>
+      <div class="bslot">
+        <span><label for="bw_3">3rd sub</label><b id="bwv_3">0.040</b></span>
+        <input type="range" id="bw_3" data-slot="3" min="0" max="1.5" step="0.005" value="0.04">
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="banner hidden" id="editBanner">
+  <span id="editCount"></span>
+  <span style="flex:1"></span>
+  <button class="btn ghost" id="saveOverrides">Save to overrides.csv</button>
+  <button class="btn ghost" id="clearEdits">Discard all edits</button>
+</div>
+
+<div class="main">
+  <section class="card poolcard">
+    <div class="cardhead"><h2 style="margin:0">Player pool</h2><span class="sub" id="poolcount"></span></div>
+    <div class="poolbar">
+      <input type="search" id="search" placeholder="Search name or club…" style="flex:1;min-width:150px">
+      <button class="chip" data-pos="ALL" aria-pressed="true">All</button>
+      <button class="chip" data-pos="GKP" aria-pressed="false">GKP</button>
+      <button class="chip" data-pos="DEF" aria-pressed="false">DEF</button>
+      <button class="chip" data-pos="MID" aria-pressed="false">MID</button>
+      <button class="chip" data-pos="FWD" aria-pressed="false">FWD</button>
+    </div>
+    <div class="scroll">
+      <table id="pool">
+        <thead><tr>
+          <th data-sort="name">Player</th>
+          <th data-sort="pos">Pos</th>
+          <th data-sort="team_short">Team</th>
+          <th data-sort="price">£</th>
+          <th data-sort="xpts_plan" class="sorted">xPts</th>
+          <th data-sort="xppg" title="Projected points per match over the horizon, undecayed — comparable with last season's PPG">xPPG</th>
+          <th data-sort="ppg" title="Last season's points per appearance, as the FPL API reports it. Hover a value to see it per fixture, which is the basis xPPG uses.">PPG</th>
+          <th data-sort="value">xPts/£m</th>
+          <th data-sort="p_start">Start</th>
+          <th data-sort="cs" title="Expected clean sheets over the horizon">xCS</th>
+          <th data-sort="owned">Own%</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Your draft</h2>
+    <div class="tiles">
+      <div class="tile" style="grid-column: 1 / -1">
+        <div class="lab">Projected XI points, captain doubled</div>
+        <div class="hero" id="heroPts">—</div>
+        <div class="delta" id="heroDelta"></div>
+      </div>
+      <div class="tile">
+        <div class="lab">Squad cost</div><div class="num" id="tCost">—</div>
+        <div class="meter" id="budMeter"><div style="width:0"></div></div>
+      </div>
+      <div class="tile">
+        <div class="lab">XI xPPG</div><div class="num" id="tXppg">—</div>
+      </div>
+      <div class="tile">
+        <div class="lab">Field coverage</div><div class="num" id="tCov">—</div>
+      </div>
+    </div>
+    <div id="slots"></div>
+    <div class="issues" id="issues"></div>
+  </section>
+
+  <section class="card">
+    <div class="cardhead">
+      <h2 style="margin:0">Optimal under these settings</h2>
+      <span class="optstatus" id="optStatus"></span>
+    </div>
+    <div class="tiles">
+      <div class="tile" style="grid-column: 1 / -1">
+        <div class="lab">Projected XI points, captain doubled</div>
+        <div class="hero" id="optPts">—</div>
+        <div class="delta" id="optDelta"></div>
+      </div>
+      <div class="tile">
+        <div class="lab">Squad cost</div><div class="num" id="optCost">—</div>
+      </div>
+      <div class="tile">
+        <div class="lab">Changes vs your draft</div><div class="num" id="optChanges">—</div>
+      </div>
+    </div>
+    <div class="optbar">
+      <button class="btn" id="optCopy">Copy whole squad to my draft</button>
+      <button class="btn ghost" id="optResolve" title="Solve again now">Re-solve</button>
+    </div>
+    <div id="optSlots" class="optlist"></div>
+  </section>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <div class="cardhead">
+    <div>
+      <h2 style="margin:0 0 3px">Team lineups</h2>
+      <div class="sub">Who the model expects to start, and for how long. Minutes are a
+        fixed pool — eleven players start — so overriding one man's start probability
+        takes the minutes off his team-mates rather than inventing a twelfth starter.</div>
+    </div>
+    <div class="lineupctl">
+      <select id="lineupTeam" aria-label="Club"></select>
+      <button class="toggle" id="lineupEdited">Only edited clubs</button>
+    </div>
+  </div>
+  <div id="lineupBox"></div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <div class="cardhead">
+    <div>
+      <h2 style="margin:0 0 3px">Drafts</h2>
+      <div class="sub">Save a squad, then tick two or more to compare. Every draft is
+        scored under the settings currently in force, so the comparison is always like for like.</div>
+    </div>
+  </div>
+  <div class="draftbar">
+    <input type="text" id="draftName" placeholder="Name this draft…" maxlength="40">
+    <button class="btn" id="saveDraft">Save current</button>
+    <span class="sub" id="draftHint"></span>
+  </div>
+  <div class="draftlist" id="draftList"></div>
+  <div class="cmp hidden" id="cmpBox"></div>
+</div>
+
+<div class="charts">
+  <div class="card">
+    <div class="cardhead">
+      <div>
+        <h2 style="margin:0 0 3px">Projected XI points by gameweek</h2>
+        <div class="legend" id="gwLegend"></div>
+      </div>
+      <button class="toggle" data-view="gw">Table</button>
+    </div>
+    <div class="chartbox" id="gwChart"></div>
+    <div class="hidden" id="gwTable"></div>
+  </div>
+
+  <div class="card">
+    <div class="cardhead">
+      <div>
+        <h2 style="margin:0 0 3px">Rank risk — best players you don't own</h2>
+        <div class="sub">Ownership × projected points: what the average rival banks and you don't</div>
+      </div>
+      <button class="toggle" data-view="exp">Table</button>
+    </div>
+    <div class="chartbox" id="expChart"></div>
+    <div class="hidden" id="expTable"></div>
+  </div>
+
+  <div class="card" style="grid-column: 1 / -1">
+    <div class="cardhead">
+      <div>
+        <h2 style="margin:0 0 3px">Fixture timeline</h2>
+        <div class="sub">Each gameweek against that player's own average — blue is a good week for him, red a bad one. Decide transfers when they arrive.</div>
+      </div>
+      <button class="toggle" data-view="tl">Table</button>
+    </div>
+    <div class="chartbox" id="tlChart"></div>
+    <div class="hidden" id="tlTable"></div>
+  </div>
+</div>
+
+</div>
+
+<div class="scrim hidden" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-label="Edit player stats">
+  <h3 id="edName">—</h3>
+  <div class="who" id="edWho"></div>
+  <div class="editpts" id="edPts"></div>
+  <div class="why" id="edWhy"></div>
+
+  <div class="exsec">
+    <div class="exhead">
+      <h4>Where these points come from</h4>
+      <button class="linkbtn" id="edExToggle" aria-expanded="true">hide</button>
+    </div>
+    <div id="edExplain"></div>
+  </div>
+
+  <div class="exsec" id="clubSec">
+    <div class="exhead">
+      <h4>What this does to his club</h4>
+      <span class="sub" id="clubStarters"></span>
+    </div>
+    <div id="clubBox"></div>
+  </div>
+
+  <div class="exsec" id="askSec">
+    <div class="exhead">
+      <h4>Ask about this player</h4>
+      <span class="sub" id="askStatus"></span>
+    </div>
+    <div id="askLog" class="asklog" aria-live="polite"></div>
+    <div class="askrow">
+      <input id="askInput" type="text" autocomplete="off"
+             placeholder="Why is he rated this highly?" aria-label="Ask about this player">
+      <button class="btn" id="askSend">Ask</button>
+    </div>
+    <div class="asksuggest" id="askSuggest"></div>
+  </div>
+
+  <div class="exsec">
+    <div class="exhead"><h4>Change what the model believes</h4></div>
+  </div>
+  <div id="edFields"></div>
+
+  <div class="matchhead">
+    <h4>Per match</h4>
+    <span class="sub" id="edMatchCount"></span>
+  </div>
+  <p class="why" style="margin-top:0">Everything above applies to every fixture.
+    These apply to one — rotation, a rest before a European tie, a return date
+    from injury. A match value replaces the season one for that week only.</p>
+  <div id="edMatches"></div>
+
+  <div class="drawerfoot">
+    <button class="btn ghost" id="edReq" title="Require in the optimal squad">⊕ Require</button>
+    <button class="btn ghost" id="edBan" title="Bar from the optimal squad">⊘ Bar</button>
+    <button class="btn" id="edApply">Apply</button>
+    <button class="btn ghost" id="edReset">Reset player</button>
+    <button class="btn ghost" id="edClose">Close</button>
+  </div>
+</aside>
+
+<div class="tip" id="tip"></div>
+
+<script type="module">
+"use strict";
+import { derivePool, editPlayer, explainPlayer, clubLineup, checkOverridable,
+         age, POINT_SOURCES } from "/assets/board.mjs";
+
+const $ = (s) => document.querySelector(s);
+
+/* ---------------------------------------------------------------- auth token
+   When the board is reachable beyond this machine the server requires a shared
+   token. It arrives once in the URL (from the printed link or a QR code), then
+   moves into sessionStorage and rides on a header so it stops appearing in the
+   address bar, in history, and in any screenshot of the page. */
+const TOKEN = (() => {
+  const url = new URL(location.href);
+  const fromUrl = url.searchParams.get("t");
+  if (fromUrl) {
+    sessionStorage.setItem("fplToken", fromUrl);
+    url.searchParams.delete("t");
+    history.replaceState(null, "", url.pathname + url.search + url.hash);
+    return fromUrl;
+  }
+  return sessionStorage.getItem("fplToken") || "";
+})();
+
+const api = (path, init = {}) => fetch(path, {
+  ...init,
+  headers: { ...(init.headers || {}), ...(TOKEN ? { "X-FPL-Token": TOKEN } : {}) },
+});
+
+const POS_ORDER = ["GKP", "DEF", "MID", "FWD"];
+const SVGNS = "http://www.w3.org/2000/svg";
+
+/* ------------------------------------------------------------- persistence
+   Drafts and overrides live in localStorage, because on the phone there is no
+   server to write them to and losing a squad you spent twenty minutes on
+   because you closed a tab is not acceptable. The laptop's out/drafts.json and
+   out/overrides.csv are still written on sync, so the CLI keeps working from
+   the same squads -- but this is the copy that is always there. */
+const STORE = { drafts: "fpl.drafts", edits: "fpl.edits", squad: "fpl.squad",
+                settings: "fpl.settings" };
+
+function loadLocal(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (_) { return fallback; }
+}
+function saveLocal(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* private mode */ }
+}
+const saveEdits = () => saveLocal(STORE.edits, S.edits);
+const saveSquad = () => saveLocal(STORE.squad, S.squad);
+
+const S = {
+  snapshot: null,
+  players: [], byId: new Map(), gameweeks: [], meta: null,
+  squad: [], optimal: [], optimalPts: null, optimalCost: null, optimalBench: {},
+  optimalState: "idle", optimalError: "",
+  pos: "ALL", search: "", sort: "xpts_plan", dir: -1,
+  edits: loadLocal(STORE.edits, {}), drafts: loadLocal(STORE.drafts, []),
+  compare: [], draftsPath: "", include: [], exclude: [],
+  views: { gw: "chart", exp: "chart", tl: "chart" },
+};
+S.squad = loadLocal(STORE.squad, []);
+
+/* Module scope means nothing here is reachable from the console any more, which
+   is right for the page and wrong for debugging it — and for the browser tests,
+   which otherwise have to infer state by reading rendered text. One named
+   handle, read-only by convention. */
+globalThis.board = S;
+
+/* ---------------------------------------------------------------- settings
+   Every knob is written back as you touch it, so the board opens where you left
+   it rather than on the defaults -- on the phone especially, where the tab gets
+   evicted the moment you switch apps and re-dialling five sliders is the whole
+   difference between using the thing and not.
+
+   Two knobs are deliberately not saved. The first gameweek belongs to the
+   snapshot, not to you: restoring GW10 over a snapshot frozen at GW5 would put a
+   number on screen that nothing behind it agrees with. Bench weights come from
+   the snapshot's own rules block until you move a slider -- so what is saved is
+   `benchTouched`, and only then the four values.
+
+   Squads, drafts and edits are stored separately above and are never touched
+   from here: "Restore defaults" resets knobs, not work. */
+const SETTING_IDS = ["horizon", "halflife", "budget", "ownw", "minstart",
+                     "maxclub", "formation", "recency"];
+const DEFAULT_SETTINGS = { horizon: "8", halflife: "3", budget: "100", ownw: "0",
+                           minstart: "0.3", maxclub: "3", formation: "" };
+const DEFAULT_BENCH = { GKP: 0.03, "1": 0.24, "2": 0.10, "3": 0.04 };
+const VIEW_PANES = { gw: ["#gwChart", "#gwTable"], exp: ["#expChart", "#expTable"],
+                     tl: ["#tlChart", "#tlTable"] };
+
+function setView(which, mode) {
+  const panes = VIEW_PANES[which];
+  if (!panes) return;
+  const table = mode === "table";
+  $(panes[0]).classList.toggle("hidden", table);
+  $(panes[1]).classList.toggle("hidden", !table);
+  const btn = document.querySelector(`.toggle[data-view="${which}"]`);
+  if (btn) btn.textContent = table ? "Chart" : "Table";
+  S.views[which] = table ? "table" : "chart";
+}
+
+function setPosFilter(pos) {
+  S.pos = pos;
+  document.querySelectorAll(".chip[data-pos]").forEach((c) =>
+    c.setAttribute("aria-pressed", String(c.dataset.pos === pos)));
+}
+
+function markSortedHeader() {
+  document.querySelectorAll("#pool th").forEach((th) =>
+    th.classList.toggle("sorted", th.dataset.sort === S.sort));
+}
+
+function showMoreOptions(open) {
+  $("#moreRow").classList.toggle("hidden", !open);
+  $("#benchRow").classList.toggle("hidden", !open);
+  $("#moreBtn").setAttribute("aria-expanded", String(open));
+  $("#moreBtn").textContent = open ? "Fewer options ▴" : "More options ▾";
+}
+
+/** Every value label next to a slider, rewritten from the slider itself, so
+    restoring settings cannot leave a control saying one thing and reading
+    another. */
+function renderControlValues() {
+  $("#hlval").textContent = (+$("#halflife").value).toFixed(1);
+  $("#budval").textContent = (+$("#budget").value).toFixed(1);
+  $("#ownval").textContent = (+$("#ownw").value).toFixed(2);
+  $("#msval").textContent = (+$("#minstart").value).toFixed(2);
+  $("#mcval").textContent = $("#maxclub").value;
+  const recency = +$("#recency").value;
+  $("#recval").textContent = recency ? recency + " gw" : "off";
+  $("#recency").classList.toggle("needsync", recency !== (S.meta?.recency || 0));
+  renderBenchWeights();
+}
+
+function readSettings() {
+  return {
+    controls: Object.fromEntries(SETTING_IDS.map((id) => [id, $("#" + id).value])),
+    bench: Object.fromEntries(BENCH_KEYS.map((k) => [k, $(`#bw_${k}`).value])),
+    benchTouched,
+    theme: document.documentElement.getAttribute("data-theme") || "",
+    moreOpen: !$("#moreRow").classList.contains("hidden"),
+    views: { ...S.views },
+    pos: S.pos, sort: S.sort, dir: S.dir,
+    include: [...S.include], exclude: [...S.exclude],
+  };
+}
+
+/* Coalesced, because dragging a slider fires input on every pixel and this is a
+   JSON stringify plus a synchronous localStorage write. */
+let settingsTimer = null;
+function saveSettings() {
+  clearTimeout(settingsTimer);
+  settingsTimer = setTimeout(() => saveLocal(STORE.settings, readSettings()), 250);
+}
+
+/** Put a saved blob back on screen. Runs before the snapshot has loaded, so it
+    only sets values -- nothing here re-derives or re-solves; loadPool does that
+    once, afterwards, with the settings already in place. */
+function applySettings(saved) {
+  if (!saved || typeof saved !== "object") return;
+  for (const id of SETTING_IDS) {
+    const value = saved.controls?.[id];
+    if (value !== undefined && value !== null) $("#" + id).value = value;
+  }
+  if (saved.benchTouched && saved.bench) {
+    benchTouched = true;
+    for (const k of BENCH_KEYS) {
+      if (saved.bench[k] != null) $(`#bw_${k}`).value = saved.bench[k];
+    }
+  }
+  if (saved.moreOpen) showMoreOptions(true);
+  for (const [which, mode] of Object.entries(saved.views || {})) setView(which, mode);
+  if (saved.pos) setPosFilter(saved.pos);
+  if (saved.sort) { S.sort = saved.sort; S.dir = saved.dir === 1 ? 1 : -1; }
+  markSortedHeader();
+  S.include = Array.isArray(saved.include) ? saved.include.map(Number) : [];
+  S.exclude = Array.isArray(saved.exclude) ? saved.exclude.map(Number) : [];
+  renderControlValues();
+}
+
+function restoreDefaults() {
+  for (const [id, value] of Object.entries(DEFAULT_SETTINGS)) $("#" + id).value = value;
+  // Recency's default is whatever the loaded snapshot was projected with --
+  // zeroing it would flag a sync the board does not actually need.
+  $("#recency").value = String(S.meta?.recency || 0);
+  benchTouched = false;
+  const bench = S.meta?.bench_slot_weights || DEFAULT_BENCH;
+  for (const k of BENCH_KEYS) $(`#bw_${k}`).value = bench[k] ?? DEFAULT_BENCH[k];
+  document.documentElement.removeAttribute("data-theme");
+  S.include = []; S.exclude = [];
+  setPosFilter("ALL");
+  S.search = ""; $("#search").value = "";
+  S.sort = "xpts_plan"; S.dir = -1; markSortedHeader();
+  for (const which of Object.keys(VIEW_PANES)) setView(which, "chart");
+  showMoreOptions(false);
+  renderControlValues();
+  try { localStorage.removeItem(STORE.settings); } catch (_) { /* private mode */ }
+  clampHorizon();
+  rebuildPool(); renderAll(); scheduleSolve(0);
+}
+
+/* A saved horizon can outlive the snapshot that allowed it: a snapshot frozen at
+   8 gameweeks has nothing to say about 12, so the snapshot is the ceiling. */
+function clampHorizon() {
+  const max = S.snapshot?.gameweeks?.length;
+  if (!max) return;
+  const sel = $("#horizon");
+  if (+sel.value <= max) return;
+  const allowed = [...sel.options].map((o) => +o.value).filter((v) => v <= max);
+  sel.value = String(allowed.length ? Math.max(...allowed) : max);
+}
+
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const fmt = (v, d = 1) => (v === null || v === undefined || isNaN(v)) ? "—" : v.toFixed(d);
+const el = (tag, attrs = {}, parent = null) => {
+  const node = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  if (parent) parent.appendChild(node);
+  return node;
+};
+
+/* ---------------------------------------------------------------- squad maths
+   Formation enumeration, mirroring the server's rules exactly so the browser
+   and the optimiser never disagree about what a legal XI is. */
+const FORMATIONS = (() => {
+  const out = [];
+  for (let d = 3; d <= 5; d++) for (let m = 2; m <= 5; m++) for (let f = 1; f <= 3; f++)
+    if (d + m + f === 10) out.push([d, m, f]);
+  return out;
+})();
+
+function bestXI(ids, scoreOf) {
+  const by = { GKP: [], DEF: [], MID: [], FWD: [] };
+  for (const id of ids) {
+    const p = S.byId.get(id);
+    if (p) by[p.pos].push({ id, s: scoreOf(p) });
+  }
+  for (const k of POS_ORDER) by[k].sort((a, b) => b.s - a.s);
+  if (!by.GKP.length) return { ids: [], total: 0 };
+
+  let best = null;
+  for (const [d, m, f] of FORMATIONS) {
+    if (by.DEF.length < d || by.MID.length < m || by.FWD.length < f) continue;
+    const chosen = [by.GKP[0], ...by.DEF.slice(0, d), ...by.MID.slice(0, m), ...by.FWD.slice(0, f)];
+    const total = chosen.reduce((a, c) => a + c.s, 0);
+    if (!best || total > best.total) best = { total, ids: chosen.map((c) => c.id), shape: [d, m, f] };
+  }
+  return best || { ids: [], total: 0 };
+}
+
+// XI points for one gameweek, captain doubled — the same quantity the CLI
+// reports per gameweek.
+const gwPoints = (ids, index) => {
+  const xi = bestXI(ids, (p) => p.gw[index] || 0);
+  if (!xi.ids.length) return 0;
+  const captain = Math.max(...ids.map((id) => (S.byId.get(id)?.gw[index]) || 0));
+  return xi.total + captain;
+};
+
+const planXI = (ids) => bestXI(ids, (p) => p.xpts_plan || 0);
+
+function squadTotal(ids) {
+  const xi = planXI(ids);
+  if (!xi.ids.length) return 0;
+  const captain = Math.max(...xi.ids.map((id) => S.byId.get(id).xpts_plan || 0));
+  return xi.total + captain;
+}
+
+function validity(ids) {
+  const need = S.meta.squad_by_pos, issues = [];
+  const counts = { GKP: 0, DEF: 0, MID: 0, FWD: 0 };
+  const clubs = {};
+  let cost = 0;
+  for (const id of ids) {
+    const p = S.byId.get(id);
+    counts[p.pos]++; clubs[p.team] = (clubs[p.team] || 0) + 1; cost += p.price;
+  }
+  for (const k of POS_ORDER) {
+    if (counts[k] > need[k]) issues.push({ bad: true, text: `${counts[k]} ${k} — max ${need[k]}` });
+    else if (counts[k] < need[k]) issues.push({ bad: false, text: `${need[k] - counts[k]} more ${k} needed` });
+  }
+  const budget = +$("#budget").value;
+  if (cost > budget + 1e-9) issues.push({ bad: true, text: `£${cost.toFixed(1)}m spent — £${(cost - budget).toFixed(1)}m over budget` });
+  for (const [club, n] of Object.entries(clubs))
+    if (n > S.meta.max_per_club) issues.push({ bad: true, text: `${n} from ${club} — max ${S.meta.max_per_club}` });
+  return { issues, cost, counts, complete: ids.length === 15 && !issues.some((i) => i.bad) && !issues.length };
+}
+
+function exposure(ids) {
+  const owned = new Set(ids);
+  const rows = S.players
+    .filter((p) => !owned.has(p.id) && p.owned > 0)
+    .map((p) => ({ ...p, exposure: (p.owned / 100) * (p.xpts_plan || 0) }))
+    .sort((a, b) => b.exposure - a.exposure);
+  const total = S.players.reduce((a, p) => a + (p.owned / 100) * (p.xpts_plan || 0), 0);
+  const held = S.players.filter((p) => owned.has(p.id))
+    .reduce((a, p) => a + (p.owned / 100) * (p.xpts_plan || 0), 0);
+  return { top: rows.slice(0, 8), share: total ? held / total : 0 };
+}
+
+/* ------------------------------------------------------------------ tooltip */
+const tip = $("#tip");
+function showTip(evt, html) {
+  tip.innerHTML = html;
+  tip.style.opacity = "1";
+  const box = tip.getBoundingClientRect();
+  let x = evt.clientX + 14, y = evt.clientY - box.height - 10;
+  if (x + box.width > innerWidth - 8) x = evt.clientX - box.width - 14;
+  if (y < 8) y = evt.clientY + 16;
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+const hideTip = () => { tip.style.opacity = "0"; };
+
+/* Last season's PPG is a rate over however many games he happened to play, and
+   it lies hardest exactly where people trust it most: three cameo appearances
+   and a goal reads 4.0. Greying the thin ones says "this number exists but do
+   not lean on it" without hiding a figure the user asked to see.
+
+   Thin is a *share* of a full workload, not a fixed 900 minutes: the totals
+   behind a snapshot are last season's complete 38 matches right up until the
+   new season starts, and six matches a fortnight later. Against a constant,
+   every player in the league goes grey the week it rolls over and stays that
+   way until Christmas. */
+const thinMinutes = () =>
+  (S.meta?.season_minutes ?? 38 * 90) * (S.meta?.established_share ?? 0.26);
+const ppgClass = (p) => (!p.ppg ? "muted-cell"
+  : (p.minutes_last || 0) < thinMinutes() ? "thin-cell" : "");
+
+/* PPG and xPPG have different denominators, which is most of why the model
+   looks pessimistic next to last season: FPL divides by the games a player
+   appeared in, xPPG divides by his club's fixtures. Haaland's 6.8 is 6.3 once
+   the three games he missed are counted. The tooltip carries both so the
+   comparison beside it is an honest one. */
+const ppgTitle = (p) => !p.ppg ? "no appearances last season"
+  : `${fmt(p.ppg, 1)} per appearance over ${p.apps_last} games\n`
+    + `${fmt(p.ppg_fixture, 2)} per fixture — same basis as xPPG (${fmt(p.xppg, 2)})\n`
+    + `${Math.round(p.minutes_last)} minutes`;
+
+/* ------------------------------------------------------------------- render */
+function renderPool() {
+  const term = S.search.toLowerCase();
+  let rows = S.players.filter((p) =>
+    (S.pos === "ALL" || p.pos === S.pos) &&
+    (!term || p.full_name.toLowerCase().includes(term) || p.team.toLowerCase().includes(term)));
+
+  const key = S.sort;
+  rows.sort((a, b) => {
+    const av = key === "value" ? (a.xpts_plan || 0) / a.price : a[key];
+    const bv = key === "value" ? (b.xpts_plan || 0) / b.price : b[key];
+    if (typeof av === "string") return S.dir * av.localeCompare(bv);
+    return S.dir * ((av || 0) - (bv || 0));
+  });
+  rows = rows.slice(0, 200);
+
+  const picked = new Set(S.squad);
+  const body = $("#pool tbody");
+  body.innerHTML = "";
+  for (const p of rows) {
+    const tr = document.createElement("tr");
+    if (picked.has(p.id)) tr.className = "picked";
+    const flags = [];
+    if (S.edits[p.id]) flags.push(`<span class="flag" title="You have edited this player's inputs"><span class="edited-dot">●</span> edited</span>`);
+    if (p.moved) flags.push(`<span class="flag" title="Numbers recorded at ${p.previous_club}">moved</span>`);
+    if (p.status !== "a") flags.push(`<span class="flag" title="${p.news || "not fully available"}">${p.status === "d" ? "doubt" : "out"}</span>`);
+    tr.innerHTML = `
+      <td><div class="namecell">
+        <button class="add" data-id="${p.id}" ${picked.has(p.id) ? "disabled" : ""} aria-label="Add ${p.name}">+</button>
+        <button class="editbtn" data-edit="${p.id}" title="Edit this player's stats" aria-label="Edit ${p.name}">✎</button>
+        <button class="editbtn ${S.include.includes(p.id) ? "on" : ""}" data-req="${p.id}"
+                title="Require this player in the optimal squad" aria-label="Require ${p.name}">⊕</button>
+        <button class="editbtn ${S.exclude.includes(p.id) ? "off" : ""}" data-ban="${p.id}"
+                title="Bar this player from the optimal squad" aria-label="Bar ${p.name}">⊘</button>
+        <span>${p.name}</span>${flags.join("")}
+      </div></td>
+      <td>${p.pos}</td><td>${p.team_short}</td><td>${fmt(p.price, 1)}</td>
+      <td>${fmt(p.xpts_plan, 1)}</td>
+      <td>${fmt(p.xppg, 2)}</td>
+      <td class="${ppgClass(p)}" title="${ppgTitle(p)}">${p.ppg ? fmt(p.ppg, 1) : "—"}</td>
+      <td>${fmt((p.xpts_plan || 0) / p.price, 2)}</td>
+      <td>${fmt(p.p_start, 2)}</td><td>${fmt(p.cs, 2)}</td><td>${fmt(p.owned, 1)}</td>`;
+    body.appendChild(tr);
+  }
+  $("#poolcount").textContent = `${rows.length} shown`;
+}
+
+function renderSquad() {
+  const box = $("#slots");
+  box.innerHTML = "";
+  const xi = new Set(planXI(S.squad).ids);
+  const order = benchSlots(S.squad);
+  let captain = null, bestPts = -1;
+  for (const id of xi) {
+    const p = S.byId.get(id);
+    if ((p.xpts_plan || 0) > bestPts) { bestPts = p.xpts_plan; captain = id; }
+  }
+
+  for (const pos of POS_ORDER) {
+    const need = S.meta.squad_by_pos[pos];
+    const mine = S.squad.map((id) => S.byId.get(id)).filter((p) => p.pos === pos)
+      .sort((a, b) => (b.xpts_plan || 0) - (a.xpts_plan || 0));
+    const head = document.createElement("div");
+    head.className = "grouplabel";
+    head.textContent = `${pos} · ${mine.length}/${need}`;
+    box.appendChild(head);
+
+    for (const p of mine) {
+      const row = document.createElement("div");
+      row.className = "slot";
+      const role = id2role(p.id, xi, captain, order);
+      row.innerHTML = `
+        <span class="badge ${role === "C" ? "c" : ""}">${role}</span>
+        <span class="nm">${p.name} <span class="sub">${p.team_short}</span></span>
+        <span class="pts" title="expected clean sheets over the horizon">${fmt(p.cs, 1)}cs</span>
+        <span class="pts">£${fmt(p.price, 1)}</span>
+        <span class="last" title="${p.ppg ? "points per game last season" : "no games last season"}">${p.ppg ? fmt(p.ppg, 1) : "—"}</span>
+        <span class="ppg" title="projected points per match, ${p.games} game${p.games === 1 ? "" : "s"} over the horizon">${fmt(p.xppg, 2)}</span>
+        <span class="pts" title="plan-weighted total over the horizon">${fmt(p.xpts_plan, 1)}</span>
+        <button class="editbtn" data-edit="${p.id}" title="Edit stats" aria-label="Edit ${p.name}">✎</button>
+        <button class="rm" data-rm="${p.id}" aria-label="Remove ${p.name}">×</button>`;
+      box.appendChild(row);
+    }
+    for (let i = mine.length; i < need; i++) {
+      const row = document.createElement("div");
+      row.className = "slot empty";
+      row.textContent = `empty ${pos} slot`;
+      box.appendChild(row);
+    }
+  }
+
+  const v = validity(S.squad);
+  const budget = +$("#budget").value;
+  $("#tCost").textContent = "£" + fmt(v.cost, 1);
+  const meter = $("#budMeter");
+  meter.classList.toggle("over", v.cost > budget);
+  meter.firstElementChild.style.width = Math.min(100, (v.cost / budget) * 100) + "%";
+
+  const total = squadTotal(S.squad);
+  const hero = $("#heroPts");
+  hero.classList.toggle("empty", !S.squad.length);
+  hero.textContent = S.squad.length ? fmt(total, 1) : "no players yet";
+
+  const delta = $("#heroDelta");
+  if (S.optimalPts && S.squad.length === 15) {
+    const d = total - S.optimalPts;
+    delta.className = "delta " + (d >= -0.05 ? "up" : "down");
+    delta.textContent = `${d >= 0 ? "+" : ""}${d.toFixed(1)} vs the optimal squad`;
+  } else if (S.squad.length && S.squad.length < 15) {
+    delta.className = "delta"; delta.style.color = "var(--muted)";
+    delta.textContent = `${15 - S.squad.length} slots still empty`;
+  } else { delta.textContent = ""; }
+
+  // The XI's per-match rate, captain doubled, over the gameweeks that actually
+  // contain a fixture. Reads directly against the PPG figures beside each name.
+  const xiIds = planXI(S.squad).ids;
+  const xiGames = Math.max(...xiIds.map((id) => S.byId.get(id)?.games || 0), 0);
+  const xiRate = xiIds.reduce((a, id) => a + (S.byId.get(id)?.xppg || 0), 0)
+    + (captain ? S.byId.get(captain).xppg || 0 : 0);
+  $("#tXppg").textContent = xiIds.length && xiGames ? fmt(xiRate, 1) : "—";
+
+  const exp = exposure(S.squad);
+  $("#tCov").textContent = S.squad.length ? Math.round(exp.share * 100) + "%" : "—";
+
+  const list = $("#issues");
+  list.innerHTML = "";
+  if (!S.squad.length) {
+    list.innerHTML = `<div class="issue" style="color:var(--muted)"><span class="ico">·</span><span>Add players from the pool, or copy the optimal squad across and edit it.</span></div>`;
+  } else if (!v.issues.length) {
+    list.innerHTML = `<div class="issue ok"><span class="ico">✓</span><span>Legal squad — 15 players, budget and club limits satisfied.</span></div>`;
+  } else {
+    for (const i of v.issues) {
+      const d = document.createElement("div");
+      d.className = "issue " + (i.bad ? "bad" : "");
+      if (!i.bad) d.style.color = "var(--muted)";
+      d.innerHTML = `<span class="ico">${i.bad ? "!" : "·"}</span><span>${i.text}</span>`;
+      list.appendChild(d);
+    }
+  }
+}
+// The solver ranks the bench, because the slots are not interchangeable: the
+// first substitute comes on whenever a starter blanks, the third rarely does.
+const BENCH_LABEL = { GKP: "GK sub", 1: "1st sub", 2: "2nd sub", 3: "3rd sub" };
+
+/* Which bench slot each substitute occupies, ordered the way the solver would.
+   Computed here rather than carried over from the last solve: the moment your
+   draft stops being the optimal squad, the solver's ordering describes a
+   different fifteen, and a "1st sub" badge on a player who is no longer in that
+   squad is simply wrong. Best available outfielder first, reserve keeper apart —
+   the same ranking the objective's slot profile produces. */
+function benchSlots(ids) {
+  const xi = new Set(planXI(ids).ids);
+  const rest = ids.filter((id) => !xi.has(id)).map((id) => S.byId.get(id)).filter(Boolean);
+  const order = {};
+  for (const p of rest.filter((p) => p.pos === "GKP")) order[p.id] = "GKP";
+  rest.filter((p) => p.pos !== "GKP")
+    .sort((a, b) => (b.xpts_plan || 0) - (a.xpts_plan || 0))
+    .forEach((p, i) => { order[p.id] = String(Math.min(3, i + 1)); });
+  return order;
+}
+
+const id2role = (id, xi, captain, order) => {
+  if (id === captain) return "C";
+  if (xi.has(id)) return "XI";
+  return BENCH_LABEL[order?.[id]] || "sub";
+};
+
+/* ------------------------------------------------------- bench slot weights
+   The objective prices each bench slot separately, so the board exposes each
+   one separately. The four sliders are the source of truth that goes to the
+   server; the "overall" slider is a convenience that rewrites all four from the
+   default shape, and reads back as the scale those four currently imply. */
+const BENCH_PROFILE = { GKP: 0.25, "1": 2.0, "2": 0.85, "3": 0.35 };
+const BENCH_KEYS = Object.keys(BENCH_PROFILE);
+const PROFILE_SUM = BENCH_KEYS.reduce((a, k) => a + BENCH_PROFILE[k], 0);
+
+const benchWeights = () =>
+  Object.fromEntries(BENCH_KEYS.map((k) => [k, +$(`#bw_${k}`).value]));
+
+function renderBenchWeights() {
+  const w = benchWeights();
+  for (const k of BENCH_KEYS) $(`#bwv_${k}`).textContent = w[k].toFixed(3);
+  // The scale these four imply, so the overall slider never contradicts them.
+  const scale = BENCH_KEYS.reduce((a, k) => a + w[k], 0) / PROFILE_SUM;
+  $("#benchw").value = Math.min(1, scale);
+  $("#bwval").textContent = scale.toFixed(2) + (scale > 1 ? "+" : "");
+}
+
+function setBenchScale(scale) {
+  for (const k of BENCH_KEYS) {
+    const input = $(`#bw_${k}`);
+    input.value = Math.min(+input.max, scale * BENCH_PROFILE[k]);
+  }
+  for (const k of BENCH_KEYS) $(`#bwv_${k}`).textContent = (+$(`#bw_${k}`).value).toFixed(3);
+  $("#bwval").textContent = (+scale).toFixed(2);
+}
+
+/* -------------------------------------------------------------- gw line chart */
+function renderGwChart() {
+  const host = $("#gwChart");
+  host.innerHTML = "";
+  if (!S.squad.length) { host.innerHTML = `<div class="empty-note">Draft a squad to see its weekly profile.</div>`; return; }
+
+  const gws = S.gameweeks;
+  const mine = gws.map((_, i) => gwPoints(S.squad, i));
+  // Once you have pressed "Fill optimal" and not yet edited, the two squads are
+  // the same and the second line would sit exactly under the first -- two keys
+  // in the legend for one visible line reads as a bug. Say so instead.
+  const identical = S.optimal.length === 15 && S.squad.length === 15 &&
+    S.optimal.slice().sort().join() === S.squad.slice().sort().join();
+  const comparing = S.compare.length > 0;
+  const series = [{
+    name: comparing ? "Current draft"
+      : identical ? "Your draft (identical to optimal)" : "Your draft",
+    data: mine, color: slotColor(0), ids: S.squad,
+  }];
+  if (comparing) {
+    // Ticked drafts replace the optimal overlay: showing both at once would put
+    // five lines on a chart whose palette is validated for four.
+    const slots = slotMap();
+    S.compare.forEach((name) => {
+      const d = S.drafts.find((x) => x.name === name);
+      if (d) {
+        const ids = d.squad.filter((id) => S.byId.has(id));
+        series.push({ name: d.name, color: slotColor(draftSlot(ids, slots)), ids,
+                      data: gws.map((_, g) => gwPoints(ids, g)) });
+      }
+    });
+  } else if (S.optimal.length && !identical) {
+    series.push({ name: "Optimal", data: gws.map((_, i) => gwPoints(S.optimal, i)),
+                  color: slotColor(1), ids: S.optimal });
+  }
+
+  // Two drafts with the same fifteen players draw the same line, and the one
+  // underneath is invisible -- a legend listing three series over two visible
+  // lines reads as a broken chart. Fold duplicates into one key that names both.
+  const seen = new Map();
+  for (const s of series) {
+    const key = (s.ids || []).slice().sort().join(",") || s.data.map((v) => v.toFixed(3)).join(",");
+    if (seen.has(key)) seen.get(key).name += ` = ${s.name}`;
+    else seen.set(key, s);
+  }
+  series.length = 0;
+  series.push(...seen.values());
+
+  // A legend is mandatory for two or more series and pointless for one -- with a
+  // single line the heading already names what is plotted, so a lone swatch just
+  // restates it. Use the space for the note instead.
+  $("#gwLegend").innerHTML = series.length > 1
+    ? series.map((s) => `<span class="key"><i style="background:${s.color}"></i>${s.name}</span>`).join("")
+    : `<span class="sub">${identical
+        ? "Your draft is currently identical to the optimal squad — edit it to compare."
+        : "Press ‘Fill optimal’, or tick a saved draft below, to overlay a comparison."}</span>`;
+
+  const W = Math.max(300, host.clientWidth || 460), H = 250;
+  const M = { t: 14, r: 54, b: 30, l: 40 };
+  const all = series.flatMap((s) => s.data);
+  const lo = Math.min(...all) * 0.94, hi = Math.max(...all) * 1.04;
+  const x = (i) => M.l + (i * (W - M.l - M.r)) / Math.max(1, gws.length - 1);
+  const y = (v) => H - M.b - ((v - lo) / (hi - lo || 1)) * (H - M.t - M.b);
+
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img" }, host);
+  el("title", {}, svg).textContent = "Projected starting XI points for each gameweek";
+
+  // Recessive solid hairline grid, rounded to clean values.
+  const step = Math.max(1, Math.round((hi - lo) / 4));
+  for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) {
+    el("line", { x1: M.l, x2: W - M.r, y1: y(v), y2: y(v), stroke: css("--grid"), "stroke-width": 1 }, svg);
+    const t = el("text", { x: M.l - 8, y: y(v) + 4, "text-anchor": "end", fill: css("--muted"),
+      "font-size": 11, style: "font-variant-numeric:tabular-nums" }, svg);
+    t.textContent = v;
+  }
+  gws.forEach((gw, i) => {
+    const t = el("text", { x: x(i), y: H - 10, "text-anchor": "middle", fill: css("--muted"), "font-size": 11 }, svg);
+    t.textContent = "GW" + gw;
+  });
+  el("line", { x1: M.l, x2: W - M.r, y1: H - M.b, y2: H - M.b, stroke: css("--axis"), "stroke-width": 1 }, svg);
+
+  for (const s of series) {
+    el("path", {
+      d: s.data.map((v, i) => `${i ? "L" : "M"}${x(i)},${y(v)}`).join(" "),
+      fill: "none", stroke: s.color, "stroke-width": 2,
+      "stroke-linejoin": "round", "stroke-linecap": "round",
+    }, svg);
+    // End marker with a 2px surface ring, plus a direct end-label so identity
+    // never rests on colour alone.
+    const last = s.data.length - 1;
+    el("circle", { cx: x(last), cy: y(s.data[last]), r: 4.5, fill: s.color,
+      stroke: css("--surface-1"), "stroke-width": 2 }, svg);
+    const lab = el("text", { x: x(last) + 9, y: y(s.data[last]) + 4, fill: css("--text-secondary"),
+      "font-size": 11.5, style: "font-variant-numeric:tabular-nums" }, svg);
+    lab.textContent = s.data[last].toFixed(1);
+  }
+
+  // Crosshair band — hit targets span the whole column, never the 2px line.
+  const cross = el("line", { y1: M.t, y2: H - M.b, stroke: css("--axis"), "stroke-width": 1, opacity: 0 }, svg);
+  gws.forEach((gw, i) => {
+    const half = (W - M.l - M.r) / Math.max(1, gws.length - 1) / 2;
+    const band = el("rect", { x: x(i) - half, y: M.t, width: half * 2, height: H - M.t - M.b,
+      fill: "transparent", style: "cursor:crosshair" }, svg);
+    band.addEventListener("mousemove", (e) => {
+      cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("opacity", 1);
+      showTip(e, `<b>GW${gw}</b><br>` + series.map((s) =>
+        `<span class="key"><i style="background:${s.color};width:9px;height:9px;border-radius:50%"></i>${s.name} <span class="r">${s.data[i].toFixed(1)}</span></span>`).join("<br>"));
+    });
+    band.addEventListener("mouseleave", () => { cross.setAttribute("opacity", 0); hideTip(); });
+  });
+
+  $("#gwTable").innerHTML = `<table><thead><tr><th>GW</th>${series.map((s) => `<th>${s.name}</th>`).join("")}</tr></thead>
+    <tbody>${gws.map((gw, i) => `<tr><td>GW${gw}</td>${series.map((s) => `<td>${s.data[i].toFixed(1)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+}
+
+/* --------------------------------------------------------------- exposure bars */
+function renderExposure() {
+  const host = $("#expChart");
+  host.innerHTML = "";
+  const exp = exposure(S.squad);
+  if (!exp.top.length) { host.innerHTML = `<div class="empty-note">No data.</div>`; return; }
+
+  const rowH = 27, W = Math.max(300, host.clientWidth || 460), M = { l: 116, r: 46, t: 4, b: 4 };
+  const H = exp.top.length * rowH + M.t + M.b;
+  const max = Math.max(...exp.top.map((p) => p.exposure));
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img" }, host);
+  el("title", {}, svg).textContent = "Players you do not own, ranked by ownership times projected points";
+
+  exp.top.forEach((p, i) => {
+    const y = M.t + i * rowH;
+    // 24px bar in a 27px band: the leftover is the surface gap between bars.
+    const w = (p.exposure / max) * (W - M.l - M.r);
+    const label = el("text", { x: M.l - 9, y: y + 17, "text-anchor": "end",
+      fill: css("--text-secondary"), "font-size": 12 }, svg);
+    label.textContent = p.name;
+    el("rect", { x: M.l, y: y + 3, width: Math.max(2, w), height: 18, rx: 4,
+      fill: css("--series-1") }, svg);
+    // Square the baseline end: only the data-end is rounded.
+    el("rect", { x: M.l, y: y + 3, width: Math.min(4, Math.max(2, w)), height: 18, fill: css("--series-1") }, svg);
+    const val = el("text", { x: M.l + w + 8, y: y + 17, fill: css("--text-secondary"),
+      "font-size": 11.5, style: "font-variant-numeric:tabular-nums" }, svg);
+    val.textContent = p.exposure.toFixed(1);
+    const hit = el("rect", { x: 0, y, width: W, height: rowH, fill: "transparent" }, svg);
+    hit.addEventListener("mousemove", (e) => showTip(e,
+      `<b>${p.name}</b> · ${p.team_short} £${p.price.toFixed(1)}m<br>
+       <span class="r">${p.owned.toFixed(1)}% owned · ${p.xpts_plan.toFixed(1)} xPts</span><br>
+       <span class="r">exposure ${p.exposure.toFixed(2)}</span>`));
+    hit.addEventListener("mouseleave", hideTip);
+  });
+
+  $("#expTable").innerHTML = `<table><thead><tr><th>Player</th><th>Team</th><th>£</th><th>Own%</th><th>xPts</th><th>Exposure</th></tr></thead>
+    <tbody>${exp.top.map((p) => `<tr><td>${p.name}</td><td>${p.team_short}</td><td>${p.price.toFixed(1)}</td><td>${p.owned.toFixed(1)}</td><td>${p.xpts_plan.toFixed(1)}</td><td>${p.exposure.toFixed(2)}</td></tr>`).join("")}</tbody></table>`;
+}
+
+/* ------------------------------------------------------------ timeline heatmap
+   Diverging, because the question is polarity: is this gameweek above or below
+   what this player normally does? Blue and red poles, neutral at his own mean. */
+function renderTimeline() {
+  const host = $("#tlChart");
+  host.innerHTML = "";
+  if (!S.squad.length) { host.innerHTML = `<div class="empty-note">Draft a squad to see when its fixtures turn.</div>`; return; }
+
+  const gws = S.gameweeks;
+  const rows = S.squad.map((id) => S.byId.get(id))
+    .map((p) => {
+      const mean = p.gw.reduce((a, b) => a + b, 0) / (p.gw.length || 1);
+      const swing = Math.max(...p.gw) - Math.min(...p.gw);
+      return { p, mean, swing };
+    })
+    .sort((a, b) => b.swing - a.swing);
+
+  const cw = 62, rh = 27, M = { l: 150, t: 26, r: 8, b: 6 };
+  const W = M.l + gws.length * cw + M.r, H = M.t + rows.length * rh + M.b;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img" }, host);
+  el("title", {}, svg).textContent = "Each player's projected points per gameweek relative to his own average";
+
+  gws.forEach((gw, i) => {
+    const t = el("text", { x: M.l + i * cw + cw / 2, y: 16, "text-anchor": "middle",
+      fill: css("--muted"), "font-size": 11 }, svg);
+    t.textContent = "GW" + gw;
+  });
+
+  rows.forEach((r, ri) => {
+    const y = M.t + ri * rh;
+    const name = el("text", { x: M.l - 10, y: y + 18, "text-anchor": "end",
+      fill: css("--text-secondary"), "font-size": 12 }, svg);
+    name.textContent = `${r.p.name}`;
+    const pos = el("text", { x: 4, y: y + 18, fill: css("--muted"), "font-size": 11 }, svg);
+    pos.textContent = `${r.p.pos} ${r.p.team_short}`;
+
+    gws.forEach((gw, i) => {
+      const v = r.p.gw[i] || 0;
+      const rel = r.mean ? (v - r.mean) / r.mean : 0;
+      const mag = Math.min(1, Math.abs(rel) / 0.3);
+      const hue = rel >= 0 ? css("--pos") : css("--neg");
+      // 2px surface gap on every side does the separating — no borders.
+      el("rect", { x: M.l + i * cw + 1, y: y + 2, width: cw - 3, height: rh - 4, rx: 4,
+        fill: Math.abs(rel) < 0.02 ? css("--mid") : hue,
+        "fill-opacity": Math.abs(rel) < 0.02 ? 1 : (0.13 + mag * 0.42) }, svg);
+      const t = el("text", { x: M.l + i * cw + cw / 2, y: y + 18, "text-anchor": "middle",
+        fill: css("--text-primary"), "font-size": 11.5,
+        style: "font-variant-numeric:tabular-nums" }, svg);
+      t.textContent = v.toFixed(1);
+      const hit = el("rect", { x: M.l + i * cw, y, width: cw, height: rh, fill: "transparent" }, svg);
+      hit.addEventListener("mousemove", (e) => showTip(e,
+        `<b>${r.p.name}</b> · GW${gw}<br><span class="r">${r.p.opp[i] || "no fixture"}</span><br>
+         <span class="r">${v.toFixed(2)} xPts · his average ${r.mean.toFixed(2)}</span><br>
+         <span class="r">${rel >= 0 ? "+" : ""}${Math.round(rel * 100)}% vs his own average</span>`));
+      hit.addEventListener("mouseleave", hideTip);
+    });
+  });
+
+  $("#tlTable").innerHTML = `<table><thead><tr><th>Player</th><th>Pos</th>${gws.map((g) => `<th>GW${g}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map((r) => `<tr><td>${r.p.name}</td><td>${r.p.pos}</td>${r.p.gw.map((v) => `<td>${v.toFixed(1)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+}
+
+function renderAll() {
+  renderPool(); renderSquad(); renderOptimal(); renderConstraints();
+  renderLineup();
+  renderDrafts(); renderGwChart(); renderExposure(); renderTimeline();
+}
+
+/* ------------------------------------------------------------- constraints
+   Require and bar are optimiser constraints, not squad edits: they say what the
+   solver must respect next time you press "Fill optimal", and leave whatever you
+   are currently drafting alone. A player can be one or the other, never both. */
+/* First gameweek and recency are the two settings the browser cannot apply.
+   Horizon and half-life only reweight points that are already known, but these
+   two change which fixtures exist and what the underlying rates are, so both
+   mean "re-project", and re-projecting means the laptop. They are wired to Sync
+   rather than left looking like ordinary knobs that quietly do nothing. */
+const startGw = () => $("#startgw").value ? +$("#startgw").value : null;
+
+const parseFormation = (text) => {
+  if (!text) return null;
+  const [d, m, f] = text.split("-").map(Number);
+  return { DEF: d, MID: m, FWD: f };
+};
+
+function toggleConstraint(id, which) {
+  const other = which === "include" ? "exclude" : "include";
+  S[other] = S[other].filter((x) => x !== id);
+  S[which] = S[which].includes(id) ? S[which].filter((x) => x !== id) : [...S[which], id];
+  saveSettings();
+  renderPool(); renderConstraints(); scheduleSolve(0);
+}
+
+function renderConstraints() {
+  const box = $("#constraintChips");
+  const chip = (id, kind) => {
+    const p = S.byId.get(id);
+    return `<button class="chip" data-drop="${id}" title="Remove this constraint"
+      style="border-color:${kind === "include" ? "var(--good)" : "var(--critical)"}">
+      ${kind === "include" ? "⊕" : "⊘"} ${p ? p.name : id} ×</button>`;
+  };
+  const parts = [...S.include.map((i) => chip(i, "include")),
+                 ...S.exclude.map((i) => chip(i, "exclude"))];
+  box.innerHTML = parts.length
+    ? `<div style="display:flex;gap:5px;flex-wrap:wrap">${parts.join("")}</div>`
+    : `<span class="sub">none set</span>`;
+}
+
+/* ----------------------------------------------------------------- drafts
+   Series colours are the categorical slots in fixed order, assigned by the
+   draft's position in the saved list -- never by rank, so ticking a draft off
+   never repaints the others. Capped at three saved drafts on screen at once
+   (four series with the live draft): past four the palette's adjacent pairs
+   stop clearing the colourblind gate on this chart form. */
+const SERIES_SLOTS = [
+  { light: "#2a78d6", dark: "#3987e5" },
+  { light: "#eb6834", dark: "#d95926" },
+  { light: "#1baf7a", dark: "#199e70" },
+  { light: "#eda100", dark: "#c98500" },
+];
+const MAX_COMPARE = 3;
+
+/* Colour follows the squad, not the row it sits on. Two drafts holding the same
+   fifteen players are the same thing wearing two names -- they draw one line, so
+   they must also carry one colour in the list, the table and the legend. Keying
+   the slot on a signature of the squad rather than on list position is what
+   guarantees that, and it also means unticking one draft never repaints the
+   others. */
+const squadSig = (ids) => (ids || []).filter((id) => S.byId.has(id)).slice().sort().join(",");
+
+function slotMap() {
+  const map = new Map([[squadSig(S.squad), 0]]);
+  let next = 1;
+  for (const name of S.compare) {
+    const d = S.drafts.find((x) => x.name === name);
+    if (!d) continue;
+    const key = squadSig(d.squad);
+    if (!map.has(key)) map.set(key, next++);
+  }
+  return map;
+}
+
+const draftSlot = (ids, map) => map.get(squadSig(ids));
+const isDark = () => {
+  const t = document.documentElement.getAttribute("data-theme");
+  return t === "dark" || (!t && matchMedia("(prefers-color-scheme: dark)").matches);
+};
+const slotColor = (i) => SERIES_SLOTS[i % SERIES_SLOTS.length][isDark() ? "dark" : "light"];
+
+function draftMetrics(ids) {
+  const live = ids.filter((id) => S.byId.has(id));
+  const v = validity(live);
+  return {
+    ids: live, cost: v.cost, issues: v.issues,
+    total: squadTotal(live),
+    coverage: exposure(live).share,
+    legal: live.length === 15 && !v.issues.some((i) => i.bad),
+    missing: 15 - live.length,
+  };
+}
+
+/* Drafts are local first and pushed to the laptop opportunistically. Saving has
+   to work on a train, so it cannot depend on a request succeeding; but the CLI
+   reads out/drafts.json, so the laptop's copy should not rot either. Merging by
+   name and keeping the newer saved_at means editing the same draft on both
+   sides converges instead of one silently winning. */
+const persistDrafts = () => saveLocal(STORE.drafts, S.drafts);
+
+/* Reconciling with the laptop happens on Sync, not on load. Doing it on load
+   meant every offline open fired a request that could only fail — handled, but
+   a red line in the console and a pointless wait on a flaky connection. Sync is
+   already the moment the two sides meet; this belongs there. */
+async function syncDrafts() {
+  let remote = [];
+  try {
+    const res = await api("/api/drafts");
+    if (!res.ok) return;
+    const data = await res.json();
+    remote = data.drafts || [];
+    S.draftsPath = data.path;
+  } catch (_) { return; }
+
+  // Merge by name, newer saved_at wins, so editing the same draft on the phone
+  // and on the laptop converges instead of one side silently losing.
+  const merged = new Map(S.drafts.map((d) => [d.name, d]));
+  for (const d of remote) {
+    const mine = merged.get(d.name);
+    if (!mine || (d.saved_at || "") > (mine.saved_at || "")) merged.set(d.name, d);
+  }
+  S.drafts = [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
+  persistDrafts();
+
+  for (const draft of S.drafts) {
+    try {
+      await api("/api/drafts", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(draft),
+      });
+    } catch (_) { break; }      // laptop went away mid-push; local is still right
+  }
+  renderDrafts();
+}
+
+function saveDraft() {
+  const name = $("#draftName").value.trim();
+  if (!name) return alert("Give the draft a name first.");
+  if (!S.squad.length) return alert("Nothing to save — the squad is empty.");
+  S.drafts = S.drafts.filter((d) => d.name !== name);
+  S.drafts.push({
+    name, squad: [...S.squad], notes: "",
+    saved_at: new Date().toISOString().slice(0, 19),
+    context: {
+      horizon: +$("#horizon").value, half_life: +$("#halflife").value,
+      budget: +$("#budget").value, edited_players: Object.keys(S.edits).length,
+    },
+  });
+  S.drafts.sort((a, b) => a.name.localeCompare(b.name));
+  $("#draftName").value = "";
+  persistDrafts();
+  renderDrafts();
+}
+
+async function deleteDraft(name) {
+  if (!confirm(`Delete the draft “${name}”?`)) return;
+  S.drafts = S.drafts.filter((d) => d.name !== name);
+  S.compare = S.compare.filter((n) => n !== name);
+  persistDrafts();
+  try {
+    await api(`/api/drafts/${encodeURIComponent(name)}`, { method: "DELETE" });
+  } catch (_) { /* offline; it is gone here, and stays gone locally */ }
+  renderDrafts(); renderGwChart();
+}
+
+function loadDraft(name) {
+  const d = S.drafts.find((x) => x.name === name);
+  if (!d) return;
+  S.squad = d.squad.filter((id) => S.byId.has(id));
+  saveSquad(); renderAll();
+}
+
+function toggleCompare(name) {
+  if (S.compare.includes(name)) S.compare = S.compare.filter((n) => n !== name);
+  else {
+    if (S.compare.length >= MAX_COMPARE) {
+      alert(`Compare up to ${MAX_COMPARE} saved drafts at once — beyond that the `
+        + `chart's colours stop being reliably distinguishable.`);
+      return;
+    }
+    S.compare.push(name);
+  }
+  renderDrafts(); renderGwChart();
+}
+
+function renderDrafts() {
+  // The drafts list and the pool are fetched in parallel and the drafts always
+  // win, being a small local file against a projection. Scoring a draft needs
+  // the pool's rules, so on a cold server this ran first and threw; loadPool's
+  // renderAll paints the list a moment later either way.
+  if (!S.meta) return;
+  const box = $("#draftList");
+  box.innerHTML = "";
+  $("#draftHint").textContent = S.drafts.length
+    ? `${S.drafts.length} saved · ${S.draftsPath || ""}`
+    : "No saved drafts yet.";
+
+  const slots = slotMap();
+  for (const d of S.drafts) {
+    const m = draftMetrics(d.squad);
+    const selected = S.compare.includes(d.name);
+    const slot = selected ? draftSlot(d.squad, slots) : null;
+    const row = document.createElement("div");
+    row.className = "draftrow" + (selected ? " sel" : "");
+    const ctx = d.context || {};
+    const drift = ctx.horizon && (ctx.horizon !== +$("#horizon").value
+      || ctx.half_life !== +$("#halflife").value);
+    row.innerHTML = `
+      <input type="checkbox" ${selected ? "checked" : ""} data-cmp="${encodeURIComponent(d.name)}"
+             aria-label="Compare ${d.name}">
+      ${slot !== undefined && slot !== null ? `<span class="swatch" style="background:${slotColor(slot)}"></span>` : ""}
+      <span class="dname">${d.name}</span>
+      <span class="dnum">${m.total.toFixed(1)} xPts</span>
+      <span class="dnum">£${m.cost.toFixed(1)}m</span>
+      <span class="dmeta">${m.legal ? "legal" : (m.missing > 0 ? `${m.missing} short` : "illegal")}
+        · ${Math.round(m.coverage * 100)}% cover</span>
+      ${drift ? `<span class="flag" title="Saved at horizon ${ctx.horizon}, half-life ${ctx.half_life};
+        shown re-scored under the current settings">re-scored</span>` : ""}
+      <span class="spacer"></span>
+      <span class="dmeta">${(d.saved_at || "").replace("T", " ").slice(0, 16)}</span>
+      <button class="mini" data-load="${encodeURIComponent(d.name)}">Load</button>
+      <button class="mini danger" data-del="${encodeURIComponent(d.name)}">Delete</button>`;
+    box.appendChild(row);
+  }
+  renderComparison();
+}
+
+function renderComparison() {
+  const box = $("#cmpBox");
+  if (S.compare.length < 1) { box.classList.add("hidden"); return; }
+  box.classList.remove("hidden");
+
+  const slots = slotMap();
+  const entries = [{ name: "Current draft", ids: S.squad, slot: 0 }];
+  S.compare.forEach((name) => {
+    const d = S.drafts.find((x) => x.name === name);
+    if (d) entries.push({ name: d.name, ids: d.squad, slot: draftSlot(d.squad, slots) });
+  });
+  const rows = entries.map((e) => ({ ...e, m: draftMetrics(e.ids) }));
+  const best = Math.max(...rows.map((r) => r.m.total));
+
+  const cells = (r) => `
+    <td style="text-align:left"><span class="swatch" style="background:${slotColor(r.slot)}"></span>
+      &nbsp;${r.name}</td>
+    <td>${r.m.total.toFixed(1)}</td>
+    <td>${r.m.total === best ? "—" : (r.m.total - best).toFixed(1)}</td>
+    <td>£${r.m.cost.toFixed(1)}</td>
+    <td>${Math.round(r.m.coverage * 100)}%</td>
+    <td>${r.m.legal ? "✓" : (r.m.missing > 0 ? `${r.m.missing} short` : "illegal")}</td>`;
+
+  // Squad differences, relative to the current draft.
+  const baseline = new Set(S.squad);
+  const diffs = rows.slice(1).map((r) => {
+    const theirs = new Set(r.m.ids);
+    const onlyThem = r.m.ids.filter((id) => !baseline.has(id));
+    const onlyMine = [...baseline].filter((id) => !theirs.has(id));
+    const nm = (id) => S.byId.get(id)?.name || id;
+    return `<div class="diffcol">
+      <h4><span class="swatch" style="background:${slotColor(r.slot)}"></span>${r.name}</h4>
+      ${onlyThem.length ? `<div class="dmeta">only in this draft</div><ul>${onlyThem.map((id) => `<li>${nm(id)}</li>`).join("")}</ul>` : `<div class="none">nothing it has that you don't</div>`}
+      ${onlyMine.length ? `<div class="dmeta" style="margin-top:6px">missing vs current</div><ul>${onlyMine.map((id) => `<li>${nm(id)}</li>`).join("")}</ul>` : ""}
+    </div>`;
+  }).join("");
+
+  box.innerHTML = `
+    <table>
+      <thead><tr><th style="text-align:left">Draft</th><th>xPts</th><th>vs best</th>
+        <th>Cost</th><th>Cover</th><th>Legal</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>${cells(r)}</tr>`).join("")}</tbody>
+    </table>
+    ${diffs ? `<div class="diffgrid">${diffs}</div>` : ""}`;
+}
+
+/* ------------------------------------------------------------- stat editor
+   Every model input a user can reasonably disagree with. `only` restricts a
+   field to the positions it means anything for -- saves per 90 on a striker is
+   noise, not a setting. */
+const EDIT_FIELDS = [
+  { k: "p_start", label: "Start probability", min: 0, max: 1, step: 0.01, dp: 2,
+    help: "The biggest lever in the model. Last season's starts cannot see a transfer or a new manager." },
+  { k: "npxg_per90", label: "Non-penalty xG per 90", min: 0, max: 1.5, step: 0.01, dp: 3,
+    help: "Penalties are modelled separately, so this is open play only." },
+  { k: "xa_per90", label: "Expected assists per 90", min: 0, max: 1.2, step: 0.01, dp: 3 },
+  { k: "dc_per90", label: "Defensive contribution per 90", min: 0, max: 25, step: 0.1, dp: 2,
+    help: "Threshold is 10 for defenders, 12 for everyone else." },
+  { k: "bonus_per90", label: "Bonus points per 90", min: 0, max: 1.5, step: 0.01, dp: 3 },
+  { k: "saves_per90", label: "Saves per 90", min: 0, max: 8, step: 0.1, dp: 2, only: ["GKP"] },
+  { k: "penalties_order", label: "Penalty order (1 = takes them)", min: 0, max: 5, step: 1, dp: 0 },
+  { k: "price", label: "Price (£m)", min: 3.5, max: 16, step: 0.1, dp: 1,
+    help: "For hypotheticals — it does not change what FPL charges you." },
+];
+
+/* The drawer edits a copy, not S.edits itself. Writing straight through meant
+   that closing the drawer — with Close, Escape or the scrim — kept whatever the
+   sliders were last on, without ever recomputing the player: the board went on
+   showing his old points while the optimiser was quietly handed the new ones.
+   Apply commits the copy; anything else throws it away. */
+let editingId = null, editBuffer = {}, previewTimer = null;
+
+function openEditor(id) {
+  editingId = id;
+  editBuffer = { ...(S.edits[id] || {}) };
+  const p = S.byId.get(id);
+  $("#edName").textContent = p.name;
+  $("#edWho").textContent = `${p.full_name} · ${p.pos} · ${p.team} · £${p.price.toFixed(1)}m`
+    + (p.moved ? ` · numbers recorded at ${p.previous_club}` : "");
+  $("#edWhy").innerHTML = p.moved
+    ? `These rates were produced at <b>${p.previous_club}</b> and already carry a team-context
+       adjustment and a heavier prior. If you think the model still has him wrong, say so here.`
+    : `Rates are last season's, shrunk toward the positional average. An override replaces
+       that number outright — the model uses exactly what you type.`;
+  expandedMatches.clear();
+  renderEditorFields();
+  renderMatches();
+  renderEditorConstraints();
+  renderExplain();
+  resetAsk(p);
+  previewEdit();
+  $("#drawer").classList.add("open");
+  $("#scrim").classList.remove("hidden");
+}
+
+function closeEditor() {
+  clearTimeout(previewTimer);
+  editingId = null;
+  editBuffer = {};
+  $("#drawer").classList.remove("open");
+  $("#scrim").classList.add("hidden");
+}
+
+/* --------------------------------------------------------------- explain ---
+   Three questions, in the order people actually ask them: what is he paid for,
+   why is a gameweek eight fixture worth less than a gameweek one fixture, and
+   how does any of that reach the single number in the table.
+
+   The last one is the whole reason this panel exists. The board ranks on
+   plan-weighted points and the eye reads raw ones, and nothing on screen ever
+   said they were different quantities -- so the honest thing is to show both
+   ends and the arithmetic between them rather than pick one and hope. */
+let explainOpen = true;
+
+function renderExplain() {
+  const box = $("#edExplain");
+  if (!explainOpen) { box.innerHTML = ""; return; }
+  const p = S.byId.get(editingId);
+  if (!p) return;
+
+  let x;
+  try {
+    x = explainPlayer(S.snapshot, S.snapshot.players.find((r) => r.id === editingId),
+      tidy(editBuffer), { horizon: +$("#horizon").value, halfLife: +$("#halflife").value });
+  } catch {
+    box.innerHTML = `<p class="exnote">Cannot break these points down right now.</p>`;
+    return;
+  }
+
+  const shown = POINT_SOURCES
+    .map((s) => ({ ...s, value: x.breakdown[s.key] || 0 }))
+    .filter((s) => Math.abs(s.value) > 0.005);
+  const scale = Math.max(...shown.map((s) => Math.abs(s.value)), 0.01);
+
+  const bars = shown.map((s) => `
+    <div>
+      <div class="exrow">
+        <span class="exlabel">${s.label}${s.note ? `<span class="note">${s.note}</span>` : ""}</span>
+        <span class="exval">${s.value > 0 ? "" : "−"}${Math.abs(s.value).toFixed(2)}</span>
+      </div>
+      <div class="exbar${s.value < 0 ? " neg" : ""}"
+           style="width:${Math.max(2, (Math.abs(s.value) / scale) * 100)}%"></div>
+    </div>`).join("");
+
+  // The bridge. Each gameweek's own points, then the two multipliers that turn
+  // them into what the ranking uses, then the product -- laid out so the last
+  // column visibly sums to the headline figure.
+  const rows = x.gw.map((r) => `
+    <tr class="${r.weight < 0.35 ? "faded" : ""}">
+      <td>GW${r.gw}${r.opp ? ` <span style="color:var(--muted)">${r.opp}</span>` : ""}</td>
+      <td>${r.points.toFixed(2)}</td>
+      <td>${r.weight.toFixed(2)}</td>
+      <td>${r.weighted.toFixed(2)}</td>
+    </tr>`).join("");
+
+  const perGame = x.games ? x.raw_total / x.games : 0;
+  const hazardPct = (x.hazard * 100).toFixed(1);
+
+  box.innerHTML = `
+    ${bars}
+    <div class="exsum"><span>Over ${x.games} fixture${x.games === 1 ? "" : "s"}</span>
+      <span>${x.raw_total.toFixed(2)}</span></div>
+    <p class="exnote">That is <b>${perGame.toFixed(2)} per fixture</b> — the xPPG column,
+      and the number to compare against another player on a different fixture run.</p>
+
+    <h4 style="margin:14px 0 2px;font-size:12.5px">Why the table shows ${x.plan_total.toFixed(1)}</h4>
+    <p class="exnote">A gameweek you may never field him in is worth less than this
+      Saturday. Points are halved every <b>${x.half_life}</b> gameweeks of distance and
+      multiplied by his chance of still being available — ${hazardPct}% risk of dropping
+      out per gameweek, compounding.</p>
+    <table class="extable">
+      <thead><tr><th>Fixture</th><th>Points</th><th>Weight</th><th>Counts as</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="exsum"><span>Plan-weighted total — what the board ranks on</span>
+      <span>${x.plan_total.toFixed(2)}</span></div>`;
+}
+
+function renderEditorConstraints() {
+  const req = $("#edReq"), ban = $("#edBan");
+  const on = S.include.includes(editingId), off = S.exclude.includes(editingId);
+  req.textContent = on ? "⊕ Required" : "⊕ Require";
+  ban.textContent = off ? "⊘ Barred" : "⊘ Bar";
+  req.style.background = on ? "var(--good)" : "";
+  req.style.color = on ? "#fff" : "";
+  ban.style.background = off ? "var(--critical)" : "";
+  ban.style.color = off ? "#fff" : "";
+}
+
+/* --------------------------------------------------------------- lineups ---
+   The view for feeding real team news into the model. Minutes are the model's
+   least reliable input and much its most powerful, so this is where an hour of
+   your own knowledge is worth more than any amount of xG modelling.
+
+   It renders from the derived pool rather than recomputing, so it cannot
+   disagree with the rest of the board -- and because the pool already carries
+   the club rebalance, promoting one player visibly pushes his team-mates down
+   the moment you apply it. */
+let lineupTeam = null, lineupOnlyEdited = false;
+
+function teamsInPool() {
+  return [...new Set(S.players.map((p) => p.team))].sort();
+}
+
+function renderLineup() {
+  const box = $("#lineupBox"), select = $("#lineupTeam");
+  if (!S.players?.length) { box.innerHTML = ""; return; }
+
+  const edited = new Set(S.players.filter((p) => p.edited || p.adjusted).map((p) => p.team));
+  let teams = teamsInPool();
+  if (lineupOnlyEdited && edited.size) teams = teams.filter((t) => edited.has(t));
+  if (!teams.includes(lineupTeam)) lineupTeam = teams[0] ?? null;
+
+  const want = teams.map((t) => t + (edited.has(t) ? " •" : "")).join("|");
+  if (select.dataset.built !== want) {
+    select.innerHTML = teams.map((t) =>
+      `<option value="${t}"${t === lineupTeam ? " selected" : ""}>`
+      + `${t}${edited.has(t) ? " •" : ""}</option>`).join("");
+    select.dataset.built = want;
+  }
+  select.value = lineupTeam ?? "";
+  $("#lineupEdited").setAttribute("aria-pressed", String(lineupOnlyEdited));
+
+  if (!lineupTeam) { box.innerHTML = `<p class="lineupfoot">No clubs to show.</p>`; return; }
+  const line = clubLineup(S.players, lineupTeam);
+
+  // A club fields eleven. Say so plainly when the overrides in force do not.
+  const off = line.starters - 11;
+  const pill = line.balanced
+    ? `<span class="pill ok">${line.starters.toFixed(2)} starters</span>`
+    : `<span class="pill warn">${line.starters.toFixed(2)} starters, ${off > 0 ? "+" : ""}${off.toFixed(2)}</span>`;
+
+  const rows = line.players.filter((p) => p.exp_minutes > 0.05).map((p) => {
+    const tag = p.edited ? `<span class="tag you">yours</span>`
+      : p.adjusted ? `<span class="tag adj">adjusted</span>` : "";
+    const starter = p.p_start >= 0.5;
+    return `<tr class="${starter ? "" : "benchrow"}">
+      <td>
+        <div class="who2">${p.name}<span class="posn">${p.pos}</span>${tag}</div>
+        <div class="minbar${starter ? "" : " sub"}" style="width:${Math.max(2, (p.exp_minutes / 90) * 100)}%"></div>
+      </td>
+      <td>${p.p_start.toFixed(2)}</td>
+      <td>${p.exp_minutes.toFixed(0)}</td>
+      <td>${fmt(p.xppg, 2)}</td>
+      <td><button class="editbtn" data-edit="${p.id}" title="Edit ${p.name}">✎</button></td>
+    </tr>`;
+  }).join("");
+
+  box.innerHTML = `
+    <div class="lineuphead">${pill}
+      <span>${line.minutes.toFixed(0)} of 990 minutes accounted for</span>
+      ${line.edited ? `<span>· you have overridden someone here</span>` : ""}</div>
+    <div class="scroll"><table class="lineup">
+      <thead><tr><th>Player</th><th>Start</th><th>Mins</th><th>xPPG</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <p class="lineupfoot">${line.balanced
+      ? "Eleven starters, so this club's books balance."
+      : off > 0
+        ? "More than eleven start. Your overrides assert more minutes than a team has "
+          + "to give, so this club will out-score what its fixtures say — lower somebody "
+          + "to bring it back."
+        : "Fewer than eleven start, so this club is under-projected. Raise whoever you "
+          + "expect to fill the gap."}</p>`;
+}
+
+/* The same rebalance, previewed live while the slider is still moving. It costs
+   a full derivePool over the pool -- a couple of milliseconds for 573 players,
+   and already behind the same debounce the points preview uses -- which buys
+   the thing that makes team news enterable at all: you can see who pays for the
+   minutes you are handing out, before you commit to handing them out. */
+function renderDrawerClub() {
+  const box = $("#clubBox"), label = $("#clubStarters");
+  const me = S.byId.get(editingId);
+  if (!me) { box.innerHTML = ""; label.textContent = ""; return; }
+
+  let after;
+  try {
+    const pending = { ...S.edits, [editingId]: tidy(editBuffer) };
+    after = derivePool(S.snapshot, pending,
+      { horizon: +$("#horizon").value, halfLife: +$("#halflife").value }).players;
+  } catch {
+    box.innerHTML = ""; label.textContent = ""; return;
+  }
+
+  const line = clubLineup(after, me.team);
+  const before = new Map(S.players.map((p) => [p.id, p.exp_minutes]));
+
+  label.innerHTML = line.balanced
+    ? `<span class="pill ok">${line.starters.toFixed(2)} starters</span>`
+    : `<span class="pill warn">${line.starters.toFixed(2)} starters</span>`;
+
+  const rows = line.players
+    .filter((p) => p.exp_minutes > 0.05 || (before.get(p.id) || 0) > 0.05)
+    .map((p) => ({ p, was: before.get(p.id) ?? p.exp_minutes }))
+    .map((r) => ({ ...r, moved: r.p.exp_minutes - r.was }))
+    .sort((a, b) => Math.abs(b.moved) - Math.abs(a.moved) || b.p.exp_minutes - a.p.exp_minutes)
+    .slice(0, 8);
+
+  box.innerHTML = `<table class="extable">
+    <thead><tr><th>Player</th><th>Mins now</th><th>Was</th><th>Δ</th></tr></thead>
+    <tbody>${rows.map((r) => `
+      <tr class="${Math.abs(r.moved) < 0.05 ? "faded" : ""}">
+        <td>${r.p.id === editingId ? "<b>" + r.p.name + "</b>" : r.p.name}</td>
+        <td>${r.p.exp_minutes.toFixed(0)}</td>
+        <td>${r.was.toFixed(0)}</td>
+        <td class="${r.moved > 0.05 ? "up" : r.moved < -0.05 ? "down" : ""}">${
+          Math.abs(r.moved) < 0.05 ? "—" : (r.moved > 0 ? "+" : "") + r.moved.toFixed(1)}</td>
+      </tr>`).join("")}</tbody></table>
+    <p class="exnote">${line.balanced
+      ? "Eleven still start — the minutes you gave him came off his team-mates."
+      : "This club no longer fields eleven. The overrides in force claim more "
+        + "minutes than a team has to give, so it will out-score its own fixtures."}</p>`;
+}
+
+/* ------------------------------------------------------------------- ask ---
+   A chat box over a projection is a good way to produce confident nonsense, so
+   the server does not hand the model a question and a hope: it rebuilds the
+   player's dossier from the same scoring code the board runs on, and the answer
+   is grounded in that. Which also means this is the one part of the board that
+   genuinely needs the laptop -- there is no model on the phone, and pretending
+   otherwise would just fail slowly. */
+let askAvailable = null, askHistory = [], askBusy = false;
+
+const ASK_SUGGESTIONS = [
+  "Why is he rated this highly?",
+  "What is he actually being paid for?",
+  "How much of this depends on him starting?",
+  "Should I trust this number?",
+];
+
+async function loadAskStatus() {
+  if (askAvailable !== null) return askAvailable;
+  try {
+    const res = await api("/api/ai");
+    askAvailable = res.ok ? await res.json() : { available: false };
+  } catch {
+    // No server behind us -- on the phone with the laptop shut, which is the
+    // normal way to use this board and not an error worth shouting about.
+    askAvailable = { available: false };
+  }
+  return askAvailable;
+}
+
+function resetAsk(player) {
+  askHistory = [];
+  $("#askLog").innerHTML = "";
+  $("#askInput").value = "";
+  $("#askSuggest").innerHTML = ASK_SUGGESTIONS
+    .map((q) => `<button type="button" data-ask="${q.replace(/"/g, "&quot;")}">${q}</button>`)
+    .join("");
+  loadAskStatus().then((status) => {
+    const sec = $("#askSec");
+    if (!status.available) {
+      sec.classList.add("off");
+      $("#askStatus").textContent = "unavailable";
+      const why = document.createElement("div");
+      why.className = "askmsg err";
+      why.textContent = (status.reason ? `${status.reason}. ` : "")
+        + "See .env.example — a local Ollama needs no key and no account, or point "
+        + "FPL_AI_BASE_URL at a free hosted tier.";
+      $("#askLog").replaceChildren(why);
+      return;
+    }
+    sec.classList.remove("off");
+    $("#askStatus").textContent = status.local
+      ? `${status.model} · on this machine`
+      : `${status.model} · sent to ${new URL(status.base_url).host}`;
+  });
+}
+
+function appendAsk(role, text) {
+  const div = document.createElement("div");
+  div.className = `askmsg ${role}`;
+  if (role === "ai") {
+    // The model writes prose and the occasional bullet list. Rendered as text
+    // in paragraphs rather than as HTML: nothing it returns should ever be able
+    // to put markup into this page.
+    div.append(...String(text).split(/\n{2,}/).map((para) => {
+      const p = document.createElement("p");
+      p.textContent = para.replace(/\n/g, " ").trim();
+      return p;
+    }));
+  } else {
+    div.textContent = text;
+  }
+  $("#askLog").appendChild(div);
+  div.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  return div;
+}
+
+async function sendAsk(question) {
+  if (askBusy || !question.trim() || editingId === null) return;
+  const status = await loadAskStatus();
+  if (!status.available) return;
+
+  askBusy = true;
+  $("#askSend").disabled = true;
+  $("#askInput").value = "";
+  $("#askSuggest").innerHTML = "";
+  appendAsk("me", question);
+  const pending = appendAsk("ai", "…");
+
+  try {
+    const res = await api("/api/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fpl_id: editingId,
+        question,
+        horizon: +$("#horizon").value,
+        half_life: +$("#halflife").value,
+        start_gw: +$("#startgw").value || null,
+        recency: +$("#recency").value || 0,
+        history: askHistory,
+        edits: tidy(editBuffer),
+      }),
+    });
+    const out = await res.json().catch(() => ({}));
+    pending.remove();
+    if (!res.ok) throw new Error(out.detail || `The AI endpoint returned ${res.status}.`);
+    appendAsk("ai", out.answer);
+    askHistory.push({ role: "user", content: question },
+                    { role: "assistant", content: out.answer });
+  } catch (error) {
+    pending.remove();
+    appendAsk("err", error.message || "Could not reach the AI endpoint.");
+  } finally {
+    askBusy = false;
+    $("#askSend").disabled = false;
+  }
+}
+
+/* One slider-plus-number control. `store` is whichever dict the value belongs
+   in — the season-level buffer, or one gameweek's — so the same code renders
+   both and they cannot drift in behaviour. `idPrefix` keeps element ids unique
+   once the same field appears twelve times over. */
+function renderField(box, f, base, store, idPrefix, onChange) {
+  const value = store[f.k] !== undefined ? store[f.k] : base;
+  const changed = store[f.k] !== undefined && Math.abs(store[f.k] - base) > 1e-9;
+  const rid = `${idPrefix}${f.k}`, nid = `${idPrefix}n_${f.k}`;
+  const div = document.createElement("div");
+  div.className = "field" + (changed ? " changed" : "");
+  div.innerHTML = `
+    <div class="row">
+      <label for="${rid}">${f.label}</label>
+      <span class="orig">${idPrefix === "ed_" ? "model" : "season"}: ${base.toFixed(f.dp)}</span>
+    </div>
+    <div class="inp">
+      <input type="range" id="${rid}" min="${f.min}" max="${f.max}" step="${f.step}" value="${value}">
+      <input type="number" id="${nid}" min="${f.min}" max="${f.max}" step="${f.step}" value="${(+value).toFixed(f.dp)}">
+    </div>
+    ${f.help && idPrefix === "ed_" ? `<div class="orig" style="margin-top:3px">${f.help}</div>` : ""}`;
+  box.appendChild(div);
+
+  const range = div.querySelector(`#${CSS.escape(rid)}`);
+  const num = div.querySelector(`#${CSS.escape(nid)}`);
+  const sync = (v) => {
+    const n = Math.min(f.max, Math.max(f.min, +v));
+    range.value = n; num.value = n.toFixed(f.dp);
+    if (Math.abs(n - base) < 1e-9) delete store[f.k];
+    else store[f.k] = n;
+    div.classList.toggle("changed", Math.abs(n - base) > 1e-9);
+    onChange();
+  };
+  range.addEventListener("input", (e) => sync(e.target.value));
+  num.addEventListener("change", (e) => sync(e.target.value));
+  return div;
+}
+
+/** Fields that mean something for this player, with the model's value. */
+function editableFields(player) {
+  const out = [];
+  for (const f of EDIT_FIELDS) {
+    if (f.only && !f.only.includes(player.pos)) continue;
+    // A player who does not take penalties has no penalty order at all, so the
+    // field would vanish for exactly the players you might want to promote.
+    // Treat "no order" as zero so it stays editable.
+    let base = player.inputs?.[f.k];
+    if ((base === null || base === undefined) && f.k === "penalties_order") base = 0;
+    if (base === null || base === undefined) continue;
+    out.push({ f, base });
+  }
+  return out;
+}
+
+function renderEditorFields() {
+  const p = S.byId.get(editingId);
+  const box = $("#edFields");
+  box.innerHTML = "";
+  for (const { f, base } of editableFields(p)) {
+    renderField(box, f, base, editBuffer, "ed_", () => { previewEdit(); renderMatches(); });
+  }
+}
+
+/* Per-match rows. The season value is the baseline each row is measured
+   against, not the model's — a match override is an exception to what you have
+   already said about the player, and showing it against the model would report
+   "changed" for a week you never touched. */
+const P_START_FIELD = EDIT_FIELDS.find((f) => f.k === "p_start");
+const expandedMatches = new Set();
+
+function seasonValue(player, key, base) {
+  return editBuffer[key] !== undefined ? editBuffer[key] : base;
+}
+
+function renderMatches() {
+  const p = S.byId.get(editingId);
+  const box = $("#edMatches");
+  box.innerHTML = "";
+  editBuffer.gw = editBuffer.gw || {};
+  const fields = editableFields(p);
+
+  let touched = 0;
+  S.gameweeks.forEach((gw, index) => {
+    const key = String(gw);
+    const store = editBuffer.gw[key] || {};
+    const opponent = p.opp[index] || "";
+    const set = Object.keys(store).length > 0;
+    if (set) touched++;
+
+    const row = document.createElement("div");
+    row.className = "mrow" + (set ? " set" : "");
+    row.innerHTML = `
+      <div class="mtop">
+        <span class="mgw">GW${gw}</span>
+        <span class="mopp">${opponent || `<span class="mblank">no fixture</span>`}</span>
+        <span class="mpts">${fmt(p.gw[index], 1)}</span>
+        <button class="more" aria-expanded="false" title="All fields for GW${gw}"
+                aria-label="All fields for GW${gw}">⋯</button>
+      </div>`;
+    box.appendChild(row);
+    if (!opponent) return;   // nothing to override in a blank gameweek
+
+    const commit = () => {
+      if (!Object.keys(store).length) delete editBuffer.gw[key];
+      else editBuffer.gw[key] = store;
+      previewEdit();
+      row.classList.toggle("set", Object.keys(store).length > 0);
+      $("#edMatchCount").textContent = matchCountLabel();
+    };
+
+    // The inline lever: start probability, which is what a per-match opinion
+    // almost always is. Baseline is the season value, so dragging it to the
+    // same number as the season setting clears the override rather than
+    // recording a redundant one.
+    const pStartBase = fields.find((x) => x.f.k === "p_start");
+    if (pStartBase) {
+      const base = seasonValue(p, "p_start", pStartBase.base);
+      const value = store.p_start !== undefined ? store.p_start : base;
+      const line = document.createElement("div");
+      line.className = "mstart";
+      line.innerHTML = `
+        <span class="lab">start</span>
+        <input type="range" min="0" max="1" step="0.01" value="${value}"
+               aria-label="Start probability in GW${gw}">
+        <span class="val">${(+value).toFixed(2)}</span>`;
+      row.appendChild(line);
+      const range = line.querySelector("input"), out = line.querySelector(".val");
+      range.addEventListener("input", (e) => {
+        const n = +e.target.value;
+        out.textContent = n.toFixed(2);
+        if (Math.abs(n - base) < 1e-9) delete store.p_start;
+        else store.p_start = n;
+        commit();
+      });
+    }
+
+    const more = row.querySelector(".more");
+    const extra = document.createElement("div");
+    extra.className = "mextra hidden";
+    row.appendChild(extra);
+    if (expandedMatches.has(key)) { extra.classList.remove("hidden"); more.setAttribute("aria-expanded", "true"); }
+
+    const fill = () => {
+      extra.innerHTML = "";
+      for (const { f, base } of fields) {
+        if (f.k === "p_start") continue;   // already inline above
+        renderField(extra, f, seasonValue(p, f.k, base), store, `m${gw}_`, commit);
+      }
+      const reset = document.createElement("button");
+      reset.className = "mini";
+      reset.textContent = `Clear GW${gw}`;
+      reset.addEventListener("click", () => {
+        for (const k of Object.keys(store)) delete store[k];
+        delete editBuffer.gw[key];
+        renderMatches(); previewEdit();
+      });
+      extra.appendChild(reset);
+    };
+    if (expandedMatches.has(key)) fill();
+
+    more.addEventListener("click", () => {
+      const open = extra.classList.toggle("hidden");
+      more.setAttribute("aria-expanded", String(!open));
+      if (open) expandedMatches.delete(key);
+      else { expandedMatches.add(key); fill(); }
+    });
+  });
+
+  $("#edMatchCount").textContent = matchCountLabel();
+}
+
+function matchCountLabel() {
+  const n = Object.values(editBuffer.gw || {}).filter((v) => Object.keys(v).length).length;
+  return n ? `${n} match${n === 1 ? "" : "es"} overridden` : "none set";
+}
+
+// Still debounced, though the recompute is now local and takes under a
+// millisecond: without it, dragging a slider would rerender the drawer on every
+// pixel of travel, and that is the part that costs.
+function previewEdit() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(() => {
+    if (editingId === null) return;
+    const p = S.byId.get(editingId);
+    // Against the model's own number, not against whatever this player is
+    // currently showing -- once an edit is applied, comparing to the applied
+    // value reports every override as "unchanged from the model".
+    const before = p.model_xpts_plan ?? p.xpts_plan;
+    let r;
+    try {
+      checkOverridable(editBuffer, S.snapshot);
+      r = editPlayer(S.snapshot, editingId, tidy(editBuffer),
+        { horizon: +$("#horizon").value, halfLife: +$("#halflife").value });
+    } catch (error) {
+      $("#edPts").innerHTML = `<span class="down">${error.message}</span>`;
+      return;
+    }
+    const d = r.xpts_plan - before;
+    $("#edPts").innerHTML = `<b>${r.xpts_plan.toFixed(1)}</b> projected points`
+      + (Math.abs(d) > 0.05
+        ? ` <span class="${d > 0 ? "up" : "down"}">${d > 0 ? "+" : ""}${d.toFixed(1)} vs the model</span>`
+        : ` <span class="orig">unchanged from the model</span>`);
+    // Both of these are of the *edited* player, so they move with the sliders.
+    renderExplain();
+    renderDrawerClub();
+    // Repaint the per-match rows so each gameweek shows what it is now worth.
+    const live = S.byId.get(editingId);
+    if (live) {
+      live.gw.forEach((_, i) => {
+        const cell = $("#edMatches").children[i]?.querySelector(".mpts");
+        if (cell) cell.textContent = fmt(r.gw[i], 1);
+      });
+    }
+  }, 140);
+}
+
+/** Strip the bookkeeping an empty per-match map leaves behind, so `{gw:{}}`
+    never counts as an edit and never reaches the CSV. */
+function tidy(buffer) {
+  const out = {};
+  for (const [k, v] of Object.entries(buffer)) {
+    if (k !== "gw") { out[k] = v; continue; }
+    const gw = {};
+    for (const [week, fields] of Object.entries(v || {})) {
+      if (fields && Object.keys(fields).length) gw[week] = fields;
+    }
+    if (Object.keys(gw).length) out.gw = gw;
+  }
+  return out;
+}
+
+async function applyEdit() {
+  if (editingId === null) return closeEditor();
+  const id = editingId;
+  const tidied = tidy(editBuffer);
+  if (Object.keys(tidied).length) S.edits[id] = tidied;
+  else delete S.edits[id];
+  closeEditor();
+  await recomputeEdited([id]);
+  renderAll();
+}
+
+/* Edits are applied by rebuilding the derived pool, which is the same code path
+   that produced it in the first place. There is no second "recompute one
+   player" route that could disagree with the first — which is exactly how the
+   server version came to show one number and hand the optimiser another. */
+function recomputeEdited(ids) {
+  const failed = [];
+  for (const id of ids) {
+    const fields = S.edits[id];
+    if (!fields) continue;
+    try {
+      checkOverridable(fields, S.snapshot);
+    } catch (error) {
+      // A rejected edit is not an edit. Dropping it keeps the board and the
+      // solver looking at the same numbers.
+      failed.push(`${S.byId.get(id)?.name || id}: ${error.message}`);
+      delete S.edits[id];
+    }
+  }
+  saveEdits();
+  rebuildPool();
+  if (failed.length) {
+    alert("These edits were rejected and have been dropped:\n\n" + failed.join("\n"));
+  }
+  // The solver's answer was computed against the old numbers, so it is no
+  // longer a fair comparison. Drop it and solve again.
+  S.optimal = []; S.optimalPts = null; S.optimalCost = null; S.optimalBench = {};
+  renderEditBanner();
+  scheduleSolve(0);
+}
+
+function renderEditBanner() {
+  const n = Object.keys(S.edits).length;
+  $("#editBanner").classList.toggle("hidden", n === 0);
+  if (n) {
+    const names = Object.keys(S.edits).map((id) => S.byId.get(+id)?.name).filter(Boolean);
+    $("#editCount").innerHTML = `<span class="edited-dot">●</span> <b>${n}</b> edited `
+      + `${n === 1 ? "player" : "players"}: ${names.join(", ")}`;
+  }
+}
+
+async function saveOverrides() {
+  const res = await api("/api/overrides", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ edits: S.edits }),
+  });
+  const r = await res.json();
+  alert(r.rows
+    ? `Saved ${r.rows} override${r.rows === 1 ? "" : "s"} to ${r.path}\n\n`
+      + `The CLI picks these up with:\n  python fpl.py plan --overrides ${r.path}`
+    : `No edits to save — ${r.path} removed.`);
+}
+
+async function loadOverrides() {
+  const res = await api("/api/overrides");
+  const r = await res.json();
+  if (!r.exists) return alert(`No saved overrides at ${r.path}`);
+  S.edits = {};
+  for (const [id, fields] of Object.entries(r.edits)) S.edits[+id] = fields;
+  await recomputeEdited(Object.keys(S.edits).map(Number));
+  renderAll();
+}
+
+/* --------------------------------------------------------------------- data
+   The board runs on a frozen projection, not on a live server. The laptop does
+   the one thing only it can -- fetch three sources and run the pandas pipeline
+   -- and writes the answer to snapshot.json; everything after that, including
+   the optimiser and the stat editor, happens here. That is what lets the page
+   work on a phone with the laptop shut, and it also means there is exactly one
+   code path rather than an online one and an offline one that drift.
+
+   The cost is honest and visible: the data is as fresh as the last sync, and
+   the header says when that was. */
+// Must match DATA_CACHE in sw.js — the page writes this cache and the worker
+// reads it, which is the whole point of the arrangement below.
+const DATA_CACHE = "fpl-data-v1";
+
+async function loadSnapshot() {
+  const res = await api("/snapshot.json");
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.error || detail.detail || `snapshot unavailable (${res.status})`);
+  }
+  // The page caches the snapshot, not the service worker, for two reasons that
+  // each independently break the obvious approach. On a first visit this fetch
+  // happens before the worker is controlling the page, so it never passes
+  // through it — the shell would cache and the data would not, which is the
+  // worst possible half-installed state. And when a token is configured the
+  // worker cannot authenticate a request of its own; only the page holds it.
+  try {
+    (await caches.open(DATA_CACHE)).put("/snapshot.json", res.clone());
+  } catch (_) { /* no Cache API — private mode, or plain http off localhost */ }
+  return res.json();
+}
+
+/** Rebuild the derived pool from the snapshot for the settings on screen.
+    Pure and fast -- a few milliseconds for 573 players -- so it runs on every
+    horizon or half-life change instead of a two-second round trip. */
+function rebuildPool(keepSquad = true) {
+  const data = derivePool(S.snapshot, S.edits,
+    { horizon: +$("#horizon").value, halfLife: +$("#halflife").value });
+
+  S.players = data.players; S.gameweeks = data.gameweeks; S.meta = data.meta;
+  S.byId = new Map(data.players.map((p) => [p.id, p]));
+  if (!keepSquad) S.squad = [];
+  S.squad = S.squad.filter((id) => S.byId.has(id));
+  S.optimal = S.optimal.filter((id) => S.byId.has(id));
+  // Saved constraints can name a player who has since left the pool; a require
+  // the solver cannot satisfy would make every solve fail with no chip to drop.
+  S.include = S.include.filter((id) => S.byId.has(id));
+  S.exclude = S.exclude.filter((id) => S.byId.has(id));
+  S.optimalPts = S.optimal.length === 15 ? squadTotal(S.optimal) : null;
+
+  const m = data.meta;
+  $("#meta").textContent = `GW${m.start_gw}–GW${m.start_gw + m.horizon - 1} · `
+    + `${m.priced_gws.length} of ${m.horizon} gameweeks bookmaker-priced · `
+    + `${data.players.length} players`;
+  renderFreshness();
+
+  const sel = $("#startgw");
+  if (sel.options.length <= 1) {
+    for (let gw = m.start_gw; gw <= 38; gw++) {
+      const option = document.createElement("option");
+      option.value = gw; option.textContent = "GW" + gw;
+      sel.appendChild(option);
+    }
+  }
+  sel.value = String(m.start_gw);
+
+  // Defaults come from the snapshot's own rules block, so the sliders and the
+  // objective cannot disagree about what "default" means -- until you touch them.
+  if (!benchTouched && m.bench_slot_weights) {
+    for (const k of BENCH_KEYS) {
+      if (m.bench_slot_weights[k] != null) $(`#bw_${k}`).value = m.bench_slot_weights[k];
+    }
+  }
+  renderControlValues();
+  renderEditBanner();
+}
+
+function renderFreshness() {
+  const m = S.meta;
+  const stale = age(m.generated_at);
+  $("#freshness").innerHTML =
+    `Snapshot <b>${stale}</b> · frozen at GW${m.start_gw}, ${m.snapshot_horizon} gameweeks`
+    + (m.recency ? ` · recency ${m.recency}gw` : "");
+  // The horizon can only ever be shortened: a snapshot taken at 12 has nothing
+  // to say about 14, so offering it would be offering a wrong answer.
+  for (const option of $("#horizon").options) {
+    option.disabled = +option.value > m.snapshot_horizon;
+  }
+}
+
+async function loadPool(keepSquad = true) {
+  const wrap = $(".wrap");
+  wrap.classList.add("stale");
+  try {
+    if (!S.snapshot) S.snapshot = await loadSnapshot();
+    clampHorizon();
+    rebuildPool(keepSquad);
+  } catch (error) {
+    $("#loading").innerHTML = `<div style="max-width:30rem;text-align:center">`
+      + `<p><b>No projection available.</b></p><p class="sub">${error.message}</p>`
+      + `<p class="sub">Open this once while the laptop is running and it will be `
+      + `cached on the phone from then on.</p></div>`;
+    wrap.classList.remove("stale");
+    return;
+  }
+  wrap.classList.remove("stale");
+  $("#loading").classList.add("hidden");
+  renderAll();
+  scheduleSolve(0);
+}
+
+/** Re-project on the laptop and pick up the result. The only thing here that
+    needs the server, and the only thing that cannot work offline. */
+async function sync(refresh = false) {
+  const btn = $("#syncBtn");
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = refresh ? "Refetching…" : "Syncing…";
+  try {
+    const res = await api("/api/snapshot", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recency: +$("#recency").value,
+                             start_gw: startGw(), refresh }),
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `sync failed (${res.status})`);
+    }
+    // loadSnapshot writes the offline cache as it goes, so the fresh projection
+    // is on the device before you walk away from the laptop.
+    S.snapshot = await loadSnapshot();
+    rebuildPool();
+    renderAll();
+    scheduleSolve(0);
+    await syncDrafts();
+  } catch (error) {
+    alert(`Could not sync — is the laptop running \`fpl.py serve\`?\n\n${error.message}`);
+  } finally {
+    btn.disabled = false; btn.textContent = was;
+  }
+}
+
+/* --------------------------------------------------------- optimal squad
+   The solver's answer is not a one-off any more: it is a second column that
+   tracks whatever the settings currently say, so changing a bench weight or a
+   budget shows you what it costs you rather than leaving you to remember to
+   press a button. Copying it across stays deliberate -- the point of the pair
+   is that you can disagree with the solver and see exactly where. */
+let solveTimer = null, solveSeq = 0;
+
+function scheduleSolve(delay = 400) {
+  clearTimeout(solveTimer);
+  S.optimalState = "pending";
+  renderOptStatus();
+  solveTimer = setTimeout(solveOptimal, delay);
+}
+
+async function solveOptimal() {
+  clearTimeout(solveTimer);
+  if (!S.meta) return;
+  const seq = ++solveSeq;
+  S.optimalState = "solving"; S.optimalError = "";
+  renderOptStatus();
+
+  let data;
+  try {
+    data = await solveInWorker(seq, {
+      budget: +$("#budget").value,
+      ownershipWeight: +$("#ownw").value,
+      minStart: +$("#minstart").value,
+      include: S.include, exclude: S.exclude,
+      maxPerClub: +$("#maxclub").value,
+      formation: parseFormation($("#formation").value),
+      benchSlotWeights: benchWeights(),
+      benchSlotProfile: S.snapshot.rules.BENCH_SLOT_PROFILE,
+      squadByPos: S.meta.squad_by_pos, xiMin: S.meta.xi_min, xiMax: S.meta.xi_max,
+      squadSize: S.snapshot.rules.SQUAD_SIZE, xiSize: S.snapshot.rules.XI_SIZE,
+    });
+  } catch (error) {
+    // A slower earlier request must never overwrite a faster later one;
+    // dragging a slider fires several solves and only the last one describes
+    // the settings now on screen.
+    if (seq !== solveSeq) return;
+    S.optimalState = "error";
+    S.optimalError = String(error.message || error);
+    S.optimal = []; S.optimalPts = null; S.optimalCost = null; S.optimalBench = {};
+    renderOptimal(); renderSquad(); renderGwChart();
+    return;
+  }
+  if (seq !== solveSeq) return;
+
+  S.optimal = data.squad;
+  S.optimalBench = data.bench || {};
+  S.optimalPts = squadTotal(S.optimal);
+  S.optimalCost = data.cost;
+  S.optimalSolveMs = data.ms;
+  S.optimalState = "ready";
+  renderOptimal();
+  renderSquad();
+  renderGwChart();
+}
+
+/* The MILP runs in a worker: HiGHS takes up to a couple of seconds on the full
+   pool, and on the main thread that is a page that cannot even animate the
+   spinner telling you to wait. */
+let solverWorker = null;
+const solveWaiters = new Map();
+
+function ensureWorker() {
+  if (solverWorker) return solverWorker;
+  solverWorker = new Worker("/assets/solver-worker.js");
+  solverWorker.onmessage = (event) => {
+    const { seq, ok, result, error, ms } = event.data;
+    const waiter = solveWaiters.get(seq);
+    if (!waiter) return;
+    solveWaiters.delete(seq);
+    if (ok) waiter.resolve({ ...result, ms }); else waiter.reject(new Error(error));
+  };
+  solverWorker.onerror = (event) => {
+    for (const [, waiter] of solveWaiters) {
+      waiter.reject(new Error(event.message || "the solver failed to start"));
+    }
+    solveWaiters.clear();
+    // A worker that has errored stays broken; drop it so the next solve rebuilds.
+    solverWorker.terminate();
+    solverWorker = null;
+  };
+  return solverWorker;
+}
+
+function solveInWorker(seq, options) {
+  // The solver only needs seven fields per player, not the whole row with its
+  // per-gameweek arrays and opponent labels — this crosses a structured-clone
+  // boundary on every keystroke.
+  const pool = S.players.map((p) => ({
+    id: p.id, pos: p.pos, team: p.team, price: p.price,
+    pts: p.xpts_plan || 0, own: p.owned || 0, p_play: p.p_play,
+  }));
+  return new Promise((resolve, reject) => {
+    solveWaiters.set(seq, { resolve, reject });
+    ensureWorker().postMessage({ seq, pool, options });
+  });
+}
+
+const optDiff = () => {
+  const mine = new Set(S.squad), theirs = new Set(S.optimal);
+  return {
+    incoming: S.optimal.filter((id) => !mine.has(id)),
+    outgoing: S.squad.filter((id) => !theirs.has(id)),
+  };
+};
+
+function renderOptStatus() {
+  const box = $("#optStatus");
+  box.classList.toggle("err", S.optimalState === "error");
+  box.textContent = {
+    idle: "", pending: "settings changed…", solving: "solving…",
+    ready: "up to date", error: "no solution",
+  }[S.optimalState] || "";
+  $("#optSlots").classList.toggle("pending", S.optimalState !== "ready");
+  const ready = S.optimal.length === 15;
+  $("#optCopy").disabled = !ready;
+  $("#optimise").disabled = !ready;
+}
+
+function renderOptimal() {
+  renderOptStatus();
+  const box = $("#optSlots");
+  box.innerHTML = "";
+
+  if (S.optimalState === "error") {
+    $("#optPts").className = "hero empty"; $("#optPts").textContent = "no legal squad";
+    $("#optDelta").textContent = ""; $("#optCost").textContent = "—";
+    $("#optChanges").textContent = "—";
+    box.innerHTML = `<div class="issue bad"><span class="ico">!</span><span>${S.optimalError}</span></div>`;
+    return;
+  }
+  if (!S.optimal.length) {
+    $("#optPts").className = "hero empty"; $("#optPts").textContent = "—";
+    $("#optDelta").textContent = ""; $("#optCost").textContent = "—";
+    $("#optChanges").textContent = "—";
+    return;
+  }
+
+  const total = S.optimalPts || 0;
+  $("#optPts").className = "hero";
+  $("#optPts").textContent = fmt(total, 1);
+  $("#optCost").textContent = "£" + fmt(S.optimalCost, 1);
+
+  const mineTotal = squadTotal(S.squad);
+  const diff = optDiff();
+  const delta = $("#optDelta");
+  if (S.squad.length === 15) {
+    const gain = total - mineTotal;
+    if (gain > 0.05) {
+      delta.className = "delta up"; delta.style.color = "";
+      delta.textContent = `+${gain.toFixed(1)} more than your draft`;
+    } else if (gain < -0.05) {
+      // The solver never loses to a legal squad under the same settings, so a
+      // draft that scores more is a draft that breaks one of them -- almost
+      // always the budget. Say which rather than implying the solver was beaten.
+      delta.className = "delta"; delta.style.color = "var(--critical)";
+      delta.textContent = `your draft scores ${(-gain).toFixed(1)} more — it breaks a rule the solver kept`;
+    } else {
+      delta.className = "delta"; delta.style.color = "var(--muted)";
+      delta.textContent = "your draft already matches it";
+    }
+  } else {
+    delta.className = "delta"; delta.style.color = "var(--muted)";
+    delta.textContent = "finish your draft to compare";
+  }
+  $("#optChanges").textContent = !S.squad.length ? "—"
+    : diff.incoming.length ? `${diff.incoming.length} in / ${diff.outgoing.length} out`
+    : "none";
+
+  const xi = new Set(planXI(S.optimal).ids);
+  let captain = null, bestPts = -1;
+  for (const id of xi) {
+    const p = S.byId.get(id);
+    if ((p.xpts_plan || 0) > bestPts) { bestPts = p.xpts_plan; captain = id; }
+  }
+  // With nothing drafted there is nothing to diff against, and marking all
+  // fifteen as incoming says only "this squad exists".
+  const diffing = S.squad.length > 0;
+  const mine = new Set(S.squad);
+
+  for (const pos of POS_ORDER) {
+    const members = S.optimal.map((id) => S.byId.get(id)).filter((p) => p && p.pos === pos)
+      .sort((a, b) => (b.xpts_plan || 0) - (a.xpts_plan || 0));
+    const head = document.createElement("div");
+    head.className = "grouplabel";
+    head.textContent = pos;
+    box.appendChild(head);
+
+    for (const p of members) {
+      const isNew = diffing && !mine.has(p.id);
+      const row = document.createElement("div");
+      row.className = "slot" + (isNew ? " isnew" : "");
+      const role = id2role(p.id, xi, captain, S.optimalBench);
+      row.innerHTML = `
+        <span class="badge ${role === "C" ? "c" : ""}">${role}</span>
+        <span class="nm">${p.name} <span class="sub">${p.team_short}</span></span>
+        ${isNew ? `<span class="tag in">in</span>` : ""}
+        <span class="pts">£${fmt(p.price, 1)}</span>
+        <span class="ppg" title="projected points per match">${fmt(p.xppg, 2)}</span>
+        <span class="pts" title="plan-weighted total">${fmt(p.xpts_plan, 1)}</span>
+        ${isNew ? `<button class="swap" data-swap="${p.id}"
+             title="Bring ${p.name} into your draft" aria-label="Swap ${p.name} into your draft">→</button>`
+          : `<span class="swap" style="visibility:hidden">→</span>`}`;
+      box.appendChild(row);
+    }
+
+    // Players you hold that the solver dropped, listed under the position they
+    // came from so the trade is legible in one place.
+    for (const id of diff.outgoing) {
+      const p = S.byId.get(id);
+      if (!p || p.pos !== pos) continue;
+      const row = document.createElement("div");
+      row.className = "slot isgone";
+      row.innerHTML = `
+        <span class="badge">—</span>
+        <span class="nm">${p.name} <span class="sub">${p.team_short}</span></span>
+        <span class="tag out">out</span>
+        <span class="pts">£${fmt(p.price, 1)}</span>
+        <span class="ppg">${fmt(p.xppg, 2)}</span>
+        <span class="pts">${fmt(p.xpts_plan, 1)}</span>
+        <span class="swap" style="visibility:hidden">→</span>`;
+      box.appendChild(row);
+    }
+  }
+}
+
+function copyOptimal() {
+  if (S.optimal.length !== 15) return;
+  S.squad = [...S.optimal];
+  saveSquad(); renderAll();
+}
+
+/* One player at a time. The draft has to stay fifteen and legal by position, so
+   bringing a player in drops the weakest player you hold in the same position
+   that the solver does not want either -- never one it kept, which would just
+   undo itself on the next click. */
+function swapIn(id) {
+  const p = S.byId.get(id);
+  if (!p || S.squad.includes(id)) return;
+  const need = S.meta.squad_by_pos[p.pos];
+  const holding = S.squad.map((x) => S.byId.get(x)).filter((x) => x && x.pos === p.pos);
+
+  if (holding.length >= need || S.squad.length >= 15) {
+    const wanted = new Set(S.optimal);
+    const droppable = holding.filter((x) => !wanted.has(x.id))
+      .sort((a, b) => (a.xpts_plan || 0) - (b.xpts_plan || 0));
+    if (!droppable.length) {
+      alert(`No ${p.pos} to drop — your draft already holds every ${p.pos} the solver picked.`);
+      return;
+    }
+    S.squad = S.squad.filter((x) => x !== droppable[0].id);
+  }
+  S.squad.push(id);
+  saveSquad(); renderAll();
+}
+
+/* ------------------------------------------------------------------- events */
+$("#pool").addEventListener("click", (e) => {
+  const edit = e.target.closest("[data-edit]");
+  if (edit) return openEditor(+edit.dataset.edit);
+  const req = e.target.closest("[data-req]");
+  if (req) return toggleConstraint(+req.dataset.req, "include");
+  const ban = e.target.closest("[data-ban]");
+  if (ban) return toggleConstraint(+ban.dataset.ban, "exclude");
+  const add = e.target.closest("[data-id]");
+  if (!add) return;
+  const id = +add.dataset.id;
+  if (S.squad.includes(id) || S.squad.length >= 15) return;
+  S.squad.push(id);
+  saveSquad(); renderAll();
+});
+$("#slots").addEventListener("click", (e) => {
+  const edit = e.target.closest("[data-edit]");
+  if (edit) return openEditor(+edit.dataset.edit);
+  const rm = e.target.closest("[data-rm]");
+  if (!rm) return;
+  S.squad = S.squad.filter((id) => id !== +rm.dataset.rm);
+  saveSquad(); renderAll();
+});
+document.querySelectorAll(".chip[data-pos]").forEach((c) => c.addEventListener("click", () => {
+  setPosFilter(c.dataset.pos); renderPool(); saveSettings();
+}));
+$("#search").addEventListener("input", (e) => { S.search = e.target.value; renderPool(); });
+document.querySelectorAll("#pool th[data-sort]").forEach((th) => th.addEventListener("click", () => {
+  const k = th.dataset.sort;
+  S.dir = S.sort === k ? -S.dir : (k === "name" || k === "pos" || k === "team_short" ? 1 : -1);
+  S.sort = k;
+  markSortedHeader();
+  renderPool(); saveSettings();
+}));
+document.querySelectorAll(".toggle[data-view]").forEach((b) => b.addEventListener("click", () => {
+  const which = b.dataset.view;
+  setView(which, S.views[which] === "table" ? "chart" : "table");
+  saveSettings();
+}));
+$("#clear").addEventListener("click", () => { S.squad = []; saveSquad(); renderAll(); });
+$("#edApply").addEventListener("click", applyEdit);
+$("#edReq").addEventListener("click", () => {
+  if (editingId !== null) { toggleConstraint(editingId, "include"); renderEditorConstraints(); }
+});
+$("#edBan").addEventListener("click", () => {
+  if (editingId !== null) { toggleConstraint(editingId, "exclude"); renderEditorConstraints(); }
+});
+$("#lineupTeam").addEventListener("change", (e) => {
+  lineupTeam = e.target.value;
+  renderLineup();
+});
+$("#lineupEdited").addEventListener("click", () => {
+  lineupOnlyEdited = !lineupOnlyEdited;
+  renderLineup();
+});
+$("#lineupBox").addEventListener("click", (e) => {
+  const edit = e.target.closest("[data-edit]");
+  if (edit) openEditor(+edit.dataset.edit);
+});
+$("#edExToggle").addEventListener("click", (e) => {
+  explainOpen = !explainOpen;
+  e.target.textContent = explainOpen ? "hide" : "show";
+  e.target.setAttribute("aria-expanded", String(explainOpen));
+  renderExplain();
+});
+$("#askSend").addEventListener("click", () => sendAsk($("#askInput").value));
+$("#askInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); sendAsk(e.target.value); }
+});
+$("#askSuggest").addEventListener("click", (e) => {
+  const button = e.target.closest("[data-ask]");
+  if (button) sendAsk(button.dataset.ask);
+});
+$("#edClose").addEventListener("click", closeEditor);
+$("#scrim").addEventListener("click", closeEditor);
+$("#edReset").addEventListener("click", async () => {
+  if (editingId === null) return;
+  const id = editingId;
+  editBuffer = {};
+  expandedMatches.clear();
+  delete S.edits[id];
+  renderEditorFields(); renderMatches(); previewEdit();
+  await recomputeEdited([id]);
+  renderAll();
+});
+$("#moreBtn").addEventListener("click", () => {
+  showMoreOptions($("#moreRow").classList.contains("hidden"));
+  saveSettings();
+});
+$("#resetSettings").addEventListener("click", restoreDefaults);
+
+/* One pair of listeners per control card rather than a saveSettings() bolted on
+   to twenty handlers -- a knob added later is then saved without anyone having
+   to remember to save it. Buttons and the pool's own controls are not form
+   input, so those few call saveSettings() where they change state. */
+document.querySelectorAll(".card.controls").forEach((card) => {
+  card.addEventListener("input", saveSettings);
+  card.addEventListener("change", saveSettings);
+});
+
+// Bench weights. The overall slider rewrites all four from the default shape;
+// the four write only themselves and then correct what the overall one reads.
+let benchTouched = false;
+$("#benchw").addEventListener("input", (e) => {
+  benchTouched = true;
+  setBenchScale(+e.target.value);
+  scheduleSolve();
+});
+for (const k of BENCH_KEYS) {
+  $(`#bw_${k}`).addEventListener("input", () => {
+    benchTouched = true;
+    renderBenchWeights();
+    scheduleSolve();
+  });
+}
+$("#benchReset").addEventListener("click", () => {
+  benchTouched = false;
+  const defaults = S.meta?.bench_slot_weights || DEFAULT_BENCH;
+  for (const k of BENCH_KEYS) $(`#bw_${k}`).value = defaults[k];
+  renderBenchWeights();
+  saveSettings();
+  scheduleSolve();
+});
+
+$("#maxclub").addEventListener("input", (e) => { $("#mcval").textContent = e.target.value; scheduleSolve(); });
+$("#formation").addEventListener("change", () => scheduleSolve(0));
+
+$("#recency").addEventListener("input", (e) => {
+  $("#recval").textContent = +e.target.value ? e.target.value + " gw" : "off";
+  $("#recency").classList.toggle("needsync", +e.target.value !== (S.meta?.recency || 0));
+});
+$("#recency").addEventListener("change", () => sync(false));
+$("#startgw").addEventListener("change", () => sync(false));
+
+$("#constraintChips").addEventListener("click", (e) => {
+  const drop = e.target.closest("[data-drop]");
+  if (!drop) return;
+  const id = +drop.dataset.drop;
+  S.include = S.include.filter((x) => x !== id);
+  S.exclude = S.exclude.filter((x) => x !== id);
+  saveSettings();
+  renderPool(); renderConstraints(); scheduleSolve(0);
+});
+$("#optSlots").addEventListener("click", (e) => {
+  const swap = e.target.closest("[data-swap]");
+  if (swap) swapIn(+swap.dataset.swap);
+});
+$("#optCopy").addEventListener("click", copyOptimal);
+$("#optResolve").addEventListener("click", () => solveOptimal());
+$("#refreshData").addEventListener("click", () => sync(true));
+$("#saveDraft").addEventListener("click", saveDraft);
+$("#syncBtn").addEventListener("click", () => sync(false));
+$("#draftName").addEventListener("keydown", (e) => { if (e.key === "Enter") saveDraft(); });
+$("#draftList").addEventListener("click", (e) => {
+  const load = e.target.closest("[data-load]");
+  if (load) return loadDraft(decodeURIComponent(load.dataset.load));
+  const del = e.target.closest("[data-del]");
+  if (del) return deleteDraft(decodeURIComponent(del.dataset.del));
+});
+$("#draftList").addEventListener("change", (e) => {
+  const cmp = e.target.closest("[data-cmp]");
+  if (cmp) toggleCompare(decodeURIComponent(cmp.dataset.cmp));
+});
+$("#saveOverrides").addEventListener("click", saveOverrides);
+$("#loadOverrides").addEventListener("click", loadOverrides);
+$("#clearEdits").addEventListener("click", async () => {
+  const ids = Object.keys(S.edits).map(Number);
+  S.edits = {};
+  await recomputeEdited(ids);
+  renderAll();
+});
+addEventListener("keydown", (e) => { if (e.key === "Escape") closeEditor(); });
+$("#optimise").addEventListener("click", copyOptimal);
+$("#horizon").addEventListener("change", () => { rebuildPool(); renderAll(); scheduleSolve(0); });
+$("#halflife").addEventListener("input", (e) => { $("#hlval").textContent = (+e.target.value).toFixed(1); });
+$("#halflife").addEventListener("change", () => { rebuildPool(); renderAll(); scheduleSolve(0); });
+$("#budget").addEventListener("input", (e) => {
+  $("#budval").textContent = (+e.target.value).toFixed(1); renderSquad(); scheduleSolve();
+});
+$("#ownw").addEventListener("input", (e) => { $("#ownval").textContent = (+e.target.value).toFixed(2); scheduleSolve(); });
+$("#minstart").addEventListener("input", (e) => { $("#msval").textContent = (+e.target.value).toFixed(2); scheduleSolve(); });
+$("#theme").addEventListener("click", () => {
+  const now = document.documentElement.getAttribute("data-theme");
+  const next = now === "dark" ? "light" : now === "light" ? "dark"
+    : (matchMedia("(prefers-color-scheme: dark)").matches ? "light" : "dark");
+  document.documentElement.setAttribute("data-theme", next);
+  saveSettings();
+  renderAll();
+});
+addEventListener("resize", () => { renderGwChart(); renderExposure(); });
+
+if (TOKEN) $("#dataLink").href = "/data?t=" + encodeURIComponent(TOKEN);
+
+/* The service worker is what makes this survive the laptop being off: it caches
+   the shell and the last snapshot, so opening the board on a train is the same
+   as opening it at the desk. Registration is deliberately not awaited — the
+   board works on the first visit without it, and only needs it on the second. */
+if ("serviceWorker" in navigator) {
+  /* Take an update the moment it is ready, rather than on the visit after next.
+     The shell is served cache-first, so a reload after a code change gets the
+     *old* page from the old worker while the new one installs quietly behind
+     it -- which means two reloads to see a change, with nothing on screen
+     explaining why the first one did nothing.
+
+     Worse than the wait: for the moment the caches disagree, the page and the
+     modules it imports can come from different versions of the shell, and an
+     `import` of something the older board.mjs does not export takes the whole
+     script down rather than degrading. Reloading the instant a new worker takes
+     charge closes that window instead of hoping nobody lands in it. */
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloading = false;
+
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    // On a first visit there was no controller, and the new worker claiming
+    // this page is not a change to it -- reloading there would be a pointless
+    // flash on the one visit that is already showing current code.
+    if (!hadController || reloading) return;
+    reloading = true;
+    location.reload();
+  });
+
+  addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").then((registration) => {
+      // Ask now instead of waiting for the browser's own update schedule, which
+      // can be up to a day and is the difference between shipping a fix and
+      // shipping it eventually.
+      registration.update().catch(() => {});
+    }).catch((error) => {
+      console.warn("offline support unavailable:", error.message);
+    });
+  });
+}
+
+// Settings first, then the pool: derivePool reads the horizon and the half-life
+// straight off the controls, so restoring them afterwards would mean deriving
+// the whole pool twice on every load.
+applySettings(loadLocal(STORE.settings, null));
+loadPool();
+</script>
+</body>
+</html>

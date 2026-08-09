@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Where the data comes from — FPL drafting board</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface-1: #fcfcfb; --page: #f9f9f7;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --border: rgba(11,11,11,0.10);
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+  --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+  --code: #f0efec;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-1: #1a1a19; --page: #0d0d0d;
+    --text-primary: #ffffff; --text-secondary: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+    --code: #26261f;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-1: #1a1a19; --page: #0d0d0d;
+  --text-primary: #ffffff; --text-secondary: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --border: rgba(255,255,255,0.10);
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+  --code: #26261f;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--page); color: var(--text-primary);
+  font: 15px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+html, body { overflow-x: clip; }
+.wrap { max-width: 880px; margin: 0 auto; padding: 24px 22px 80px; }
+@media (max-width: 720px) {
+  .wrap { padding: 14px 13px 60px; }
+  h1 { font-size: 20px; }
+  .toc { columns: 1; }
+  table { font-size: 12.5px; }
+  td:first-child { white-space: normal; }
+  /* Tables scroll inside their own box; the page never scrolls sideways. */
+  table, pre { display: block; overflow-x: auto; max-width: 100%; }
+}
+header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+h1 { font-size: 24px; margin: 0 0 4px; font-weight: 600; letter-spacing: -0.02em; }
+h2 {
+  font-size: 18px; margin: 40px 0 10px; font-weight: 600; letter-spacing: -0.01em;
+  padding-top: 18px; border-top: 1px solid var(--border);
+}
+h3 { font-size: 15px; margin: 24px 0 6px; font-weight: 600; }
+p { margin: 0 0 12px; color: var(--text-secondary); }
+p.lead { color: var(--text-primary); font-size: 16px; }
+a { color: var(--series-1); }
+ul { margin: 0 0 12px; padding-left: 20px; color: var(--text-secondary); }
+li { margin-bottom: 4px; }
+code {
+  background: var(--code); padding: 1px 5px; border-radius: 4px;
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+pre {
+  background: var(--code); padding: 12px 14px; border-radius: 8px; overflow-x: auto;
+  font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0 0 14px;
+}
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 0 0 16px; }
+th {
+  text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--muted); padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+}
+td { padding: 7px 10px; border-bottom: 1px solid var(--border); color: var(--text-secondary); vertical-align: top; }
+td:first-child { color: var(--text-primary); white-space: nowrap; }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin: 0 0 16px; }
+.live { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 0 0 8px; }
+.livecard { border: 1px solid var(--border); border-radius: 9px; padding: 13px 15px; background: var(--surface-1); }
+.livecard h4 { margin: 0 0 3px; font-size: 14px; display: flex; align-items: center; gap: 7px; }
+.livecard .u { font-size: 11.5px; color: var(--muted); word-break: break-all; margin-bottom: 8px; }
+.livecard dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 12.5px; }
+.livecard dt { color: var(--muted); }
+.livecard dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+.ok { background: var(--good); } .warn { background: var(--warning); } .bad { background: var(--critical); }
+.note {
+  border-left: 3px solid var(--series-2); background: var(--surface-1);
+  border: 1px solid var(--border); border-left: 3px solid var(--series-2);
+  border-radius: 8px; padding: 11px 14px; margin: 0 0 16px; font-size: 14px;
+}
+.note b { color: var(--text-primary); }
+.back { font-size: 13.5px; }
+.flow { font-size: 12.5px; line-height: 1.9; }
+.toc { font-size: 13.5px; columns: 2; column-gap: 26px; }
+.toc a { display: block; margin-bottom: 3px; }
+.sub { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div>
+    <h1>Where the data comes from</h1>
+    <div class="sub">Every number on the drafting board, traced back to its source.</div>
+  </div>
+  <span style="flex:1"></span>
+  <a class="back" id="backLink" href="/">&larr; Back to the board</a>
+</header>
+
+<div class="card">
+  <div class="toc">
+    <a href="#live">Live source status</a>
+    <a href="#sources">The four sources</a>
+    <a href="#joining">Joining them together</a>
+    <a href="#pipeline">From data to points</a>
+    <a href="#fields">Field-by-field provenance</a>
+    <a href="#derived">What is assumed, not measured</a>
+    <a href="#refresh">Caching and refresh</a>
+    <a href="#limits">What none of it can tell you</a>
+  </div>
+</div>
+
+<h2 id="live">Live source status</h2>
+<p>Read from this machine right now, not from documentation — if a source is stale
+or a key is missing, it says so here.</p>
+<div class="live" id="liveCards"><div class="sub">loading…</div></div>
+<p class="sub" id="genAt"></p>
+
+<h2 id="sources">The four sources</h2>
+
+<h3>1. The official FPL API</h3>
+<p>
+  <code>https://fantasy.premierleague.com/api/bootstrap-static/</code> and
+  <code>/fixtures/</code>. Public, unauthenticated, undocumented but stable for years.
+  This is the authority for anything the game itself defines: who exists, what
+  position they are, what they cost, who they play for, the fixture list, gameweek
+  deadlines, and the chip windows.
+</p>
+<p>
+  It also carries Opta-derived underlying stats — <code>expected_goals</code>,
+  <code>expected_assists</code>, <code>expected_goals_conceded</code>, and since
+  2025/26 the defensive-contribution counts (<code>clearances_blocks_interceptions</code>,
+  <code>recoveries</code>, <code>tackles</code>, <code>defensive_contribution</code>).
+  So "Opta data" is already in here; there is no separate Opta feed to buy.
+</p>
+<div class="note">
+  <b>Important quirk:</b> before gameweek 1, the API serves <em>last completed
+  season's</em> totals on every player. That is what this whole model is built on
+  preseason. Meanwhile <code>strength_attack_home</code> and the other team-strength
+  fields are zeroed out, which is why team strength is derived from xG and odds
+  instead of taken from the API.
+</div>
+
+<h3>2. Understat</h3>
+<p>
+  Non-penalty xG, xA, xGChain and xGBuildup per player. Understat stopped embedding
+  its datasets in the league page HTML — that page is now a JavaScript shell with no
+  data in it — but the AJAX endpoint the page calls is still open:
+</p>
+<pre>POST https://understat.com/main/getPlayersStats/
+     league=EPL&amp;season=2025
+     X-Requested-With: XMLHttpRequest</pre>
+<p>
+  The key thing it gives that the FPL API does not is <b>non-penalty</b> xG.
+  Penalties are worth modelling separately and assigning to the designated taker,
+  rather than smearing them across everyone with a high xG total, and you cannot do
+  that from a combined number.
+</p>
+<p>
+  A player who moved mid-season appears with a comma-joined club,
+  <code>"Bournemouth,Manchester City"</code>. Those rows are excluded from team
+  aggregates — a transferred player's xG cannot be split between his two clubs, and
+  assigning it all to either badly distorts that club's rate — but he is still
+  indexed under both clubs for the player join.
+</p>
+
+<h3>3. Per-gameweek history archive <span class="sub">(third-party, opt-in)</span></h3>
+<p>
+  Weighting recent form above early-season form needs match-by-match data, and
+  <b>neither live source can provide it</b>. The FPL API wipes
+  <code>element-summary</code> history when a season rolls over and keeps only
+  season totals in <code>history_past</code>; Understat's endpoint returns
+  whole-season aggregates and silently ignores date parameters — I tested three
+  spellings and all returned byte-identical payloads.
+</p>
+<p>
+  So recency weighting reads from the
+  <a href="https://github.com/vaastav/Fantasy-Premier-League">vaastav/Fantasy-Premier-League</a>
+  archive, a long-running community mirror that snapshots the FPL API every
+  gameweek and publishes CSV. It carries all 38 gameweeks with xG, xA, xGC,
+  defensive contribution, saves and bonus.
+</p>
+<div class="note">
+  <b>This one is not official.</b> It is a third party that can lag, change
+  shape or disappear, which is why recency weighting is <b>off by default</b>
+  and why a failure to fetch costs you the tilt and nothing else — the
+  projection carries on with flat season rates. Element ids are reassigned every
+  season, so rows are joined to current players through <code>code</code>, the
+  stable per-player identifier that survives both season rollovers and transfers.
+</div>
+
+<h3>4. The Odds API (bookmakers)</h3>
+<p>
+  <code>https://api.the-odds-api.com/v4/sports/soccer_epl/odds</code>, markets
+  <code>h2h</code> and <code>totals</code>. Free tier, 500 requests a month, key in
+  <code>.env</code>. Around twenty books are returned per fixture; the median price
+  per outcome is taken so one outlier cannot move the line.
+</p>
+<p>
+  Prices carry an overround — the implied probabilities sum to more than 1, and the
+  excess is the bookmaker's margin. That is removed by normalising, then the
+  de-vigged 1&times;2 probabilities plus the over/under line are inverted into
+  expected goals for each side via a Poisson model.
+</p>
+<p>
+  This source is optional. Without a key everything still runs on xG-derived team
+  ratings; the odds are simply the sharpest forward-looking estimate available, and
+  the books only price about a fortnight ahead, so the further gameweeks fall back
+  to ratings regardless.
+</p>
+
+<h2 id="joining">Joining them together</h2>
+<p>
+  The three sources agree on nothing. FPL says <em>Gabriel Fernando de Jesus</em>,
+  Understat says <em>Gabriel Jesus</em>; the books say <em>Nottingham Forest</em>
+  where FPL says <em>Nott'm Forest</em>. Reconciling them is
+  <code>fplkit/matching.py</code>'s entire job, and it runs in
+  stages, most precise first, with every stage sweeping all players before the next
+  begins.
+</p>
+<table>
+  <thead><tr><th>Stage</th><th>Scope</th><th>Rule</th></tr></thead>
+  <tbody>
+    <tr><td>1. Exact</td><td>within club</td><td>normalised full name or web name matches exactly</td></tr>
+    <tr><td>2. Structural</td><td>within club</td><td>first name agrees and at least one further name is shared</td></tr>
+    <tr><td>3. Exact</td><td>whole league</td><td>catches summer movers, filed under a club they have left</td></tr>
+    <tr><td>4. Structural</td><td>whole league</td><td>same rule, no club constraint</td></tr>
+    <tr><td>5. Fuzzy</td><td>within club</td><td>token-set similarity, last resort, only unclaimed rows</td></tr>
+  </tbody>
+</table>
+<p>
+  Order matters because an Understat row can only be claimed once. Three Arsenal
+  players are called Gabriel: the centre-back must take the row named plainly
+  "Gabriel" in stage 1 before Martinelli and Jesus are allowed to compete for it in
+  stage 2. Running each player to exhaustion instead would let whoever came first in
+  the table take it — and quietly hand a winger a centre-back's expected goals.
+</p>
+<div class="note">
+  <b>Why fuzzy matching is last.</b> <code>token_set_ratio</code> returns a perfect
+  100 whenever one name's tokens are a subset of the other's. It scores
+  "Will Dennis" against "Dennis Cirkin" as a certainty, and "Gabriel" against
+  "Gabriel Martinelli Silva" as confidently as it scores the real Gabriel. It only
+  ever sees rows nobody else wanted. When matching fails it fails closed: the
+  player keeps FPL-only rates, which is what he would have had anyway.
+</div>
+
+<h2 id="pipeline">From data to points</h2>
+<p class="flow">
+  <b>1. Fixture &rarr; expected goals.</b> De-vigged 1&times;2 + over/under, inverted
+  to (&lambda;<sub>home</sub>, &lambda;<sub>away</sub>) by least squares under
+  independent Poisson. Unpriced fixtures use xG-derived attack and defence ratings
+  applied on top of a fixed league-average goals rate.<br>
+  <b>2. Team &rarr; player.</b> The player's non-penalty xG and xA per 90 are scaled
+  by this fixture's expected goals relative to his team's season average, and by his
+  expected minutes. Penalties go to the designated taker only.<br>
+  <b>3. Player &rarr; points.</b> The FPL scoring rules, with the non-linear terms —
+  clean sheets, the &minus;1 per two conceded, saves, defensive contribution —
+  evaluated over their full Poisson distributions and across the start and
+  substitute cases separately.
+</p>
+
+<h2 id="fields">Field-by-field provenance</h2>
+<table>
+  <thead><tr><th>What you see</th><th>Comes from</th><th>How</th></tr></thead>
+  <tbody>
+    <tr><td>Price, position, club</td><td>FPL API</td><td>verbatim</td></tr>
+    <tr><td>Own%</td><td>FPL API</td><td><code>selected_by_percent</code>, verbatim</td></tr>
+    <tr><td>Start probability</td><td>FPL API</td><td><code>starts</code> ÷ 38, scaled by availability status</td></tr>
+    <tr><td>xG per 90</td><td>Understat</td><td>non-penalty, shrunk toward the positional average</td></tr>
+    <tr><td>xA per 90</td><td>Understat</td><td>shrunk the same way</td></tr>
+    <tr><td>Defensive contribution</td><td>FPL API</td><td><code>defensive_contribution_per_90</code>, shrunk</td></tr>
+    <tr><td>Bonus per 90</td><td>FPL API</td><td>last season's bonus ÷ 90s played, shrunk</td></tr>
+    <tr><td>Saves per 90</td><td>FPL API</td><td><code>saves_per_90</code>, shrunk</td></tr>
+    <tr><td>Team attack</td><td>Understat</td><td>squad npxG ÷ matches, regressed to the league mean</td></tr>
+    <tr><td>Team defence</td><td>FPL API</td><td>minutes-weighted <code>expected_goals_conceded_per_90</code> of continuing players only</td></tr>
+    <tr><td>Expected goals per fixture</td><td>Odds API</td><td>de-vigged, Poisson-inverted; ratings where unpriced</td></tr>
+    <tr><td>Clean sheet probability</td><td>Odds API</td><td>Poisson pmf at zero, from &lambda;<sub>against</sub></td></tr>
+    <tr><td>Fixture list, chip windows</td><td>FPL API</td><td>verbatim</td></tr>
+    <tr><td>Injury/rotation hazard</td><td>FPL API</td><td>derived from <code>birth_date</code> and <code>status</code></td></tr>
+    <tr><td>Price change forecast</td><td>FPL API</td><td>net transfers in-season; ownership+value proxy preseason</td></tr>
+  </tbody>
+</table>
+
+<h2 id="derived">What is assumed, not measured</h2>
+<p>These are judgement calls, not data. They live in
+  <code>config.py</code> and <code>model.py</code> and can be changed.</p>
+<table>
+  <thead><tr><th>Constant</th><th>Value</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Penalty share of goals</td><td>9%</td><td>league-wide rate; splits open play from spot kicks</td></tr>
+    <tr><td>Penalty conversion</td><td>79%</td><td>long-run Premier League rate</td></tr>
+    <tr><td>Home advantage</td><td>&times;1.12</td><td>only used where the books have not priced a fixture</td></tr>
+    <tr><td>League mean goals</td><td>1.42 per team</td><td>pins the absolute level; ratings supply the spread</td></tr>
+    <tr><td>Shrinkage prior</td><td>1,200 minutes</td><td>a full season carries ~75% weight; year-on-year xG correlation is only 0.6–0.7</td></tr>
+    <tr><td>Mover prior</td><td>&times;1.8</td><td>a changed club means the rate describes a different team</td></tr>
+    <tr><td>Transfer context</td><td>square root</td><td>output is part player, part team</td></tr>
+    <tr><td>Promoted clubs</td><td>80% attack, 125% defence</td><td>no Premier League xG exists for them yet</td></tr>
+    <tr><td>Injury hazard</td><td>3%/gameweek, rising past 29</td><td>age is the one durable observable risk factor</td></tr>
+    <tr><td>Minutes when starting</td><td>78</td><td>average for a player who starts</td></tr>
+  </tbody>
+</table>
+
+<h2 id="refresh">Caching and refresh</h2>
+<p>
+  Every response is cached to <code>.cache/</code> on disk with a TTL: FPL for 3
+  hours, odds for 6, Understat for 24. This is not just politeness — the odds free
+  tier is 500 requests a month, and an uncached UI would burn it in an afternoon.
+  <code>python fpl.py cache-clear</code> empties it; <code>--refresh</code> on any
+  command bypasses it for that run.
+</p>
+
+<h2 id="limits">What none of it can tell you</h2>
+<ul>
+  <li><b>Minutes.</b> Everything above is a rounding error next to whether a player
+    starts, and last season's starts cannot see a transfer, a new manager or a
+    changed pecking order. This is the weakest input in the model, and the reason
+    the stat editor exists.</li>
+  <li><b>Form within a season.</b> Every rate is a season average. A player mid-hot-streak
+    looks identical to one who front-loaded his returns.</li>
+  <li><b>Anything from preseason friendlies.</b> No source here covers them.</li>
+  <li><b>Team news.</b> Only what the FPL API's <code>status</code> and
+    <code>news</code> fields carry, which lag press conferences.</li>
+  <li><b>Double and blank gameweeks</b> beyond what is already on the fixture list —
+    they appear when cup rounds are drawn and games get postponed, which is why chip
+    advice stays silent early in the season.</li>
+  <li><b>Set-piece duties</b> beyond penalties, so a new corner taker is undervalued.</li>
+</ul>
+<p>
+  Independent Poisson also understates draws by roughly two points of probability,
+  which slightly overstates decisive results and therefore clean sheets. Dixon-Coles
+  would correct it; the effect is small next to the minutes uncertainty above.
+</p>
+
+</div>
+<script>
+/* ---------------------------------------------------------------- auth token
+   When the board is reachable beyond this machine the server requires a shared
+   token. It arrives once in the URL (from the printed link or a QR code), then
+   moves into sessionStorage and rides on a header so it stops appearing in the
+   address bar, in history, and in any screenshot of the page. */
+const TOKEN = (() => {
+  const url = new URL(location.href);
+  const fromUrl = url.searchParams.get("t");
+  if (fromUrl) {
+    sessionStorage.setItem("fplToken", fromUrl);
+    url.searchParams.delete("t");
+    history.replaceState(null, "", url.pathname + url.search + url.hash);
+    return fromUrl;
+  }
+  return sessionStorage.getItem("fplToken") || "";
+})();
+
+const api = (path, init = {}) => fetch(path, {
+  ...init,
+  headers: { ...(init.headers || {}), ...(TOKEN ? { "X-FPL-Token": TOKEN } : {}) },
+});
+
+const fmtAge = (s) => {
+  if (s === null || s === undefined) return "never";
+  if (s < 90) return Math.round(s) + "s ago";
+  if (s < 5400) return Math.round(s / 60) + "m ago";
+  return (s / 3600).toFixed(1) + "h ago";
+};
+const kb = (b) => b > 1024 * 1024 ? (b / 1048576).toFixed(1) + " MB" : Math.round(b / 1024) + " KB";
+
+api("/api/provenance").then((r) => r.json()).then((d) => {
+  const s = d.sources;
+  const stale = (src, ttl) => src.cache.newest_age_seconds === null ? "bad"
+    : (src.cache.newest_age_seconds > ttl * 3600 ? "warn" : "ok");
+  const card = (title, url, state, rows) => `
+    <div class="livecard">
+      <h4><span class="dot ${state}"></span>${title}</h4>
+      <div class="u">${url}</div>
+      <dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
+    </div>`;
+
+  document.getElementById("liveCards").innerHTML = [
+    card("FPL API", s.fpl.base, stale(s.fpl, s.fpl.ttl_hours), [
+      ["players", s.fpl.players], ["teams", s.fpl.teams], ["fixtures in window", s.fpl.fixtures],
+      ["cache age", fmtAge(s.fpl.cache.newest_age_seconds)],
+      ["cached", `${s.fpl.cache.entries} files · ${kb(s.fpl.cache.bytes)}`],
+      ["ttl", s.fpl.ttl_hours + "h"],
+    ]),
+    card("Understat", s.understat.base, stale(s.understat, s.understat.ttl_hours), [
+      ["rows returned", s.understat.rows],
+      ["matched to FPL", s.understat.matched],
+      ["unmatched", s.understat.unmatched],
+      ["cache age", fmtAge(s.understat.cache.newest_age_seconds)],
+      ["ttl", s.understat.ttl_hours + "h"],
+    ]),
+    card("The Odds API", s.odds.base,
+      !s.odds.key_present ? "bad" : stale(s.odds, s.odds.ttl_hours), [
+      ["api key", s.odds.key_present ? "present" : "NOT SET"],
+      ["regions", s.odds.regions],
+      ["fixtures priced", `${s.odds.fixtures_priced} / ${s.odds.fixtures_total}`],
+      ["coverage", Math.round(s.odds.coverage * 100) + "%"],
+      ["cache age", fmtAge(s.odds.cache.newest_age_seconds)],
+      ["ttl", s.odds.ttl_hours + "h"],
+    ]),
+    card("History archive" + (d.history.rows ? "" : " (unused)"), d.history.base,
+      d.history.rows ? "ok" : "warn", [
+      ["third party", "yes"],
+      ["rows", d.history.rows],
+      ["cache age", fmtAge(d.history.cache.newest_age_seconds)],
+      ["ttl", d.history.ttl_hours + "h"],
+      ["used for", "recency weighting"],
+    ]),
+    card("Derived state", "computed in this process", "ok", [
+      ["gameweeks", `GW${d.horizon[0]}–GW${d.horizon[d.horizon.length - 1]}`],
+      ["rates from Understat", d.rate_source.understat || 0],
+      ["rates from FPL only", d.rate_source.fpl || 0],
+      ["too few minutes", (d.rate_source.thin || 0) + (d.rate_source.none || 0)],
+      ["changed club", d.movers],
+      ["promoted clubs", d.promoted_clubs.length],
+    ]),
+  ].join("");
+  document.getElementById("genAt").textContent =
+    `Generated ${d.generated_at.replace("T", " ")}`
+    + (d.promoted_clubs.length ? ` · promoted: ${d.promoted_clubs.join(", ")}` : "");
+  if (TOKEN) document.getElementById("backLink").href = "/?t=" + encodeURIComponent(TOKEN);
+}).catch(() => {
+  document.getElementById("liveCards").innerHTML =
+    `<div class="sub">Could not reach the server — is <code>fpl.py serve</code> running?</div>`;
+});
+</script>
+</body>
+</html>

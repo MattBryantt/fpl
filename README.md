@@ -1,0 +1,1174 @@
+# FPL expected-points toolkit
+
+Projects Fantasy Premier League points by combining three sources, then answers
+the question that actually decides a squad: **is the expensive player worth the
+extra money?**
+
+- **Bookmaker odds** (The Odds API) — 1X2 and over/under prices from ~20 books,
+  de-vigged and inverted into expected goals for each side of each fixture.
+- **Understat** — non-penalty xG, xA and xGChain per 90, giving each player's
+  share of his team's attacking output.
+- **The FPL API** — prices, positions, minutes, starts, penalty order, saves,
+  bonus, and the defensive-contribution stats the 2025/26 rules added.
+
+## Setup
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cp .env.example .env      # then paste your Odds API key into .env
+```
+
+The Odds API key is free (500 requests/month) from
+[the-odds-api.com](https://the-odds-api.com/). It is optional — without it the
+model falls back to xG-derived team ratings for every fixture — but the odds are
+the single biggest accuracy win, so it is worth the two minutes.
+
+Everything is cached on disk (`.cache/`), so repeated runs cost no quota: FPL
+data for 3 hours, odds for 6, Understat for 24. `--refresh` bypasses it.
+
+## Commands
+
+```bash
+python fpl.py serve                                       # interactive drafting board in a browser
+python fpl.py snapshot                                    # freeze the projection so the board runs offline
+python fpl.py plan                                        # start here: squad + path + risk
+python fpl.py plan --recency 10                           # weight recent form above early season
+python fpl.py horizon                                     # how much does the horizon matter?
+python fpl.py rank --pos MID --max-price 9.0 --limit 20   # ranked by projected points
+python fpl.py value --pos DEF                             # best points per £m
+python fpl.py compare Haaland Thiago --squad-test         # is the premium worth it?
+python fpl.py upgrade Saka --budget-extra 2.0             # what else could I buy?
+python fpl.py squad --budget 100                          # optimal legal 15, fixed horizon
+python fpl.py fixtures --horizon 3                        # expected goals per fixture
+python fpl.py overrides Senesi                             # edit stats you think are wrong
+python fpl.py movers                                      # players whose numbers are from another club
+python fpl.py blindspots                                  # players the model can't see
+```
+
+Common flags: `--horizon N` (gameweeks), `--start-gw N`, `--full` (show the full
+points breakdown), `--csv name.csv` (write to `out/`), `--overrides file.csv`,
+`--refresh`. `plan` and `horizon` also take `--half-life N`.
+
+## The drafting board
+
+```bash
+python fpl.py serve          # → http://127.0.0.1:8000
+```
+
+A local page for building squads by hand and watching every number move as you
+do. Add and remove players from the pool, and the projected XI points, the
+budget meter, the legality checks, the weekly profile, the rank-risk list and
+the fixture timeline all update instantly.
+
+The solver's answer sits permanently in a third column beside your draft, and it
+re-solves itself whenever a setting changes — move the budget, a bench weight or
+the template tilt and the optimal fifteen under the *new* settings appears next
+to the one you built under the old ones. Players it wants that you don't hold
+are marked **in**, players you hold that it dropped are marked **out**, and you
+can take the whole squad across (`Copy whole squad to my draft`) or one player at
+a time with the → button beside them. Swapping one player in drops the weakest
+player you hold in the same position that the solver did not want either, so the
+draft stays fifteen and legal by position.
+
+The weekly chart overlays your draft against the optimal squad, and the hero
+number shows what your edits cost or gained. The controls along the top
+(horizon, half-life, budget, template tilt, minimum start probability) scope
+everything below them.
+
+### Three numbers per player, and why
+
+| | What it is | Read it for |
+| --- | --- | --- |
+| **PPG** | last season's points **per appearance**, as the FPL API reports it | the number you already carry in your head. Greyed under 900 minutes, where a rate over four cameos reads like form |
+| **xPPG** | projected points **per fixture** over the horizon, undecayed | comparing two players on different fixture runs. A double gameweek is two matches and a blank is none, so this is the honest rate |
+| **xPts** | plan-weighted total over the horizon | ranking a squad. Discounts distant gameweeks and multiplies by a survival curve, which is what the optimiser maximises |
+
+They answer different questions and the board shows all three side by side
+rather than making you hold one in memory while reading another. xPts is the one
+to rank on; xPPG is the one to compare on; PPG is the sanity check.
+
+### Where a player's points actually come from
+
+Click the ✎ beside anyone and the panel opens with **Where these points come
+from** — the projection taken apart into the things the scoring rules pay for,
+and then the arithmetic that turns that into the number in the table:
+
+```text
+Appearance                                  9.13
+Goals            open play plus penalties   7.32
+Assists                                     6.26
+Bonus                                       2.61
+Clean sheets     only while on the pitch    1.49
+Defensive contribution                      1.40
+Cards and penalty misses                   −1.02
+────────────────────────────────────────────────
+Over 5 fixtures                            27.19    ← 5.44 per fixture, the xPPG column
+
+Why the table shows 17.5
+Fixture         Points   Weight   Counts as
+GW1  BRE (H)      5.51     1.00        5.51
+GW2  new (A)      4.81     0.76        3.66
+GW3  cov (H)      5.95     0.58        3.45
+GW4  cry (A)      4.85     0.45        2.16
+GW5  ars (A)      3.98     0.34        1.34
+────────────────────────────────────────────────
+Plan-weighted total — what the board ranks on   16.12
+```
+
+Those components come from the same `playerFixturePoints` the projection runs
+on, so they always add up to the total rather than approximating it — and they
+move as you drag the sliders, which is the quickest way to see that a player is
+80% appearance points and will not repay a captaincy.
+
+The second table is the part that confuses people, and it was previously
+invisible: the board **ranks on plan-weighted points** while the eye reads raw
+ones. `Weight` is the geometric decay on distance times the survival curve —
+half-life 3 gameweeks by default, multiplied by his chance of still being
+available. Nothing on screen used to say those were different quantities.
+
+**Watch the denominators.** PPG divides by the games a player *appeared in*;
+xPPG divides by his club's *fixtures*. Haaland's 6.8 becomes 6.3 once the three
+games he missed are counted, which is most of why the model looks pessimistic
+beside it. Hover any PPG value and the tooltip gives both, plus the appearance
+count — so the comparison next to it is like for like.
+
+The split of work is deliberate, and it moved. The server used to run the
+projection *and* the MILP; it now runs only the projection, and freezes the
+result into `out/snapshot.json`. Everything else — the optimiser, the stat
+editor, the charts, the legality checks — runs in the browser, against that
+file. Changing the horizon or the half-life is arithmetic over numbers the page
+already holds, so it is instant and needs nothing behind it.
+
+That is what lets the board work on a phone with the laptop shut. It also means
+there is one code path instead of an online one and an offline one, which is the
+part that matters for correctness: [scripts/verify-js-port.mjs](scripts/verify-js-port.mjs)
+and [scripts/verify-solver-port.mjs](scripts/verify-solver-port.mjs) check the
+browser's arithmetic and its MILP against the Python, on real data, every time.
+
+The price is that the data is only as fresh as the last **Sync**, and the header
+says how stale it is rather than letting you assume it is live.
+
+**More options** opens two more rows. The first has everything else the CLI
+exposes: first gameweek, max per club, recent-form half-life, a forced
+formation, a button to bypass the cache and refetch every source, and
+**Restore defaults**, which puts every knob on the board back to its default and
+leaves your squad, drafts and edits alone. The ⊕ and
+⊘ buttons in the pool require or bar a player — those are *optimiser
+constraints*, not squad edits, so they leave whatever you're currently drafting
+alone and only change the optimal column. Active constraints show as removable
+chips.
+
+The second row is **bench weights**: one slider per bench slot, each showing the
+weight the objective actually uses for that slot rather than a relative share of
+some other number. The `Overall` slider rewrites all four from the default
+shape, and reads back the scale the four currently imply, so the two can never
+contradict each other. Set all four to zero and the solver buys the four
+cheapest legal bodies; push `1st sub` up and it starts spending real money on a
+player who only ever comes on when a starter blanks. Every move re-solves the
+optimal column, which is the point — the sliders are only useful if you can see
+what they buy you.
+
+**Where the data comes from** (top right, or `/data`) is a provenance page — see
+below.
+
+### Team lineups, and what an override costs the rest of the club
+
+**Minutes are a fixed pool.** Eleven players start, and 990 minutes get played,
+whatever anyone asserts. So saying a player starts can only mean somebody else
+does not — and until now nothing enforced that. Overrides were applied at the
+very end of the pipeline, long after `minutes_model` had balanced each squad,
+and nothing rebalanced it afterwards. Pushing one fringe player's `p_start` to
+0.9 left Manchester City fielding **11.6 players** and scoring 8% more than the
+odds said they would, with the extra goals conjured rather than taken from a
+team-mate. Override a whole XI, which is what entering real team news means, and
+the club drifts a long way from anything its fixtures support.
+
+Now the club is put back together around the assertion:
+
+```text
+Team lineups                                    Man City   [11.00 starters]
+Player                        Start   Mins   xPPG
+Savinho          MID  yours    0.90     71   3.21
+Haaland          FWD  adjusted 0.89     72   5.42
+Semenyo          MID  adjusted 0.89     72   3.08
+Donnarumma       GKP           0.95     72   3.44
+```
+
+`yours` is what you asserted and is never touched. `adjusted` is the consequence
+— everyone else scaled by one bounded multiplier, so the pecking order the data
+supports survives. The **Team lineups** card browses any club; the stat editor
+shows the same table live while you drag, with a `Δ` column, so you can see who
+pays for the minutes before you commit to handing them out.
+
+Two things it will not do. It will not scale your own numbers back to fit: pin
+thirteen players at 0.95 and the club fields 13.35, the header turns red and
+says so, and the goals follow. And the same logic protects asserted *rates* —
+`conserve_team_output` treats an override as fully evidenced, so balancing a
+club's books never rescales a number you typed.
+
+The browser does this too, in `board.mjs`, because on a phone there is nothing
+else to do it — and
+[scripts/verify-lineup-port.mjs](scripts/verify-lineup-port.mjs) checks the two
+agree on every player of every rebalanced club, including the awkward shapes: a
+promotion, a demotion, a whole XI pinned at once, a keeper swap, and an
+over-pinned club the model is supposed to leave over-pinned.
+
+### Asking why, in words
+
+Below the breakdown is **Ask about this player** — a chat box that answers from
+the numbers the model actually produced. It is off until you point it at an
+endpoint, and there are three free ways to do that:
+
+| | How | What it costs |
+| --- | --- | --- |
+| **Ollama, on your Mac** | `brew install ollama && ollama pull llama3.1:8b` | nothing, ever — no key, no account, no quota, and no data leaves the machine. This is the default |
+| **Google AI Studio** | a key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | free tier, no card. Better answers than an 8B local model |
+| **Groq** | a key from [console.groq.com/keys](https://console.groq.com/keys) | free tier, and very fast |
+
+Set `FPL_AI_BASE_URL`, `FPL_AI_MODEL` and `FPL_AI_KEY` in `.env` — the exact
+values for each are in [.env.example](.env.example). Any OpenAI-compatible
+`/chat/completions` endpoint works, so this is not tied to a vendor. The key is
+read by the server process and never reaches the browser.
+
+**It is grounded, deliberately.** The server does not hand a chat endpoint your
+question and hope. For every question it rebuilds a dossier for that player —
+the full points breakdown, the per-fixture lambdas and whether they came from
+bookmakers or from ratings, his inputs, where he ranks in his position, and the
+model's own caveats about thin evidence or a summer transfer — out of the same
+`reproject_player` the board scores with. Then it tells the model to use only
+those numbers, to quote the ones it reasons from, and to say so when the dossier
+cannot answer. An answer therefore cannot be built on figures the projection
+never produced, which is the failure mode that makes a chat box over a model
+worse than no chat box.
+
+What it is good at: "why is he rated this highly", "what is he actually being
+paid for", "how much of this rests on him starting", "should I trust this".
+What it cannot do is tell you anything the model does not know — it has no
+knowledge of team news, and it will say so rather than invent some.
+
+Two honest caveats. It needs the laptop, like Sync does: there is no model on
+the phone, and the box says so rather than failing quietly. And a hosted free
+tier means the player's numbers go to that provider — public football
+statistics, but an external service nonetheless, which is why the local option
+is the default and the box tells you which one is answering.
+
+### Using it from a phone, with the laptop off
+
+The board installs to a phone's home screen and works with nothing behind it —
+no signal, no server, laptop shut. Picking a squad, editing a player's inputs
+and re-solving the optimiser all happen on the device.
+
+```bash
+./scripts/setup-phone-access.sh
+```
+
+It walks through Tailscale, installs a launchd agent so the board is up whenever
+the Mac is, and points a tailnet-only HTTPS hostname at it. Then on the phone:
+open the link once, **Share → Add to Home Screen**, and let it finish loading.
+
+That one load is the install. It caches the app shell, the 3.3 MB WASM solver
+and the current projection; after it, the link is only needed when you want
+fresher numbers.
+
+**What works offline** — the whole board, except the two things that are the
+projection rather than a view of it:
+
+| | Offline | Needs the laptop |
+| --- | --- | --- |
+| Browse, sort, filter the pool | ✅ | |
+| Build a draft, legality, budget, charts | ✅ | |
+| Re-solve the optimal squad, all settings | ✅ | |
+| Override a player's inputs, season-wide or per match | ✅ | |
+| Change horizon or half-life | ✅ | |
+| Save and compare drafts | ✅ | |
+| See where a player's points come from | ✅ | |
+| Fresh odds, prices, injuries | | Sync |
+| First gameweek, recent-form half-life | | Sync |
+| Ask why a player is rated highly | | the AI endpoint |
+
+Horizon and half-life only *reweight* points that are already known, so the
+browser can do them. First gameweek and recency change which fixtures exist and
+what the underlying rates are — those mean re-projecting, and re-projecting
+means pandas. Both controls are labelled `sync` and wired to the Sync button
+rather than left looking like knobs that quietly do nothing.
+
+Drafts and overrides live in `localStorage`, because saving a squad has to work
+on a train. They are pushed back to `out/drafts.json` and merged by name
+whenever the laptop is reachable, so the CLI keeps seeing the same squads.
+
+Settings live there too, under `fpl.settings`, written as you touch them: every
+knob in both control rows, the bench weights, the theme, the pool filter and
+sort, the chart/table toggles, and any ⊕/⊘ constraints. The board opens where
+you left it, which matters most on the phone, where the tab gets evicted the
+moment you switch apps. Two things are deliberately not saved, because the
+snapshot owns them rather than you: the first gameweek, and the bench weights
+until you actually move a slider — and a saved horizon longer than the snapshot
+can answer is clamped down to one it can. **Restore defaults**, in More options,
+puts every knob back; it never touches your squad, drafts or edits.
+
+#### How big it is, and how fast
+
+| | |
+| --- | --- |
+| Snapshot, 12 gameweeks, 573 players | 489 KB raw, 78 KB gzipped |
+| HiGHS WASM solver | 3.3 MB, cached once |
+| Full re-solve on the phone | 0.1–2 s, in a worker so the page stays live |
+| Horizon or half-life change | a few ms, no network |
+
+#### The security position
+
+The board has write endpoints: it saves drafts, writes a CSV to disk, and can
+force a refetch that spends your Odds API quota. So it will not listen beyond
+this machine without a token:
+
+```bash
+python fpl.py serve --lan
+```
+
+That binds every interface, generates a token if you haven't set one, prints a
+link with the token embedded and a **scannable QR code** for the phone. The
+token is required on every request; the page moves it out of the URL into
+`sessionStorage` on first load so it stops showing in the address bar, history
+and screenshots. Set your own with `--token` or `FPL_TOKEN`.
+
+`--lan` alone only covers the same network. For reaching it from anywhere, in
+order of preference:
+
+| Approach | How it works | Verdict |
+| --- | --- | --- |
+| **Tailscale** | phone and Mac join one private WireGuard network; `tailscale serve` gives the Mac a stable HTTPS hostname | **Recommended, and what the setup script does.** Nothing is exposed publicly, no domain to buy, free for personal use. The board binds loopback, so there is no port for anything else to find |
+| **Cloudflare Tunnel + Access** | `cloudflared` dials out; Access gates the hostname behind your SSO | Good if you want a URL you'd type — but Access needs a domain you own on Cloudflare, so it is not free unless you already have one |
+| **ngrok / quick tunnels** | outbound tunnel, public URL | The URL changes on every restart, which defeats installing to a home screen. Keep the token on |
+| **Port forwarding on your router** | expose the port to the internet | **Don't.** A token on plain HTTP over the open internet is a bad trade, and you'd be publishing a write-capable service on your home network |
+
+Because the phone caches everything, the Mac no longer has to stay awake — which
+is why `scripts/board-agent.sh` deliberately does *not* hold a sleep assertion
+any more. It serves when the Mac happens to be up; the phone does not care.
+
+`--insecure` exists to turn the token off, and is only sensible behind a tunnel
+that does its own authentication, or on loopback behind Tailscale.
+
+### Drafts
+
+Name a squad and save it, then tick two or more to compare. You get a metrics
+table (points, gap to the best, cost, field coverage, legality), a per-draft
+diff of exactly which players differ from what you're currently building, and
+all of them overlaid on the weekly chart.
+
+Only the player ids are saved — never the metrics. A comparison is meaningless
+unless every draft is scored under the same assumptions, so they're always
+re-scored against the current horizon, half-life and stat edits rather than
+frozen at whatever was on screen when you hit save. A draft saved under
+different settings is marked `re-scored` so you know why its number moved.
+
+Drafts live in `out/drafts.json`, so they survive restarts.
+
+Two details worth knowing. Comparison is capped at **three saved drafts** (four
+series with the live one) — past four, the palette's adjacent pairs stop clearing
+the colourblind gate on a line chart, and adding a fifth hue would break the
+check rather than pass it. And **colour follows the squad, not the row**: two
+drafts holding the same fifteen players draw one line, so they share one colour
+in the list, the table and the legend, and the legend names both (`Current draft
+= Solver optimal`). Unticking a draft never repaints the others.
+
+Charts follow the project's data-viz rules: validated categorical hues
+(four slots, worst adjacent CVD ΔE 9.1 light / 8.4 dark against a target of
+8; two slots when only comparing against optimal, 24.7 / 26.8), a diverging
+blue↔red scale for the timeline because the question there is polarity — is this
+gameweek above or below what this player normally does — and a table-view toggle
+on every chart so no value is reachable only through colour. Light and dark are
+separately stepped, not flipped.
+
+## Recent form: weighting the end of the season above the start
+
+```bash
+python fpl.py plan --recency 10        # half-life in gameweeks; 0 (default) = off
+```
+
+Neither live source can do this on its own, which is worth knowing before you
+trust it. The FPL API wipes `element-summary` history at a season rollover and
+keeps only season totals; Understat returns whole-season aggregates and
+**silently ignores date parameters** — three spellings all returned
+byte-identical payloads. So match-by-match detail for a finished season is
+simply not available from either.
+
+Recency weighting therefore reads the
+[vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League)
+archive, a community mirror that snapshots the FPL API every gameweek. It is
+**third-party**, so the feature is off by default, a fetch failure costs only the
+tilt, and it is listed separately on the provenance page.
+
+Two design choices worth stating:
+
+- **It is a multiplier, not a replacement.** The archive carries FPL's
+  `expected_goals`, which *includes penalties*, while the model's attacking rate
+  is Understat's non-penalty xG. Swapping one for the other would quietly
+  reintroduce the penalty contamination that's modelled separately. Instead the
+  ratio of recent-weighted to season-long rate is applied on top, carrying the
+  trend without touching the basis. Multipliers are clipped to 0.6–1.6.
+- **It is applied before shrinkage**, so a big multiplier off a short hot streak
+  still gets pulled back toward the positional prior rather than sailing through.
+
+The knob behaves as it should — shorter half-life, larger effect:
+
+| Half-life | Mean absolute change in projected points |
+| --- | --- |
+| 5 gw | 0.263 |
+| 10 gw | 0.176 |
+| 19 gw | 0.101 |
+| 38 gw | 0.051 |
+
+Season ids are reassigned annually, so rows join to current players through
+`code`, the stable per-player identifier — 100% of archive rows map, 457 of them
+to players still in the league.
+
+## Predicted clean sheets
+
+`xCS` — expected clean sheets over the horizon — now appears in `rank`, `value`
+and the other tables, in the drafting board's pool, and on each squad row.
+
+It's counted for **every** position, including forwards who earn nothing for it.
+The number answers "will this be kept out while he's playing", which is the
+thing you're actually buying a defender for, and it shouldn't disappear because
+the player in front of you doesn't get paid for it.
+
+It is measured **on the pitch**, not over the full match, because that is what
+the rule pays: a clean sheet is awarded for conceding nothing while you were on
+and playing at least 60 minutes, so a defender substituted on 78 minutes keeps
+his four points if the goal arrives on 85. The model used to require the club to
+keep a full ninety-minute clean sheet while separately charging the concession
+penalty against on-pitch minutes only — the same event counted two different
+ways. Correcting it is worth about 20% on the clean-sheet component for a
+regular starter, and it lands almost entirely on defenders and keepers.
+
+## The bench is not four equal slots
+
+FPL auto-subs work down the bench in order, so the slots are worth very
+different amounts: the first outfield substitute comes on whenever a starter
+blanks, while the third is close to decoration and the reserve keeper only plays
+if your first choice doesn't.
+
+The optimiser now assigns bench *positions* rather than treating the four as an
+unordered set, with relative weights in `BENCH_SLOT_PROFILE`:
+
+| Slot | Relative weight | At the default `bench_weight` of 0.12 |
+| --- | --- | --- |
+| 1st sub | 2.00 | 0.24 |
+| 2nd sub | 0.85 | 0.10 |
+| 3rd sub | 0.35 | 0.04 |
+| Reserve GK | 0.25 | 0.03 |
+
+`bench_weight` scales the whole profile, so the CLI knob still means "how much do
+I care about the bench" while the slots stay weighted relative to each other.
+The effect is that the solver spends real money on the first substitute and
+takes cheap bodies for the last two, instead of paying the same for all four.
+The chosen order is shown in the UI (`1st sub`, `2nd sub`, …) and returned by the
+optimiser.
+
+If the *shape* of that profile is what you disagree with, not just its size,
+pass `bench_slot_weights` instead — a weight per slot, keyed `"GKP"`, `1`, `2`,
+`3`, used as-is in place of `bench_weight × BENCH_SLOT_PROFILE`. That is what the
+board's four sliders send. Missing slots fall back to the scaled default.
+
+## Where the data comes from
+
+`python fpl.py serve` then **/data** — a full provenance page: every field traced
+to its source, how the three sources are joined, what is assumed rather than
+measured, and what none of it can tell you.
+
+It leads with **live source status** read from the machine at request time, not
+from prose: how many players each source returned, how many Understat rows
+actually matched, what fraction of fixtures the bookmakers have priced, the age
+of each cache entry, and whether the odds key is even set. A provenance page that
+describes intentions rather than state is worth very little, so this one reports
+what is actually there.
+
+The short version:
+
+| Source | Gives | Auth |
+| --- | --- | --- |
+| [FPL API](https://fantasy.premierleague.com/api/bootstrap-static/) | prices, positions, minutes, starts, fixtures, chip windows, and the Opta-derived xG/xA/xGC and defensive-contribution counts | none |
+| [Understat](https://understat.com/) | **non-penalty** xG, xA, xGChain per 90 | none |
+| [The Odds API](https://the-odds-api.com/) | 1×2 and over/under from ~20 books | free key |
+| [FPL history archive](https://github.com/vaastav/Fantasy-Premier-League) *(third-party, opt-in)* | per-gameweek rows, for recency weighting | none |
+
+The one thing worth knowing up front: **"Opta data" is already in the FPL API** —
+`expected_goals`, `expected_assists`, `expected_goals_conceded` and the
+defensive-contribution counts all ship with `bootstrap-static`. There is no
+separate Opta feed to buy. Understat earns its place by splitting *non-penalty*
+xG out, which the FPL API does not, and which is what lets penalties be modelled
+separately and assigned to the designated taker.
+
+## Overriding the model when you think it's wrong
+
+Every rate the model uses is an estimate from last season, and there are things
+you know that last season cannot contain — a new penalty taker, a changed role, a
+player whose xG came from a system he has left. Any of these can be replaced with
+your own number:
+
+| Field | What it is |
+| --- | --- |
+| `p_start` | probability he starts — the biggest lever in the model |
+| `exp_minutes` | expected minutes, if you'd rather state it that way |
+| `npxg_per90` | non-penalty xG per 90 (penalties are modelled separately) |
+| `xa_per90` | expected assists per 90 |
+| `dc_per90` | defensive contribution per 90 (threshold 10 for DEF, 12 otherwise) |
+| `bonus_per90` | bonus points per 90 |
+| `saves_per90` | saves per 90 (keepers) |
+| `yellow_per90` | yellow cards per 90 |
+| `penalties_order` | 1 means he takes them |
+| `price` | for hypotheticals; it doesn't change what FPL charges you |
+
+Add `_mult` to any of them to *scale* the model's value rather than replace it —
+often the more natural way to put it (`npxg_per90_mult=1.2` for "about 20% better
+than his old club suggests").
+
+**In the browser:** click the ✎ beside any player. The drawer shows what the
+model currently believes for each input, a live recomputed projection as you
+drag, and the delta against the unedited value. `Apply` commits the edit;
+closing the drawer any other way throws it away, so the board and the optimiser
+are never looking at different numbers for the same player. An applied override
+flows straight through to the optimal column, which re-solves against it.
+
+### Per match, not just per player
+
+Some things you know are not facts about a player at all — they are facts about
+one fixture. He is rested before a European tie. He is suspended for one game.
+He is back in three weeks. He moves up front while the striker is out. Flattening
+those across a horizon is not an approximation of the right answer, it is a
+different and wrong one.
+
+So the drawer has a **Per match** section below the season-level sliders: one row
+per gameweek with its opponent, what he is currently projected for that week, and
+a start-probability slider. `⋯` opens the full field list for that gameweek alone.
+
+The layering rule is the obvious one. A season value applies to every fixture; a
+match value replaces it for that week. Each per-match control shows the *season*
+value as its baseline, not the model's, so setting a week back to what you already
+said about the player clears the override rather than recording a redundant one.
+
+Everything else follows: an edited week moves the fixture timeline, the weekly
+chart, xPPG and the optimiser's view of him — including his eligibility, because
+overriding `p_start` re-derives `p_play`, which is what the solver filters on.
+
+**From the CLI**, it is one extra column. A row with a `gw` is about that match;
+a row without one is about the player. An existing `overrides.csv` still loads
+unchanged.
+
+```csv
+fpl_id,web_name,gw,p_start,npxg_per90
+12,Saka,,0.8,            # every fixture
+12,Saka,3,0.0,           # ...except gameweek 3, when he is rested
+12,Saka,7,,0.9           # ...and gameweek 7, when he moves inside
+```
+
+`Save to overrides.csv` writes exactly this shape, so an edit made while drafting
+carries over to `plan`, `squad` and the rest.
+
+**From the CLI:**
+
+```bash
+python fpl.py overrides                      # list every field and its range
+python fpl.py overrides Senesi Rashford      # write a template with current values
+python fpl.py plan --overrides out/overrides.csv
+```
+
+The CSV identifies players by `fpl_id` or `web_name`; every other column is
+optional.
+
+One deliberate behaviour: **an override bypasses shrinkage**. Raw rates are
+pulled toward the positional average because a small sample shouldn't speak too
+loudly — but an assertion isn't a sample, so if you state a number the model uses
+that number exactly.
+
+Edits are applied at the very end of the pipeline, after every rate is derived
+and shrunk, and the browser's fast single-player recompute walks the same scoring
+code as a full run. That equivalence is checked rather than asserted:
+`scripts/verify-js-port.mjs` rescores every player in the pool and 700-odd
+override combinations through both paths and reports the worst disagreement,
+which sits at the rounding floor of the reference data (5e-7 raw, 5e-5 through
+`reproject_player`, which rounds to 4dp on its way out of Python).
+
+## The horizon problem, and `plan`
+
+`squad --horizon N` is sensitive to N in a way that should bother you. Solve it
+at every horizon and the answer never stops moving:
+
+```text
+$ python fpl.py horizon
+
+  horizon   last_gw   churn   ∩ plan
+        1         1       -       10
+        2         2       6       13
+        3         3       2       13
+        5         5       5       11
+        8         8       5       13
+       10        10       4       14
+
+Raw squads never settle — they still churn 4 players at the longest horizon tested.
+Picking a single horizon means picking one of these arbitrarily.
+```
+
+`churn` is how many of the fifteen change when you look one gameweek further
+ahead. There is no N at which this converges, so "which horizon?" has no answer
+on its own terms — a short one chases fixtures, a long one builds for games you
+will never field this squad in, because you will have made six transfers by then.
+
+`plan` replaces the cliff with a decay. Three things all fall off with distance:
+
+1. **Optionality.** One free transfer a week. A bad gameweek-five fixture is not
+   a cost you are locked into; this week's is.
+2. **Availability.** Players get injured, suspended and dropped. Today's nailed
+   starter is meaningfully less likely to be one in gameweek eight.
+3. **Model confidence.** The bookmakers have priced about the next fortnight.
+   Past that the fixtures come from ratings alone.
+
+So future gameweeks are discounted geometrically (`--half-life`, default 3
+gameweeks) and multiplied by a per-player survival curve. The half-life of 3 is
+not arbitrary: at one transfer a week you can turn over a third of the squad in
+three gameweeks, which is roughly where "who I own" stops determining "who I
+field".
+
+The point of this is stability. Varying the half-life from 1.5 to 8 changes the
+plan squad by 0, 0, 3, 1 and 0 players at successive steps, against the 2–6 per
+step the raw horizons churn — and the plan squad shares 12.2/15 with the raw
+squads on average, so it sits in the middle of that range rather than at an
+extreme. The knob exists, but the answer barely depends on it.
+
+`plan` also reports:
+
+- **`core`** — the players it picks whether you plan one gameweek ahead or six.
+  These are the decisions the horizon does not affect, so they are the ones to
+  be confident about. The rest are fixture-dependent and worth less conviction.
+- **A fixture timeline** — see below.
+- **Rank risk** — the high-ownership players you do not own.
+- **Chip timing**, and usually a refusal — see below.
+- **Expected value change** from the price forecast.
+
+## Why there is no predicted transfer schedule
+
+There used to be one. It produced this:
+
+```text
+gw 4   transfer   Guéhi   -> Lacroix   +0.60
+gw 5   transfer   Lacroix -> Guéhi     +0.40
+gw 6   transfer   Guéhi   -> Lacroix   +0.59
+```
+
+Which is nonsense. Two free transfers burned to end up where you started is
+strictly worse than holding, and no amount of tuning fixes the underlying
+problem: rolling a squad forward on projections alone has no idea that a
+transfer is a spent resource, and no idea that in three weeks you will know
+things — form, injuries, price moves — that you do not know now. The honest
+position is that you cannot know your gameweek-six transfer in gameweek one.
+
+What *does* survive contact with reality is the fixture shape. `plan` prints a
+timeline instead:
+
+```text
+Player      gw1    gw2    gw3    gw4    gw5    gw6   swing   worst v
+Guéhi      =4.0   =3.4   +4.3   -3.0   +4.4   -3.1    1.37   man utd
+Shaw       +3.8   =3.4   =2.8   -2.6   =2.9   =3.3    1.25   MAN CITY
+João Pedro =3.8   =3.9   -3.1   =4.3   =3.7   =4.1    1.18   arsenal
+```
+
+Each cell is that gameweek's projected points, marked against **that player's
+own** average — `+` good week for him, `=` par, `-` bad. Sorted by swing, so the
+most fixture-dependent players are at the top; opponent in CAPS means at home.
+Below it, runs of two or more bad gameweeks are listed separately, because a
+single poor fixture is rarely worth a transfer but a run is worth banking one
+for. FPL lets you hold up to five.
+
+You decide the actual transfer when it arrives, with information this tool does
+not have.
+
+## Rank risk: what happens if Haaland hauls and you don't own him
+
+FPL is scored on rank, not on points, so the question is never "how many points
+will I score" but "how many relative to everyone else". A player owned by 75% of
+the field who returns big costs you most of his haul in relative terms even
+though your own total is untouched. That is why not owning Haaland can hurt more
+than owning a mediocre midfielder.
+
+`plan` quantifies it:
+
+```text
+Rank risk — best players you do not own
+Player       Pos  Team    £   own%   xPts(plan)   exposure
+Haaland      FWD  MCI  15.5   75.2        19.31      14.52
+Szoboszlai   MID  LIV   7.0   48.2        12.21       5.89
+Rogers       MID  CHE   7.5   32.1        11.73       3.77
+```
+
+`exposure` is ownership × projected points: roughly what the average rival banks
+from him and you do not. It also reports what share of the field's total
+expected points your squad covers.
+
+This is a risk list, not a shopping list — covering everything is how you
+guarantee finishing exactly average. `--ownership-weight` is the dial: 0
+maximises expected points and ignores the field, higher values buy template
+cover at a measurable cost. On an eight-gameweek plan, going from 0 to 0.4 moves
+field coverage from 31.6% to 38.9% and costs 2.9 expected XI points.
+
+Because the wildcard cannot be played in gameweek one (`start_event: 2` in the
+API), the initial squad only has to be right for the first few gameweeks. That
+is a real argument for a shorter half-life than instinct suggests.
+
+## Risk, price and chips
+
+**Injury/rotation hazard.** Each player carries a per-gameweek probability of
+dropping out, compounding into the survival curve. Age is the one durable
+observable risk factor available (3% per gameweek baseline, rising past 29);
+players already flagged doubtful carry double. This is what stops the plan from
+loading up on 33-year-olds for an eight-gameweek window.
+
+**Price changes** are forecast from net transfers when the season is running —
+that is the actual mechanism, since FPL raises a price once net transfers clear
+an ownership-scaled threshold. Before the season starts there are *no transfer
+counts at all* (they are literally zero in the API), so direction falls back to
+a value proxy and is labelled low confidence.
+
+Ownership does not push a price in a direction; it **amplifies whichever
+direction the player is already going, asymmetrically**. A fall needs sellers,
+and only owners can sell, so a heavily owned player going badly drops fast.
+A rise needs buyers against a threshold that itself scales with ownership, so a
+heavily owned player rises more slowly — most of the people who would buy him
+already have him. At identical value pressure, forecast rises damp from +0.13 to
++0.09 as ownership goes 2% → 60%, while falls amplify from −0.07 to −0.13.
+
+One honest caveat: preseason, direction comes from value alone, and value
+correlates with ownership — so the model will not predict a *fall* for a
+popular player until real transfer data exists, because it has no form signal
+to tell it he is struggling. The asymmetry is verified against synthetic input
+rather than live data for that reason.
+
+Treat the whole thing as a tie-breaker between similar players, never a reason
+to pick a worse one. The command always prints which basis it used.
+
+## Form and players who changed club
+
+The rates come from last season, and two things make that less reliable than the
+minute counts suggest.
+
+**Cross-season regression.** A complete campaign should not be taken at face
+value, because a rate is partly the player and partly what happened to him. How
+much of it carries is the single most consequential number in the model, and it
+used to be set from a remembered figure — "year-over-year correlation runs
+0.6–0.7" — applied to every rate at 1,200 prior minutes.
+
+It is now measured, over three seasons of Understat, by
+[scripts/calibrate-shrinkage.py](scripts/calibrate-shrinkage.py). The prior is
+not a diagnostic of the shrinkage; it *is* the shrinkage, so it is fitted the
+way it is used — by minimising the error of `w·own + (1−w)·prior` against what
+each player actually did next season, over 468 player-seasons:
+
+| rate | fitted prior | 95% CI | weight on a 3,000-minute season |
+| --- | --- | --- | --- |
+| npxG/90 | 342 | [186, 538] | 0.90 |
+| xA/90 | 891 | [601, 1151] | 0.77 |
+
+Against the 1,200 that had been applied to both, which gives 0.71. **The model
+was shrinking its best-evidenced attackers about three times harder than a
+season of evidence justifies** — the top fifth of last season's scorers came out
+at 0.77 of their rate, and roughly half of that was this constant rather than
+any real regression.
+
+The values in use are 550 and 1,000: the cautious end of each interval, not the
+point estimate. The players who can be measured this way were established in two
+consecutive seasons, and a number fitted on those is read back onto a population
+that includes players who lost their place — so erring toward the prior errs in
+the direction the sample is weakest. Some compression between players is still
+correct. Three times too much of it was not.
+
+Two things that look like improvements and are not, both checked by the same
+script rather than argued about:
+
+- **Splitting npxG/90 into shot volume × conversion.** Volume persists well
+  (k=316) and conversion barely does (k=2045), which looks like a clear case for
+  shrinking them separately. But the product already predicts next season as
+  well as anything built out of its parts — r=0.860 for the rate alone against
+  0.797 for volume alone and 0.860 for a half-and-half blend. Splitting buys
+  nothing, so the model does not.
+- **Scaling a player's xG by fixture difficulty per position.** The model
+  applies one `attack_scale` to everyone at a club. Measured against ex-ante
+  fixture quality over 6,400 player-matches, the elasticity is 0.74 for
+  forwards, 0.89 for midfielders and 1.13 for defenders — but bootstrapped over
+  *players*, every one of those intervals contains 1.0. There are only 30
+  forwards in the sample. Acting on it would be fitting noise, and it would cost
+  the exact conservation that makes squads sum to their fixture's lambdas.
+
+**Changing club is worse than that.** Senesi's numbers were produced at
+Bournemouth, with Bournemouth's team-mates, system and role. `movers` lists
+everyone affected:
+
+```text
+Player      Team  from                £    minutes   ctx   npxG90   conf
+Rogers      CHE   Aston Villa       7.5      3280   1.03    0.183   moderate
+Anderson    MCI   Nottingham Forest 6.5      3332   1.22    0.116   moderate
+Senesi      TOT   Bournemouth       6.0      3288   0.88    0.053   moderate
+```
+
+Two adjustments apply. `ctx` scales his attacking rates by how his new club's
+attack compares to the one his numbers came from — above 1 means he joined a
+better attack — damped by a square root, since output is part player and part
+team. Only attacking rates are touched: defensive contribution is a function of
+role far more than team quality, and the clean-sheet and concession terms
+already use the new club's defence. On top of that he carries a prior 1.8×
+heavier, so his rates sit closer to the positional average than his raw history
+implies. The `conf` column surfaces this everywhere.
+
+What you should do about it: treat `moderate` and below as provisional, and lean
+on the `--overrides` file once you have seen a couple of gameweeks. The model
+cannot tell you how Senesi fits at Spurs, and neither can anyone else yet.
+
+**Chips.** Chip value comes overwhelmingly from double gameweeks and covering
+blanks, and neither is on the calendar until cup rounds are drawn and games get
+postponed. When the fixture list is flat, the "best" gameweek for a chip is
+whichever one noise favours, so the tool says `hold` rather than dressing that
+up as a recommendation:
+
+```text
+chip             gw   detail                                        confidence
+Triple Captain   -    hold — no doubles or blanks scheduled in      n/a
+Bench Boost      -    this window; the first-half set does not      n/a
+Wildcard         -    expire until GW19                             n/a
+```
+
+Once doubles and blanks appear, the same code picks real gameweeks and raises
+the confidence. Double and blank gameweeks are detected from fixture counts per
+team per gameweek, so it needs no extra data source. Chip windows come from the
+API's own `chips` block, per half of the season — the two sets are kept separate
+so the GW19 expiry on the first set is not silently erased.
+
+## Reading the optimiser's numbers
+
+The solver maximises `XI points + captain + bench_weight × bench points`, and
+that combined figure is reported as **`objective`**. It is the only number
+comparable between two solves.
+
+`xi_points` is a *component* of it. A constrained solve can therefore post a
+higher `xi_points` than an unconstrained one by trading bench quality away — a
+trade the solver would never make freely, but the component can still rise. If
+you force a player in and see XI points go up, that is what happened; the
+objective will always have gone down. `compare --squad-test` and
+`marginal_value` both rank on `objective` for this reason.
+
+## Answering "is he worth the extra money?"
+
+There are three increasingly honest ways to ask, and the tool gives all three.
+
+**Points per million** (`value`) is the crude version. It systematically
+flatters cheap players: a £4.5m defender projecting 3.0 points a game looks
+twice as "efficient" as a £15.5m striker projecting 6.0, but you cannot field
+fifteen of him, and the two spare millions have to go somewhere.
+
+**Points per extra million** (`compare`, `upgrade`) is better. It asks what the
+*upgrade* buys — the points gap divided by the price gap — and compares that to
+what a million typically buys elsewhere in the market.
+
+**Marginal squad value** (`compare --squad-test`) is the real answer. It builds
+the best possible legal squad with the player forced in, then the best possible
+squad with him barred entirely, and reports the difference. That number already
+charges him for the money he ties up, because the squad without him got to spend
+those millions on somebody else:
+
+```text
+$ python fpl.py compare Haaland Thiago --squad-test
+
+Haaland costs £7.5m more than Thiago and is projected +7.20 xPts better over GW1–5.
+  That is +0.96 xPts per extra £m. Median xPts/£m in the pool is 2.53.
+
+  Player      £   own_xpts   squad_with   squad_without   marginal
+  Thiago    8.0     21.87       257.86          255.83       2.03
+  Haaland  15.5     29.07       257.86          256.20       1.67
+```
+
+Haaland scores far more points, and is still the wrong pick on this horizon:
+locking up £15.5m costs the rest of the squad more than his 7.2-point edge
+returns. That inversion is the whole point of the exercise, and it is invisible
+in any per-player table.
+
+## How the projection works
+
+**1 — Expected goals per fixture.** De-vigged 1X2 probabilities plus the
+over/under line are inverted into `(λ_home, λ_away)` under independent Poisson,
+fitted by least squares. Where the books have not priced a fixture yet (they
+price roughly a fortnight ahead), team attack and defence ratings derived from
+xG are used instead, applied on top of a fixed league-average goals rate.
+
+**2 — The player's share.** His non-penalty xG and xA per 90 are scaled by the
+ratio of this fixture's expected goals to his team's season average, and by his
+expected minutes. Penalties are modelled separately and given to the designated
+taker rather than smeared across everyone with a high xG.
+
+**3 — Points.** The scoring rules are applied, with the non-linear terms —
+clean sheets, the −1 per two conceded, saves, defensive contribution — evaluated
+over their full Poisson distributions and across the start/substitute cases
+separately, rather than by plugging in an average. `E[floor(GC/2)]` is not
+`E[GC]/2`, and the difference is worth real points at low lambdas.
+
+Every rate is shrunk toward its positional average, weighted by the minutes
+behind it. Without that, the optimiser reliably picks whoever had the smallest,
+luckiest sample in the league.
+
+## The part you should not trust
+
+**Minutes.** Everything above is a rounding error next to whether a player
+starts. Start probabilities come from last season's starts, which cannot see
+transfers, new managers, or a changed pecking order — and in preseason that is a
+lot of what matters.
+
+`blindspots` lists every priced player with too little Premier League history to
+project (summer signings, returning loanees) and writes an overrides template:
+
+```bash
+python fpl.py blindspots                                    # writes out/overrides-template.csv
+# edit p_start (0-1) or exp_minutes (0-90), delete rows you don't care about
+python fpl.py squad --overrides out/overrides-template.csv
+```
+
+Those players score zero until you override them. That is a gap in the data, not
+a prediction — treat it as such.
+
+Other known limitations, roughly in order of how much they cost you:
+
+- **The price forecast is weak preseason** and clearly labelled as such.
+- **Form within a season is not modelled at all.** Every rate is a season
+  average; a player in the middle of a hot streak looks identical to one who
+  front-loaded his returns. This matters most in the first few gameweeks of a
+  new season, when last year's average is all there is.
+- **BPS internals changed for 2026/27** (clearances/blocks/interceptions now
+  score 1 BPS per three rather than per two, and the tackled-player deduction is
+  gone). Bonus is extrapolated from last season's bonus per 90, so centre-backs
+  are now slightly overrated on that component. Core scoring, defensive
+  contributions and the chips are unchanged.
+- **Independent Poisson understates draws** by about two points of probability
+  (worst 1X2 reconstruction error 0.022 across a live gameweek). Dixon-Coles
+  would fix it; the effect on clean-sheet probabilities is small.
+- **Goal coverage.** The model only attributes a club's expected goals to
+  players it has history for, so a promoted club or one that rebuilt over the
+  summer has goals it knows the team will score but cannot assign to anybody.
+  Non-promoted clubs sit around 0.94; Coventry, Hull and Ipswich are near zero.
+  This does not distort the players you *can* see — each is projected from his
+  own rate — but their team-mates are invisible. `blindspots` lists the worst
+  clubs, and `--overrides` is the fix.
+- **Rotation and cup congestion** are invisible beyond the flat hazard rate.
+- **Promoted clubs** get flat assumed ratings (80% attack, 125% defence) until
+  they have Premier League xG.
+- **Set-piece duties** are not modelled beyond penalties, so a new corner taker
+  is undervalued.
+- **Only the first penalty taker is modelled.** He is credited for penalties in
+  proportion to the minutes he is on the pitch, and the rest go to nobody — the
+  API gives a `penalties_order`, so backing up to the second taker is a real
+  option, but guessing that a substitute inherits the duty is not obviously
+  better than declining to guess. It costs about 1% of league goals.
+- **Early in a new season the model is thin, and says so.** Rates from Understat
+  carry last season's full weight, but everything the FPL API supplies — minutes,
+  starts, defensive contribution, saves, bonus — restarts at zero and takes a
+  couple of months to say much. The projection degrades toward priors rather
+  than toward nonsense, but the first few gameweeks are when `--overrides` earns
+  the most.
+
+## Layout
+
+| File | Role |
+| --- | --- |
+| [fpl.py](fpl.py) | entry point |
+| [fplkit/cli.py](fplkit/cli.py) | commands, tables, filters |
+| [fplkit/server.py](fplkit/server.py) | drafting-board API, static assets, sync |
+| [fplkit/snapshot.py](fplkit/snapshot.py) | freezes a projection into the file the browser runs on |
+| [fplkit/web/index.html](fplkit/web/index.html) | drafting-board UI |
+| [fplkit/web/board.mjs](fplkit/web/board.mjs) | derives the player pool from the snapshot — what `/api/pool` was |
+| [fplkit/web/points.mjs](fplkit/web/points.mjs) | browser port of the scoring layer, for offline overrides |
+| [fplkit/web/poisson.mjs](fplkit/web/poisson.mjs) | browser port of the Poisson helpers |
+| [fplkit/web/solver.js](fplkit/web/solver.js) | browser port of the MILP, as CPLEX LP for HiGHS |
+| [fplkit/web/solver-worker.js](fplkit/web/solver-worker.js) | runs the solve off the main thread |
+| [fplkit/web/sw.js](fplkit/web/sw.js) | service worker: caches the shell and the last snapshot |
+| [fplkit/web/data.html](fplkit/web/data.html) | data provenance page |
+| [fplkit/model.py](fplkit/model.py) | the three-layer projection |
+| [fplkit/planning.py](fplkit/planning.py) | decay, survival, transfer path, chips |
+| [fplkit/poisson.py](fplkit/poisson.py) | odds → expected goals → points distributions |
+| [fplkit/optimise.py](fplkit/optimise.py) | MILP squad selection and marginal value |
+| [fplkit/matching.py](fplkit/matching.py) | fuzzy joins between the three sources |
+| [fplkit/config.py](fplkit/config.py) | scoring rules, squad rules, model constants |
+| [fplkit/sources/](fplkit/sources/) | FPL API, Understat, The Odds API, history archive |
+| [scripts/verify-season-rollover.py](scripts/verify-season-rollover.py) | simulates a season rollover, which a live run cannot |
+| [scripts/calibrate-shrinkage.py](scripts/calibrate-shrinkage.py) | fits the shrinkage priors from three seasons; re-run when one ends |
+| [scripts/verify-lineup-port.mjs](scripts/verify-lineup-port.mjs) | checks the browser rebalances a club the way the model does |
+
+Scoring rules and model constants are all in [config.py](fplkit/config.py) — if
+FPL changes the rules, that is the only file to edit. That holds for the browser
+too: the snapshot carries a `rules` block read straight out of `config.py`, and
+`points.mjs` takes every constant from it. Nothing is hand-copied into
+JavaScript, so a rule change reaches the phone on the next sync rather than
+through somebody remembering there were two copies.
+
+### Checking the ports still agree
+
+```bash
+python scripts/make-override-cases.py && node scripts/verify-js-port.mjs
+python scripts/make-solver-cases.py   && node scripts/verify-solver-port.mjs
+python scripts/make-lineup-cases.py   && node scripts/verify-lineup-port.mjs
+python scripts/verify-season-rollover.py
+```
+
+The first rescores every player in the pool and 700-odd override combinations —
+season-wide, per match, and the awkward ones where a match value contradicts the
+season value under it — with `points.mjs`, and compares against the pandas
+pipeline and `model.reproject_player`. It also checks that `apply_fields` (one
+player, used per fixture) agrees with `apply_overrides` (whole table), since the
+per-match path depends on the two staying identical. The second re-solves 54 randomised settings with the
+vendored WASM HiGHS and compares against CBC. Both tolerances are set by
+rounding in the reference data rather than by slack in the port, so a real
+disagreement lands orders of magnitude above them.
+
+The third is a different kind of check: it simulates something the calendar will
+only let you observe once a year. See below.
+
+## Making the model add up
+
+Three quantities are decided by something outside a player's own rates, and for
+a long time none of them was enforced. Each was found by asking the model to
+contradict itself and watching it succeed.
+
+| Invariant | Was | Now |
+| --- | --- | --- |
+| A club starts **11** players | 8.25 | 11.00 |
+| Players score the **fixture's** expected goals | 1.28x | 0.97x |
+| A match pays a fixed pool of **bonus** | 74 pts/gw | 56 pts/gw (the rule's value) |
+| League yellow cards per gameweek | 29 | 36 (the league pays ~37) |
+| League points per gameweek vs what a season actually paid | **0.74** | **0.98** |
+
+**Squads did not field eleven.** `p_start` came from last season's `starts / 38`
+with nothing requiring a club to field a team. But a squad is not the set of
+players who played for it last season — some retired, some left the league, some
+arrived from abroad, and a promoted club's entire squad has no Premier League
+record at all. Coventry, Hull and Ipswich projected **zero**. The raw rate is now
+treated as evidence about a share rather than as the answer: blended with a
+price-based prior by how many minutes stand behind it, then normalised per club
+to one keeper and ten outfield — one bounded multiplier per club, solved
+exactly, with every player capped at **0.95**. Nobody is certain to start: last
+season each club's most-nailed player averaged a 0.966 start rate measured
+after the fact, and the first cut of this fix pinned 26 players at 1.00 in a
+league where eight managed 38/38. The cap and the single shared multiplier are
+what keep the correction from promoting the players the data already knows.
+
+Availability is applied *before* normalising, deliberately — a club whose first
+choice is injured still starts eleven, so his share passes to whoever is behind
+him rather than evaporating.
+
+**Rates did not sum to team output.** Once every club fielded a full eleven, the
+opposite error surfaced: squads collectively expected 37.8 goals in a gameweek
+whose own lambdas said 29.7. `conserve_team_output` scales npxg, xa and bonus per
+club so the shares add up to what the club actually produces.
+
+**A prior is not free.** Bonus is a fixed pool — three points a match per side —
+so a prior for it has to pay out what the rules pay. The positional prior was
+the minutes-weighted rate among *established* players, which is the rate of a
+regular, and it was then handed to everybody: a player with no minutes at all
+came out of the shrinkage on 0.3 bonus per 90. Summed over expected minutes the
+league minted **33% more bonus than exists**.
+
+Nothing noticed, because `conserve_team_output` forced each club back to its
+2.78 regardless — by scaling the whole squad uniformly, so the invented points
+were taken back off whoever had really earned them. Manchester City's squad
+projected 4.71 bonus a match against a target of 2.78, and closing that gap cost
+Haaland 41% of his rate on top of the 15% shrinkage had already taken. He was
+being charged for the assumptions made about his reserve goalkeeper.
+
+Two changes. The bonus prior is now **solved** rather than assumed — the level
+that makes the shrunk rates add up to the pool, given the evidence already in
+hand, which works out about 25% below the established-player average. And where
+conservation still has to move a club, it charges the correction to the rates
+that are *prior rather than evidence*, as `lam ** (1 - weight)`: a player whose
+number is all record is untouched, one who is all assumption absorbs it, and the
+club still lands exactly on its target because the total is monotone in `lam`
+and it is solved by bisection.
+
+The effect, against how much bonus a top earner actually keeps year on year
+(split-half within last season, players with 700+ minutes in both halves):
+
+| bonus, per fixture | model before | model now | measured |
+| --- | --- | --- | --- |
+| top 20 earners | 0.55× | **0.63×** | 0.66× |
+| next 40 | 0.61× | **0.67×** | 0.66× |
+
+Heavy regression on bonus is *correct* — its split-half correlation is 0.379
+against 0.837 for xG per 90, so it barely repeats and a top earner genuinely
+keeps only about two-thirds of his rate. The bug was never that bonus regressed.
+It was that a biased prior was being recovered from the wrong player.
+
+**A threshold is not a mean.** Defensive contribution is the only step function
+in the scoring rules, and shrinkage plus Poisson both flatten exactly the tail it
+pays for — 36 points a gameweek against the 61 the league actually paid, measured
+over 8,631 player-gameweeks in the archive. The count is now negative binomial
+with a dispersion calibrated to that total.
+
+**Three quantities were measured on one basis and applied to another.** Each is
+a one-line error and each was worth real points:
+
+- **Assists** were pinned by the league's 786-assists-per-851-goals ratio, but
+  applied to a club's *open-play* xG — and a penalty carries no assist, so all
+  786 came from the 91% of goals that were not penalties. Numerator and
+  denominator counted different things and every assist in the model came out
+  about 9% light.
+- **Penalties** were credited to the designated taker in proportion to
+  `p_start`, as though a man who plays 78 of 90 minutes were on the pitch for
+  every penalty his side won. Scaling by minutes like every other rate takes
+  about 13% off a premium taker's penalty income. The residue — penalties won
+  while he is off — is now simply unattributed, which is why goals reconcile at
+  0.97 rather than 0.98; the model does not know who the second taker is.
+- **Yellow cards** were the one rate that skipped shrinkage entirely, so a
+  player with a single booking in one 90-minute cameo projected a card every
+  match. Shrunk with everything else, the league's card total moves from 29 a
+  gameweek to 36, against the ~37 it actually pays.
+
+**A season total needs a season to divide by.** The FPL API serves
+*season-to-date* totals, which means last season's completed 38 matches right up
+until the new season's first whistle — and three matches a fortnight later. The
+model divided by a hard-coded 38 either way, which is correct for exactly one of
+those. It now reads the number of finished fixtures off the calendar, per club,
+and each source is weighed by the evidence behind *it*: Understat's xG keeps the
+weight Understat's minutes earned, rather than being discounted because this
+season is young.
+
+This is the one correction that cannot be observed in a normal run — for eight
+months of the year the constant and the calendar agree, and the day they stop
+is the day the model is quietly wrong. So
+[scripts/verify-season-rollover.py](scripts/verify-season-rollover.py) simulates
+it: real data, scaled to six matches played, with Understat left alone. The
+damage was hiding behind the per-club normalisation, which rescales every club
+back to eleven starters and so makes the totals look right whatever the
+denominator did. What it cannot restore is the blend — understating the raw
+start share by 38/6 crushes the evidence term and lets the price-based prior
+fill the gap:
+
+| six matches in | correlation of `p_start` with… | hard-coded 38 | reading the calendar |
+| --- | --- | --- | --- |
+| | who actually started | 0.222 | **0.515** |
+| | who is expensive | 0.587 | **0.512** |
+
+Which is the failure worth naming: not a number that looks obviously broken, but
+`p_start` quietly ceasing to describe who starts and starting to describe who
+cost the most.
+
+What did **not** change is the players you already knew about. Established
+regulars sit where they did — the correction went to the previously invisible
+players who will actually take those minutes:
+
+| last season, per fixture | model | ratio |
+| --- | --- | --- |
+| bottom fifth (1.28) | 1.27 | 1.00 |
+| middle fifth (2.51) | 2.48 | 0.99 |
+| top fifth (4.17) | 3.35 | 0.80 |
+
+Some gradient is regression to the mean and is meant to be there: last season's
+leaders are at the top partly because they overperformed. But it used to read
+0.77 at the top, and a good part of that was a prior three times heavier than
+the evidence supports rather than anything real — see the measured figures
+above. What remains is mostly bonus, which genuinely does not repeat.
+
+Goals are now the part you can check directly: Haaland projects at **1.02×** the
+non-penalty rate he actually scored at last season, so the goals component is
+carrying his record through rather than damping it.
