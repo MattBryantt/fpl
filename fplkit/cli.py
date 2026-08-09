@@ -392,6 +392,13 @@ def cmd_plan(args) -> None:
             ["gw", "xi_xpts", "decay", "odds_priced"])
 
     console.print()
+    _render(plan.lineups, "Starting XI, bench order and captain — picked fresh each gameweek",
+            ["gw", "formation", "captain", "vice_captain", "bench_order", "xi_points"])
+    console.print("[dim]same 15-man squad throughout; who starts, who's benched (in autosub "
+                  "order) and who captains rotates with that week's fixture. Starting XI = "
+                  "squad minus bench_order.[/dim]")
+
+    console.print()
     gw_columns = [f"gw{gw}" for gw in plan.horizon]
     _render(plan.timeline, "Fixture timeline — when each player's fixtures turn",
             ["web_name", "pos", "team_short"] + gw_columns + ["swing", "worst_vs"])

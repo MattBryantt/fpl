@@ -65,6 +65,7 @@ class Plan:
     squad: Squad
     players: pd.DataFrame  # projection + xpts_plan, survival, price forecast
     per_gw: pd.DataFrame  # what the squad is projected to score each gameweek
+    lineups: pd.DataFrame  # starting XI, bench order and captain, picked fresh per gameweek
     timeline: pd.DataFrame  # when each player's fixtures turn good or bad
     windows: pd.DataFrame  # runs of bad fixtures worth banking a transfer for
     exposure: pd.DataFrame  # high-ownership players not owned
@@ -352,6 +353,62 @@ def squad_points_by_gw(squad_ids: list[int], players: pd.DataFrame,
     totals = best_xi_matrix(sub.to_numpy(float),
                             positions.reindex(ids).to_numpy(), captain)
     return pd.Series(totals, index=points.columns, name="xi_points")
+
+
+def _best_xi_ids(ids_by_pos: dict[str, list[int]], pts: pd.Series) -> tuple[list[int], tuple]:
+    """Best legal XI (as player ids) for one gameweek's points, plus its formation."""
+    gkp = sorted(ids_by_pos["GKP"], key=lambda i: -pts[i])[:1]
+    best_total, best_ids, best_formation = -np.inf, None, None
+    for defenders, midfielders, forwards in FORMATIONS:
+        if (not gkp or len(ids_by_pos["DEF"]) < defenders
+                or len(ids_by_pos["MID"]) < midfielders
+                or len(ids_by_pos["FWD"]) < forwards):
+            continue
+        defs = sorted(ids_by_pos["DEF"], key=lambda i: -pts[i])[:defenders]
+        mids = sorted(ids_by_pos["MID"], key=lambda i: -pts[i])[:midfielders]
+        fwds = sorted(ids_by_pos["FWD"], key=lambda i: -pts[i])[:forwards]
+        chosen = gkp + defs + mids + fwds
+        total = float(pts[chosen].sum())
+        if total > best_total:
+            best_total, best_ids, best_formation = total, chosen, (defenders, midfielders, forwards)
+    return best_ids or [], best_formation or (0, 0, 0)
+
+
+def gw_lineups(squad_ids: list[int], players: pd.DataFrame,
+              raw: pd.DataFrame) -> pd.DataFrame:
+    """Starting XI, bench order and captain for a fixed squad, picked fresh each gameweek.
+
+    The 15-man squad does not change without a transfer, but who starts and who
+    captains is a weekly decision made with that week's own fixture, not the
+    plan's decayed weighting -- a squad player whose fixture swings that week
+    should rotate in and take the armband even though nobody was bought or
+    sold. This is what turns `best_xi_matrix`'s per-gameweek totals into an
+    actual, actionable selection: which player, not just how many points.
+    """
+    positions = players.set_index("fpl_id")["pos"]
+    names = players.set_index("fpl_id")["web_name"]
+    ids = [i for i in squad_ids if i in raw.index]
+    ids_by_pos = {pos: [i for i in ids if positions.get(i) == pos]
+                 for pos in ("GKP", "DEF", "MID", "FWD")}
+
+    rows = []
+    for gw in raw.columns:
+        pts = raw.loc[ids, gw]
+        starters, formation = _best_xi_ids(ids_by_pos, pts)
+        bench = sorted((i for i in ids if i not in starters), key=lambda i: -pts[i])
+        captain_id = max(starters, key=lambda i: pts[i]) if starters else None
+        vice_id = max((i for i in starters if i != captain_id), key=lambda i: pts[i], default=None)
+        xi_points = float(pts[starters].sum() + (pts[captain_id] if captain_id is not None else 0.0))
+        rows.append({
+            "gw": gw,
+            "formation": "-".join(str(n) for n in formation),
+            "captain": names.get(captain_id, ""),
+            "vice_captain": names.get(vice_id, ""),
+            "starting_xi": ", ".join(names[i] for i in starters),
+            "bench_order": ", ".join(names[i] for i in bench),
+            "xi_points": round(xi_points, 1),
+        })
+    return pd.DataFrame(rows)
 
 
 # --------------------------------------------------------------------------- #
@@ -656,6 +713,7 @@ def build_plan(projection: Projection, budget: float, bench_weight: float,
     counts = fixture_counts(projection)
     chips = chip_advice(squad, players, raw, counts, chip_windows or {})
 
+    lineups = gw_lineups(squad_ids, players, raw)
     timeline = fixture_timeline(squad_ids, players, raw, projection)
     windows = sell_windows(timeline, list(raw.columns))
     exposure = field_exposure(players, squad_ids)
@@ -687,7 +745,7 @@ def build_plan(projection: Projection, budget: float, bench_weight: float,
         notes.append(f"{movers} of the 15 changed club this summer; their rates are "
                      "adjusted for the new team and shrunk harder (see `movers`)")
 
-    return Plan(squad=squad, players=players, per_gw=per_gw, timeline=timeline,
-                windows=windows, exposure=exposure, coverage=cover,
+    return Plan(squad=squad, players=players, per_gw=per_gw, lineups=lineups,
+                timeline=timeline, windows=windows, exposure=exposure, coverage=cover,
                 chips=chips, core=core, horizon=list(raw.columns),
                 half_life=half_life, bank=bank, notes=notes)

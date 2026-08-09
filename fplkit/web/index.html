@@ -492,6 +492,8 @@ svg { display: block; max-width: 100%; height: auto; }
 .tag.you { background: var(--series-2); color: #fff; }
 .tag.adj { background: var(--mid); color: var(--text-secondary); }
 .lineupfoot { font-size: 11.5px; color: var(--muted); margin-top: 9px; line-height: 1.45; }
+.tlstrip { overflow-x: auto; margin-top: 6px; }
+.lineup.nowrap td, .lineup.nowrap th { white-space: nowrap; }
 
 /* --- ask ------------------------------------------------------------------ */
 .asklog { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
@@ -828,6 +830,7 @@ svg { display: block; max-width: 100%; height: auto; }
     </div>
     <div class="chartbox" id="tlChart"></div>
     <div class="hidden" id="tlTable"></div>
+    <div id="tlLineup"></div>
   </div>
 </div>
 
@@ -1156,6 +1159,21 @@ const gwPoints = (ids, index) => {
   const captain = Math.max(...ids.map((id) => (S.byId.get(id)?.gw[index]) || 0));
   return xi.total + captain;
 };
+
+// Starting XI, bench order and captain for one gameweek — the fixed squad does
+// not change without a transfer, but who starts and who captains is a weekly
+// call made with that week's own fixture, same as the CLI's `plan.lineups`.
+function gwLineup(ids, index) {
+  const xi = bestXI(ids, (p) => p.gw[index] || 0);
+  if (!xi.ids.length) return null;
+  const scoreAt = (id) => S.byId.get(id)?.gw[index] || 0;
+  const xiSet = new Set(xi.ids);
+  const bench = ids.filter((id) => !xiSet.has(id)).sort((a, b) => scoreAt(b) - scoreAt(a));
+  const ranked = xi.ids.slice().sort((a, b) => scoreAt(b) - scoreAt(a));
+  const captain = ranked[0], vice = ranked[1] ?? null;
+  return { shape: xi.shape, starters: xi.ids, bench, captain, vice,
+           total: xi.total + scoreAt(captain) };
+}
 
 const planXI = (ids) => bestXI(ids, (p) => p.xpts_plan || 0);
 
@@ -1593,7 +1611,11 @@ function renderExposure() {
 function renderTimeline() {
   const host = $("#tlChart");
   host.innerHTML = "";
-  if (!S.squad.length) { host.innerHTML = `<div class="empty-note">Draft a squad to see when its fixtures turn.</div>`; return; }
+  if (!S.squad.length) {
+    host.innerHTML = `<div class="empty-note">Draft a squad to see when its fixtures turn.</div>`;
+    $("#tlLineup").innerHTML = "";
+    return;
+  }
 
   const gws = S.gameweeks;
   const rows = S.squad.map((id) => S.byId.get(id))
@@ -1647,6 +1669,35 @@ function renderTimeline() {
 
   $("#tlTable").innerHTML = `<table><thead><tr><th>Player</th><th>Pos</th>${gws.map((g) => `<th>GW${g}</th>`).join("")}</tr></thead>
     <tbody>${rows.map((r) => `<tr><td>${r.p.name}</td><td>${r.p.pos}</td>${r.p.gw.map((v) => `<td>${v.toFixed(1)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+
+  renderLineupStrip(gws);
+}
+
+// Same 15-man squad throughout the heatmap above; this is who from it actually
+// starts, who's benched (autosub order) and who wears the armband each of
+// those gameweeks — the CLI's `plan.lineups`, ported.
+function renderLineupStrip(gws) {
+  const host = $("#tlLineup");
+  const rows = gws.map((gw, i) => {
+    const lu = gwLineup(S.squad, i);
+    return lu && { gw, lu };
+  }).filter(Boolean);
+  if (!rows.length) { host.innerHTML = ""; return; }
+
+  const name = (id) => S.byId.get(id)?.name ?? "—";
+  host.innerHTML = `
+    <p class="lineupfoot" style="margin-top:14px">Weekly captain &amp; bench — same squad, picked fresh each gameweek. Starting XI is the squad minus bench order.</p>
+    <div class="tlstrip"><table class="lineup nowrap">
+      <thead><tr><th>GW</th><th>Shape</th><th>Captain</th><th>Vice</th><th>Bench order</th><th>XI pts</th></tr></thead>
+      <tbody>${rows.map(({ gw, lu }) => `<tr>
+        <td>GW${gw}</td>
+        <td>${lu.shape.join("-")}</td>
+        <td>${name(lu.captain)}</td>
+        <td>${lu.vice === null ? "—" : name(lu.vice)}</td>
+        <td>${lu.bench.map(name).join(", ")}</td>
+        <td>${fmt(lu.total, 1)}</td>
+      </tr>`).join("")}</tbody>
+    </table></div>`;
 }
 
 function renderAll() {

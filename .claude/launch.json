@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "fpl-board",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["fpl.py", "serve", "--port", "8791"],
+      "port": 8791
+    }
+  ]
+}
