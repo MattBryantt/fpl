@@ -18,8 +18,12 @@
 // Bump whenever the shell changes. The shell is served cache-first, so an
 // installed phone keeps whatever it already has until this string moves --
 // which is the point on a train and a silent way to ship nothing otherwise.
-const SHELL_VERSION = "fpl-shell-v5";
+const SHELL_VERSION = "fpl-shell-v6";
 const DATA_CACHE = "fpl-data-v1";
+// Club shirts, kept apart from the shell: they are fetched as the pitch meets
+// each club rather than listed up front, and they outlive a shell version --
+// a code change is no reason to re-download twenty kits.
+const SHIRT_CACHE = "fpl-shirts-v1";
 
 // Everything the board needs to start with no network. Explicit, and mirrored
 // by ASSETS in server.py — if the two disagree the install fails loudly here
@@ -29,6 +33,7 @@ const SHELL = [
   "/icon.png",
   "/manifest.webmanifest",
   "/assets/board.mjs",
+  "/assets/pitch.mjs",
   "/assets/poisson.mjs",
   "/assets/points.mjs",
   "/assets/solver.js",
@@ -50,7 +55,7 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("activate", (event) => {
   event.waitUntil((async () => {
-    const keep = new Set([SHELL_VERSION, DATA_CACHE]);
+    const keep = new Set([SHELL_VERSION, DATA_CACHE, SHIRT_CACHE]);
     for (const name of await caches.keys()) {
       if (!keep.has(name)) await caches.delete(name);
     }
@@ -70,6 +75,14 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(networkFirst(request));
     return;
   }
+  // Shirts are cache-first and cached as they are met: twenty clubs is twenty
+  // images, they never change, and the pitch has to draw itself with the laptop
+  // off. A club whose shirt was never fetched falls back to a lettered tile in
+  // the page, so a miss here costs a picture rather than a render.
+  if (url.pathname.startsWith("/shirts/")) {
+    event.respondWith(cacheFirst(request, SHIRT_CACHE));
+    return;
+  }
   if (url.pathname === "/" || url.pathname === "/data"
       || url.pathname === "/icon.png" || url.pathname === "/manifest.webmanifest"
       || url.pathname.startsWith("/assets/")) {
@@ -77,11 +90,11 @@ self.addEventListener("fetch", (event) => {
   }
 });
 
-async function cacheFirst(request) {
+async function cacheFirst(request, cacheName = SHELL_VERSION) {
   const cached = await caches.match(request, { ignoreSearch: true });
   if (cached) return cached;
   const response = await fetch(request);
-  if (response.ok) (await caches.open(SHELL_VERSION)).put(request, response.clone());
+  if (response.ok) (await caches.open(cacheName)).put(request, response.clone());
   return response;
 }
 
