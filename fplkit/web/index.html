@@ -728,16 +728,21 @@ svg { display: block; max-width: 100%; height: auto; }
   color: var(--muted); margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap;
 }
 .benchnote { text-transform: none; letter-spacing: 0; }
-.benchrow { display: flex; justify-content: center; gap: clamp(6px, 2vw, 20px); flex-wrap: wrap; }
+/* `subsrow`, not `benchrow`: the lineup table has had a `benchrow` class on its
+   non-starters since long before there was a pitch, and a `display: flex` landing
+   on a <tr> collapses that row into the first column of the one above it. Two
+   things called the same thing in one stylesheet is a bug waiting for the second
+   one to be written. */
+.subsrow { display: flex; justify-content: center; gap: clamp(6px, 2vw, 20px); flex-wrap: wrap; }
 /* A group with no bench slots to line up under reads as a list, so it starts
    where a list starts. */
-.benchrow.loose { justify-content: flex-start; }
+.subsrow.loose { justify-content: flex-start; }
 /* Off the turf the pills would be an island of fixed colour in a themed card, so
    on the bench they take the page's own. */
-.benchrow .pname { background: var(--mid); color: var(--text-primary); }
-.benchrow .pcard.empty .pname { background: var(--mid); color: var(--text-secondary); }
-.benchrow .shirt.ghost { border-color: var(--axis); }
-.benchrow .shirt.ghost .plus { color: var(--muted); }
+.subsrow .pname { background: var(--mid); color: var(--text-primary); }
+.subsrow .pcard.empty .pname { background: var(--mid); color: var(--text-secondary); }
+.subsrow .shirt.ghost { border-color: var(--axis); }
+.subsrow .shirt.ghost .plus { color: var(--muted); }
 
 .pitchfoot { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
 
@@ -2491,7 +2496,8 @@ function renderExplain() {
   let x;
   try {
     x = explainPlayer(S.snapshot, S.snapshot.players.find((r) => r.id === editingId),
-      tidy(editBuffer), { horizon: +$("#horizon").value, halfLife: +$("#halflife").value });
+      scoringEdit(p, editBuffer),
+      { horizon: +$("#horizon").value, halfLife: +$("#halflife").value });
   } catch {
     box.innerHTML = `<p class="exnote">Cannot break these points down right now.</p>`;
     return;
@@ -2848,7 +2854,7 @@ async function sendAsk(question) {
    in — the season-level buffer, or one gameweek's — so the same code renders
    both and they cannot drift in behaviour. `idPrefix` keeps element ids unique
    once the same field appears twelve times over. */
-function renderField(box, f, base, store, idPrefix, onChange) {
+function renderField(box, f, base, store, idPrefix, onChange, hint = "") {
   const value = store[f.k] !== undefined ? store[f.k] : base;
   const changed = store[f.k] !== undefined && Math.abs(store[f.k] - base) > 1e-9;
   const rid = `${idPrefix}${f.k}`, nid = `${idPrefix}n_${f.k}`;
@@ -2857,7 +2863,7 @@ function renderField(box, f, base, store, idPrefix, onChange) {
   div.innerHTML = `
     <div class="row">
       <label for="${rid}">${f.label}</label>
-      <span class="orig">${idPrefix === "ed_" ? "model" : "season"}: ${base.toFixed(f.dp)}</span>
+      <span class="orig">${hint || `${idPrefix === "ed_" ? "model" : "season"}: ${base.toFixed(f.dp)}`}</span>
     </div>
     <div class="inp">
       <input type="range" id="${rid}" min="${f.min}" max="${f.max}" step="${f.step}" value="${value}">
@@ -2882,6 +2888,25 @@ function renderField(box, f, base, store, idPrefix, onChange) {
 }
 
 /** Fields that mean something for this player, with the model's value. */
+/* The one field the club rebalance moves on its own. Overriding a team-mate's
+   minutes takes minutes off everyone else at that club, and the board scores,
+   lists and draws the player at the moved value -- so the editor has to open on
+   the moved value too. It did not, and a shirt reading 0.31 next to a slider
+   reading 0.49 is the board contradicting itself about the number that matters
+   most. */
+const REBALANCED_FIELD = "p_start";
+
+/** The overrides this player is actually being scored with: yours, plus the
+ *  start probability his club's books owe him. `renormaliseMinutes` produced it;
+ *  everything in the drawer has to agree with it. */
+function scoringEdit(player, buffer) {
+  const edit = tidy(buffer || {});
+  if (player?.adjusted && edit[REBALANCED_FIELD] === undefined) {
+    edit[REBALANCED_FIELD] = player[REBALANCED_FIELD];
+  }
+  return edit;
+}
+
 function editableFields(player) {
   const out = [];
   for (const f of EDIT_FIELDS) {
@@ -2892,6 +2917,14 @@ function editableFields(player) {
     let base = player.inputs?.[f.k];
     if ((base === null || base === undefined) && f.k === "penalties_order") base = 0;
     if (base === null || base === undefined) continue;
+    // An adjusted player opens on what he is being scored at, with the model's
+    // own figure kept beside it -- the slider is the live value, and the note
+    // says where it came from.
+    if (f.k === REBALANCED_FIELD && player.adjusted) {
+      out.push({ f, base: player[f.k],
+                 hint: `rebalanced from ${base.toFixed(f.dp)}` });
+      continue;
+    }
     out.push({ f, base });
   }
   return out;
@@ -2901,8 +2934,9 @@ function renderEditorFields() {
   const p = S.byId.get(editingId);
   const box = $("#edFields");
   box.innerHTML = "";
-  for (const { f, base } of editableFields(p)) {
-    renderField(box, f, base, editBuffer, "ed_", () => { previewEdit(); renderMatches(); });
+  for (const { f, base, hint } of editableFields(p)) {
+    renderField(box, f, base, editBuffer, "ed_",
+                () => { previewEdit(); renderMatches(); }, hint);
   }
 }
 
@@ -3034,7 +3068,7 @@ function previewEdit() {
     let r;
     try {
       checkOverridable(editBuffer, S.snapshot);
-      r = editPlayer(S.snapshot, editingId, tidy(editBuffer),
+      r = editPlayer(S.snapshot, editingId, scoringEdit(p, editBuffer),
         { horizon: +$("#horizon").value, halfLife: +$("#halflife").value });
     } catch (error) {
       $("#edPts").innerHTML = `<span class="down">${error.message}</span>`;

@@ -260,7 +260,7 @@ export function pitchHTML({ layout, teams, metrics = ["xpts"], captain = null,
   const bench = layout.bench.length ? `
     <div class="benchband">
       <div class="benchlabel">Bench<span class="benchnote">auto-subs run down this order</span></div>
-      <div class="benchrow">
+      <div class="subsrow">
         ${layout.bench.map((slot) => (slot.player
           ? card(slot.player, opts(slot.player, benchLabels ? slot.label : ""))
           : emptyCard(slot.pos || "", benchLabels ? slot.label : ""))).join("")}
@@ -274,7 +274,7 @@ export function pitchHTML({ layout, teams, metrics = ["xpts"], captain = null,
  *  dropped, which belong beside its squad without being part of it. */
 export function cardsHTML(players, { teams, metrics = ["xpts"], tags = null,
                                      swap = false, versus = false, badge = null } = {}) {
-  return `<div class="benchrow loose">${players.map((player) => card(player, {
+  return `<div class="subsrow loose">${players.map((player) => card(player, {
     teams, metrics, captain: null, vice: null, versus,
     badge: badge ? badge(player) : "",
     tag: tags?.[player.id] || null,
