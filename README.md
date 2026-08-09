@@ -30,7 +30,7 @@ data for 3 hours, odds for 6, Understat for 24. `--refresh` bypasses it.
 ## Commands
 
 ```bash
-python fpl.py serve                                       # interactive drafting board in a browser
+python fpl.py serve                                       # interactive squad board in a browser
 python fpl.py snapshot                                    # freeze the projection so the board runs offline
 python fpl.py plan                                        # start here: squad + path + risk
 python fpl.py plan --recency 10                           # weight recent form above early season
@@ -50,31 +50,90 @@ Common flags: `--horizon N` (gameweeks), `--start-gw N`, `--full` (show the full
 points breakdown), `--csv name.csv` (write to `out/`), `--overrides file.csv`,
 `--refresh`. `plan` and `horizon` also take `--half-life N`.
 
-## The drafting board
+## The squad board
 
 ```bash
 python fpl.py serve          # → http://127.0.0.1:8000
 ```
 
 A local page for building squads by hand and watching every number move as you
-do. Add and remove players from the pool, and the projected XI points, the
-budget meter, the legality checks, the weekly profile, the rank-risk list and
-the fixture timeline all update instantly.
+do. The first thing on it is the squad, drawn as a team: the eleven the
+projection would start, in the shape it would start them, with the four
+substitutes ranked beneath in the order FPL's auto-subs actually work down. Each
+shirt is the player's club kit, with the captain's armband on the highest
+plan-weighted score in the XI and a **V** on the next one — which is where the
+double lands when the captain does not play.
 
-The solver's answer sits permanently in a third column beside your draft, and it
-re-solves itself whenever a setting changes — move the budget, a bench weight or
-the template tilt and the optimal fifteen under the *new* settings appears next
-to the one you built under the old ones. Players it wants that you don't hold
-are marked **in**, players you hold that it dropped are marked **out**, and you
-can take the whole squad across (`Copy whole squad to my draft`) or one player at
-a time with the → button beside them. Swapping one player in drops the weakest
-player you hold in the same position that the solver did not want either, so the
-draft stays fifteen and legal by position.
+### Two squads, side by side
 
-The weekly chart overlays your draft against the optimal squad, and the hero
-number shows what your edits cost or gained. The controls along the top
-(horizon, half-life, budget, template tilt, minimum start probability) scope
-everything below them.
+A pitch needs about 600px and the page has 1600, so the other half holds a
+second squad: the solver's answer to the settings in force, or **any draft you
+have saved**, chosen from the picker above it. Both pitches carry the diff —
+players the other squad has and yours does not are ringed green and marked
+**in**, yours that it dropped are dimmed and marked **out** — and a → on any
+incoming shirt takes that one player, dropping the weakest player you hold in
+the same position that the other squad did not want either.
+
+Under the two pitches the trade is priced. Outs and ins are **paired by
+position**, because that is the swap you would actually make, and each row
+carries the two numbers it turns on:
+
+```text
+Out of yours          In from Optimal squad     xPts          Δ xPts   Price            Δ £m
+out Semenyo    MCI    in  B.Fernandes   MUN     15.0 → 21.5    +6.5    £8.5 → £12.0     +3.5
+out Szoboszlai LIV    in  Saka          ARS     14.7 → 20.1    +5.5    £7.0 → £9.5      +2.5
+All 2 changes                                                 +12.0                     +6.0
+```
+
+Set the picker to *Nothing* and the board drops to one pitch, which is what a
+narrow screen does for you anyway.
+
+### What each shirt carries
+
+Up to **three** figures, chosen rather than fixed: the first gets a bar of its
+own and the other two share a row beneath it, in the order the selector shows
+them. **xPts** to rank on, **xPPG** to compare on, **£** to budget with, **PPG**
+for last season, **Next** for the fixture (capitals are at home), **Own%**,
+**Start** and **Mins**. Clicking a fourth drops the oldest, which is what
+clicking a fourth means.
+
+The four figures above the pitches — projected XI points with the captain
+doubled, what the squad costs and what is left in the bank, the XI's per-match
+rate, and how much of the template you hold — follow whatever is on them.
+
+### Head to head
+
+The ⇄ on any shirt, or in any pool row, puts a player in the comparison; a
+second one opens it. Every number the board holds on both, side by side, with
+the gap signed so the better one reads as the better one — which for price and
+ownership is the *smaller* figure — and then the horizon gameweek by gameweek,
+because two players with the same total can have it arranged very differently.
+It is `fpl.py compare` without the terminal.
+
+### The pool, and the tabs
+
+Tap an empty shirt and the player pool opens as a drawer, filtered to that
+position. It is the same table it always was: every column, both constraint
+buttons, search and sort. Tap a filled shirt and the stat editor opens on him.
+The × drops him.
+
+| Tab | What is on it |
+| --- | --- |
+| **Squad** | both pitches, the swap table, the legality checks. The badge counts how far you are from the solver |
+| **Analysis** | the weekly profile, the rank-risk list, the fixture timeline, and the club lineups — the expected XI drawn as a pitch too, ranked on start probability, with start / minutes / xPPG on each shirt |
+| **Drafts** | saved squads, and the overlaid weekly chart |
+
+**Settings** (top right) holds everything that scopes the numbers: horizon,
+half-life, budget, template tilt, minimum start probability, and behind *More
+options* the rest. They are one button away rather than permanently on screen,
+because a board whose subject is a squad should open on the squad.
+
+The kits are mirrored, not hot-linked: the server fetches each club's shirt from
+the FPL CDN once, caches it under `.cache/shirts/` and serves it from
+`/shirts/<code>.png`, and the service worker caches those alongside the shell.
+So the pitch draws itself with the laptop off, which is the whole premise of the
+rest of the board. A club whose shirt never arrived falls back to a lettered
+tile — a missing image costs a picture, never a player.
 
 ### Three numbers per player, and why
 
@@ -149,14 +208,14 @@ browser's arithmetic and its MILP against the Python, on real data, every time.
 The price is that the data is only as fresh as the last **Sync**, and the header
 says how stale it is rather than letting you assume it is live.
 
-**More options** opens two more rows. The first has everything else the CLI
+**More options**, inside Settings, opens two more rows. The first has everything else the CLI
 exposes: first gameweek, max per club, recent-form half-life, a forced
 formation, a button to bypass the cache and refetch every source, and
 **Restore defaults**, which puts every knob on the board back to its default and
 leaves your squad, drafts and edits alone. The ⊕ and
 ⊘ buttons in the pool require or bar a player — those are *optimiser
 constraints*, not squad edits, so they leave whatever you're currently drafting
-alone and only change the optimal column. Active constraints show as removable
+alone and only change the optimal squad. Active constraints show as removable
 chips.
 
 The second row is **bench weights**: one slider per bench slot, each showing the
@@ -166,7 +225,7 @@ shape, and reads back the scale the four currently imply, so the two can never
 contradict each other. Set all four to zero and the solver buys the four
 cheapest legal bodies; push `1st sub` up and it starts spending real money on a
 player who only ever comes on when a starter blanks. Every move re-solves the
-optimal column, which is the point — the sliders are only useful if you can see
+optimal squad, which is the point — the sliders are only useful if you can see
 what they buy you.
 
 **Where the data comes from** (top right, or `/data`) is a provenance page — see
@@ -298,7 +357,8 @@ on a train. They are pushed back to `out/drafts.json` and merged by name
 whenever the laptop is reachable, so the CLI keeps seeing the same squads.
 
 Settings live there too, under `fpl.settings`, written as you touch them: every
-knob in both control rows, the bench weights, the theme, the pool filter and
+knob in the settings rows, the bench weights, the theme, the tab you were on,
+the number the shirts carry, the pool filter and
 sort, the chart/table toggles, and any ⊕/⊘ constraints. The board opens where
 you left it, which matters most on the phone, where the tab gets evicted the
 moment you switch apps. Two things are deliberately not saved, because the
@@ -426,7 +486,7 @@ to players still in the league.
 ## Predicted clean sheets
 
 `xCS` — expected clean sheets over the horizon — now appears in `rank`, `value`
-and the other tables, in the drafting board's pool, and on each squad row.
+and the other tables, and in the squad board's pool.
 
 It's counted for **every** position, including forwards who earn nothing for it.
 The number answers "will this be kept out while he's playing", which is the
@@ -529,7 +589,7 @@ model currently believes for each input, a live recomputed projection as you
 drag, and the delta against the unedited value. `Apply` commits the edit;
 closing the drawer any other way throws it away, so the board and the optimiser
 are never looking at different numbers for the same player. An applied override
-flows straight through to the optimal column, which re-solves against it.
+flows straight through to the optimal squad, which re-solves against it.
 
 ### Per match, not just per player
 
@@ -976,9 +1036,10 @@ Other known limitations, roughly in order of how much they cost you:
 | --- | --- |
 | [fpl.py](fpl.py) | entry point |
 | [fplkit/cli.py](fplkit/cli.py) | commands, tables, filters |
-| [fplkit/server.py](fplkit/server.py) | drafting-board API, static assets, sync |
+| [fplkit/server.py](fplkit/server.py) | squad-board API, static assets, club shirts, sync |
 | [fplkit/snapshot.py](fplkit/snapshot.py) | freezes a projection into the file the browser runs on |
-| [fplkit/web/index.html](fplkit/web/index.html) | drafting-board UI |
+| [fplkit/web/index.html](fplkit/web/index.html) | squad-board UI |
+| [fplkit/web/pitch.mjs](fplkit/web/pitch.mjs) | draws a squad as a pitch: shirts, formation, bench order, the in/out diff |
 | [fplkit/web/board.mjs](fplkit/web/board.mjs) | derives the player pool from the snapshot — what `/api/pool` was |
 | [fplkit/web/points.mjs](fplkit/web/points.mjs) | browser port of the scoring layer, for offline overrides |
 | [fplkit/web/poisson.mjs](fplkit/web/poisson.mjs) | browser port of the Poisson helpers |

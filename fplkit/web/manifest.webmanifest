@@ -1,5 +1,5 @@
 {
-  "name": "FPL drafting board",
+  "name": "FPL squad board",
   "short_name": "FPL board",
   "description": "Project FPL points from bookmaker odds and xG, and build a squad — offline.",
   "start_url": "/",

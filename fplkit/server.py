@@ -60,8 +60,11 @@ AUTH_TOKEN: str | None = None
 # from the query string on that first request. Its assets and service worker are
 # in the same position, and none of them are data. /snapshot.json *is* the data,
 # so it stays behind the check.
+# Club shirts are open for a second reason on top of not being data: an <img>
+# cannot carry the token header the way fetch() does, so gating them would leave
+# an authorised board with an empty pitch.
 OPEN_PATHS = {"/", "/data", "/icon.png", "/sw.js", "/manifest.webmanifest"}
-OPEN_PREFIXES = ("/assets/",)
+OPEN_PREFIXES = ("/assets/", "/shirts/")
 
 
 @app.middleware("http")
@@ -790,6 +793,7 @@ def icon() -> FileResponse:
 # the browser, and the error it gives you does not say so.
 ASSETS: dict[str, str] = {
     "board.mjs": "text/javascript",
+    "pitch.mjs": "text/javascript",
     "poisson.mjs": "text/javascript",
     "points.mjs": "text/javascript",
     "solver.js": "text/javascript",
@@ -804,6 +808,47 @@ def asset(name: str) -> FileResponse:
     if name not in ASSETS:
         raise HTTPException(404, f"no such asset: {name}")
     return FileResponse(WEB_DIR / name, media_type=ASSETS[name])
+
+
+# Club shirts, mirrored rather than hot-linked. Three reasons, in order of how
+# much they matter: the board is expected to work with nothing behind it, and a
+# service worker can only cache what is same-origin without CORS in play; the
+# phone should not be making twenty requests to premierleague.com every time the
+# pitch renders; and a club that has since been relegated still has a shirt in
+# `.cache/` when an old snapshot is loaded. Fetched once per club, then served
+# off disk forever.
+SHIRT_SOURCE = ("https://fantasy.premierleague.com/dist/img/shirts/standard/"
+                "shirt_{name}-110.png")
+SHIRT_DIR = config.CACHE_DIR / "shirts"
+
+
+@app.get("/shirts/{name}.png")
+def shirt(name: str) -> FileResponse:
+    """One club's outfield (`43`) or goalkeeper (`43_1`) shirt.
+
+    The name is checked against the shape the FPL CDN uses rather than passed
+    through: it lands in a filesystem path and in a URL, and "digits, optionally
+    followed by _1" is the whole of the legitimate input.
+    """
+    code, _, keeper = name.partition("_")
+    if not code.isdigit() or keeper not in ("", "1"):
+        raise HTTPException(404, f"no such shirt: {name}")
+
+    path = SHIRT_DIR / f"{name}.png"
+    if not path.exists():
+        try:
+            response = requests.get(SHIRT_SOURCE.format(name=name),
+                                    headers=fpl_api.HEADERS, timeout=15)
+            response.raise_for_status()
+        except requests.RequestException as error:
+            # The pitch falls back to a plain club tile on a failed image, so a
+            # club with no shirt is a cosmetic loss and never a broken board.
+            raise HTTPException(502, f"could not fetch shirt {name}: {error}")
+        SHIRT_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(response.content)
+
+    return FileResponse(path, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=31536000"})
 
 
 @app.get("/sw.js")
