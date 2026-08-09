@@ -24,6 +24,7 @@ you change the horizon, which is the property we actually want.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -73,7 +74,7 @@ class Plan:
     chips: pd.DataFrame  # suggested chip timing
     core: pd.DataFrame  # players the plan keeps at every horizon
     horizon: list[int]
-    half_life: float
+    half_life: float | None  # None = no decay: every gameweek at full value
     bank: float
     notes: list[str] = field(default_factory=list)
 
@@ -82,9 +83,19 @@ class Plan:
 # Weighting: decay and survival
 # --------------------------------------------------------------------------- #
 
-def decay_weights(gameweeks: list[int], half_life: float = DEFAULT_HALF_LIFE) -> pd.Series:
-    """Geometric discount on future gameweeks, indexed by gameweek."""
+def decay_weights(gameweeks: list[int],
+                  half_life: float | None = DEFAULT_HALF_LIFE) -> pd.Series:
+    """Geometric discount on future gameweeks, indexed by gameweek.
+
+    A `half_life` of None -- or infinity, which is the same statement written
+    as a number -- is no discount at all: every gameweek in the horizon counts
+    its full value. That is a real setting rather than a degenerate one. It is
+    what "rank on total points over the next N gameweeks" means, and it is the
+    top stop on the board's fixture-decay slider.
+    """
     steps = np.arange(len(gameweeks))
+    if half_life is None or math.isinf(half_life):
+        return pd.Series(1.0, index=gameweeks, name="decay")
     return pd.Series(0.5 ** (steps / half_life), index=gameweeks, name="decay")
 
 
@@ -121,7 +132,7 @@ def survival_curve(players: pd.DataFrame, gameweeks: list[int]) -> pd.DataFrame:
 
 
 def weighted_points(projection: Projection,
-                    half_life: float = DEFAULT_HALF_LIFE) -> tuple[pd.DataFrame, pd.DataFrame]:
+                    half_life: float | None = DEFAULT_HALF_LIFE) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Per-player, per-gameweek points, raw and plan-weighted.
 
     Returns (raw, weighted), both players x gameweeks. Two fixtures in one
@@ -143,7 +154,7 @@ def weighted_points(projection: Projection,
 
 
 def apply_plan_weighting(projection: Projection,
-                         half_life: float = DEFAULT_HALF_LIFE) -> pd.DataFrame:
+                         half_life: float | None = DEFAULT_HALF_LIFE) -> pd.DataFrame:
     """Add xpts_plan (and its components) to the projection's player table."""
     raw, weighted = weighted_points(projection, half_life)
     players = projection.players.copy()
@@ -640,7 +651,8 @@ def chip_advice(squad: Squad, players: pd.DataFrame, raw: pd.DataFrame,
 # --------------------------------------------------------------------------- #
 
 def horizon_sensitivity(projection: Projection, budget: float, bench_weight: float,
-                        min_minutes_prob: float, half_life: float = DEFAULT_HALF_LIFE,
+                        min_minutes_prob: float,
+                        half_life: float | None = DEFAULT_HALF_LIFE,
                         max_horizon: int | None = None) -> pd.DataFrame:
     """How much the recommended squad changes as the horizon is extended.
 
@@ -683,7 +695,8 @@ def horizon_sensitivity(projection: Projection, budget: float, bench_weight: flo
 # --------------------------------------------------------------------------- #
 
 def build_plan(projection: Projection, budget: float, bench_weight: float,
-               min_minutes_prob: float, half_life: float = DEFAULT_HALF_LIFE,
+               min_minutes_prob: float,
+               half_life: float | None = DEFAULT_HALF_LIFE,
                chip_windows: dict[str, tuple[int, int]] | None = None,
                total_managers: int = 0, include: list[int] | None = None,
                exclude: list[int] | None = None,

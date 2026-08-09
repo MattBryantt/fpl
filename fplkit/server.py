@@ -17,7 +17,7 @@ import secrets
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import numpy as np
 import pandas as pd
@@ -124,7 +124,7 @@ DRAFTS_PATH = OUT_DIR / "drafts.json"
 # Projections are expensive (a couple of seconds) and pure, so they are cached
 # for the life of the process. The UI changes horizon and half-life freely.
 _projection_cache: dict[tuple[int | None, int, float], Any] = {}
-_pool_cache: dict[tuple[int | None, int, float, float], dict] = {}
+_pool_cache: dict[tuple[int | None, int, float | None, float], dict] = {}
 
 
 def _get_projection(start_gw: int | None, horizon: int, recency: float = 0.0):
@@ -151,7 +151,7 @@ def _clean(value: Any) -> Any:
     return value
 
 
-def _build_pool(start_gw: int | None, horizon: int, half_life: float,
+def _build_pool(start_gw: int | None, horizon: int, half_life: float | None,
                 recency: float = 0.0) -> dict:
     key = (start_gw, horizon, half_life, recency)
     if key in _pool_cache:
@@ -240,7 +240,7 @@ def _build_pool(start_gw: int | None, horizon: int, half_life: float,
     return payload
 
 
-def _plan_weight_player(projection, half_life: float, fpl_id: int,
+def _plan_weight_player(projection, half_life: float | None, fpl_id: int,
                         per_gw: list[float]) -> float:
     """Apply the same decay and survival curve a full plan run would."""
     players = projection.players
@@ -251,7 +251,7 @@ def _plan_weight_player(projection, half_life: float, fpl_id: int,
     return float(np.sum(np.asarray(per_gw) * decay * survival))
 
 
-def _apply_edits(projection, half_life: float,
+def _apply_edits(projection, half_life: float | None,
                  edits: dict[int, dict[str, float]]) -> pd.DataFrame:
     """Plan-weighted player table with the user's edited players patched in.
 
@@ -314,7 +314,12 @@ def _check_overridable(fields) -> None:
 
 class PoolRequest(BaseModel):
     horizon: int = Field(8, ge=1, le=20)
-    half_life: float = Field(DEFAULT_HALF_LIFE, gt=0, le=30)
+    # null means no decay -- every gameweek in the horizon at full value. JSON
+    # has no infinity, and the board's slider has that setting at its top stop.
+    # There is no upper bound below that: the slider's last few positions work
+    # out to half-lives of dozens of gameweeks, which is the whole point of
+    # having them, and a large half-life is only ever a gentler discount.
+    half_life: Annotated[float, Field(gt=0)] | None = DEFAULT_HALF_LIFE
     start_gw: int | None = None
     recency: float = Field(0.0, ge=0, le=38)
 
@@ -359,7 +364,7 @@ def index() -> FileResponse:
 
 
 @app.get("/api/pool")
-def pool(horizon: int = 8, half_life: float = DEFAULT_HALF_LIFE,
+def pool(horizon: int = 8, half_life: float | None = DEFAULT_HALF_LIFE,
          start_gw: int | None = None, recency: float = 0.0) -> dict:
     request = PoolRequest(horizon=horizon, half_life=half_life,
                           start_gw=start_gw, recency=recency)
@@ -397,7 +402,10 @@ Every number you are given comes from the projection itself. Field meanings:
 - xpts_raw: total expected points over the horizon, undiscounted.
 - xpts_plan: what the board ranks on. Later gameweeks are halved every
   `half_life` gameweeks of distance and multiplied by the player's chance of
-  still being available, so it is always lower than xpts_raw.
+  still being available, so it is always lower than xpts_raw. A null half_life
+  means the user has turned fixture decay off: every gameweek in the horizon
+  counts its full value, and only the availability curve separates the two
+  totals.
 - xppg: xpts_raw divided by his club's fixtures in the horizon. This is the
   number to compare between two players on different fixture runs.
 - p_start: probability he starts a given match; the single biggest lever.
@@ -487,7 +495,7 @@ def _round(value: Any, dp: int = 3) -> Any:
     return round(cleaned, dp) if isinstance(cleaned, (int, float)) else cleaned
 
 
-def _player_dossier(projection, fpl_id: int, half_life: float,
+def _player_dossier(projection, fpl_id: int, half_life: float | None,
                     edits: dict[str, Any] | None) -> dict:
     """Everything the model knows about one player, as plain JSON.
 

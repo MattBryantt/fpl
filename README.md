@@ -124,9 +124,17 @@ The × drops him.
 | **Drafts** | saved squads, and the overlaid weekly chart |
 
 **Settings** (top right) holds everything that scopes the numbers: horizon,
-half-life, budget, template tilt, minimum start probability, and behind *More
-options* the rest. They are one button away rather than permanently on screen,
-because a board whose subject is a squad should open on the squad.
+fixture decay, budget, template tilt, minimum start probability, and behind
+*More options* the rest. They are one button away rather than permanently on
+screen, because a board whose subject is a squad should open on the squad.
+
+**Fixture decay** is the half-life knob, dragged on a scale you can actually
+aim with. It reads as what one gameweek of distance costs — 0.79× the fixture
+before it, which is a half-life of about three — and runs from 0.50× (only the
+next fixture really counts) up to **1.00×, where decay is off entirely** and
+every fixture in the horizon is worth its full value. The half-life it works
+out to is printed next to the multiplier, and the editor's Weight column shows
+where each gameweek landed.
 
 The kits are mirrored, not hot-linked: the server fetches each club's shirt from
 the FPL CDN once, caches it under `.cache/shirts/` and serves it from
