@@ -623,6 +623,34 @@ def cmd_snapshot(args) -> None:
                   "to refresh or press Sync while the laptop is reachable[/dim]")
 
 
+def cmd_build(args) -> None:
+    """Freeze the board into a directory any static host can serve."""
+    from . import site
+    from . import snapshot as snapshot_module
+
+    out = Path(args.out)
+    snapshot_path = Path(args.snapshot) if args.snapshot else None
+
+    if snapshot_path is None or not snapshot_path.exists():
+        with console.status("[cyan]projecting and freezing…"):
+            written, _ = snapshot_module.write(
+                horizon=args.horizon, start_gw=args.start_gw,
+                recency=args.recency, force_refresh=args.refresh)
+        snapshot_path = Path(written)
+        console.print(f"[dim]built {snapshot_path}[/dim]")
+
+    with console.status("[cyan]assembling the site…"):
+        counts = site.build(out, snapshot_path)
+
+    total = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
+    console.print(f"[bold]{out}[/bold]  [dim]{total / 1024:.0f} KB[/dim]")
+    console.print(f"[dim]{counts['pages']} pages · {counts['assets']} assets · "
+                  f"{counts['shirts']} shirts · {counts['players']} players over "
+                  f"{counts['gameweeks']} gameweeks[/dim]")
+    console.print("[dim]serve it with any static host, or check it locally:\n"
+                  f"  python -m http.server -d {out} 8001[/dim]")
+
+
 def cmd_serve(args) -> None:
     """Run the drafting board."""
     import secrets
@@ -832,6 +860,18 @@ def build_parser() -> argparse.ArgumentParser:
                       help="bypass the cache and refetch every source first")
     snap.add_argument("--out", default=None, help="where to write it")
     snap.set_defaults(func=cmd_snapshot)
+
+    build_cmd = subparsers.add_parser(
+        "build", help="write the whole board to a directory a static host can serve")
+    build_cmd.add_argument("--out", default="dist", help="directory to write (default dist/)")
+    build_cmd.add_argument("--snapshot", default=None,
+                           help="use an existing snapshot instead of projecting")
+    build_cmd.add_argument("--horizon", type=int, default=SNAPSHOT_HORIZON)
+    build_cmd.add_argument("--start-gw", type=int, default=None)
+    build_cmd.add_argument("--recency", type=float, default=0.0, metavar="N")
+    build_cmd.add_argument("--refresh", action="store_true",
+                           help="bypass the cache and refetch every source first")
+    build_cmd.set_defaults(func=cmd_build)
 
     serve_cmd = subparsers.add_parser(
         "serve", help="run the interactive drafting board in a browser")
