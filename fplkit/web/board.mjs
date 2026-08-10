@@ -217,6 +217,10 @@ export function derivePool(snap, edits, { horizon, halfLife }) {
       cs,
       owned: raw.owned, price_change: raw.price_change,
       confidence: raw.confidence, recency: raw.recency,
+      // The two halves p_start was blended from. Carried for display only --
+      // the blend happened in pandas and is already in p_start -- so that the
+      // editor can say why a number is what it is.
+      start_long_run: raw.start_long_run, start_recent: raw.start_recent,
       moved: raw.moved, previous_club: raw.previous_club,
       status: raw.status, news: raw.news,
       gw, opp: raw.opp.slice(0, count),

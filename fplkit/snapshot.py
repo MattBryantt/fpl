@@ -223,6 +223,12 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
             "price_change": _num(player.get("exp_price_change"), None),
             "confidence": str(player.get("confidence", "")),
             "recency": _num(player.get("recency"), None),
+            # The two halves p_start was blended from. Not used in scoring -- the
+            # blend already happened -- but shown in the editor, because "the
+            # model has him at 0.41 and he has started the last six" is the
+            # single most useful thing to know before overriding him.
+            "start_long_run": _num(player.get("start_long_run"), None, dp=INPUT_DP),
+            "start_recent": _num(player.get("start_recent"), None, dp=INPUT_DP),
             "moved": bool(player.get("moved_club", False)),
             "previous_club": str(player.get("previous_club", "") or ""),
             "status": str(player["status"]),
