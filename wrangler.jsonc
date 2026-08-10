@@ -17,12 +17,16 @@
   // WASM solver and a 650 KB JSON file costs nothing to serve.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "fpl-board",
-  "compatibility_date": "2026-08-01",
+  "compatibility_date": "2026-08-10",
+  // Not needed for static-asset serving alone, but harmless to set now and
+  // saves a surprise later: /api/ask will be a Worker script, and some of the
+  // libraries a proxy to an LLM endpoint pulls in expect Node builtins.
+  "compatibility_flags": ["nodejs_compat"],
 
   "assets": {
     // Written by `python fpl.py build --out dist`. Everything in it is static;
     // there is no Worker script in this deployment at all yet.
-    "directory": "./dist"
+    "directory": "dist"
 
     // When /api/ask is ported, this becomes:
     //   "binding": "ASSETS",
