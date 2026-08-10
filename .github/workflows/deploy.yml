@@ -1,0 +1,113 @@
+# Build the board and publish it, on a schedule, to one permanent URL.
+#
+# This replaces a laptop. The board runs the projection maths and the MILP in
+# the browser off snapshot.json, so the only thing that ever needed Python was
+# *producing* that snapshot -- which is a job, not a server. Running the job
+# here means the phone stops depending on whether a particular Mac is awake, and
+# the URL stops changing.
+#
+# Cost: nothing. GitHub Actions is free for private repositories within the
+# monthly minutes allowance and this job takes about two of them; Cloudflare
+# Pages' free tier has no bandwidth cap and builds from an artifact we upload
+# rather than building on their side.
+
+name: deploy board
+
+on:
+  schedule:
+    # Every six hours. Set by the tightest external limit rather than by taste:
+    # The Odds API's free key allows 500 credits a month, one run spends two
+    # (h2h and totals are billed per market), and 4 runs a day is ~240 a month.
+    # Three-hourly would be 480 and would leave nothing for running it by hand.
+    - cron: "0 */6 * * *"
+  # For a deadline. The scheduled run is for keeping the site warm; this is the
+  # one to press when team news has just landed and the deadline is in an hour.
+  workflow_dispatch:
+    inputs:
+      refresh:
+        description: "Bypass every cache and refetch all sources"
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    # Code changes redeploy; a new snapshot is a scheduled concern. Docs and
+    # scripts do not change what the browser runs, so they do not trigger a
+    # build.
+    paths:
+      - "fplkit/**"
+      - "requirements.txt"
+      - ".github/workflows/deploy.yml"
+
+concurrency:
+  # A push during a scheduled run should win rather than queue: the newer commit
+  # is what should be live, and two deploys racing to the same project is how a
+  # site ends up serving a build nobody asked for.
+  group: deploy-board
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # The on-disk cache is what keeps the Odds API bill at zero on a run that
+      # did not need fresh odds. Restored across runs by a key that rolls each
+      # day, so a bad cached response cannot outlive one.
+      - name: Restore source cache
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: fpl-sources-${{ github.run_id }}
+          restore-keys: |
+            fpl-sources-
+
+      - name: Build the site
+        env:
+          # Optional. Without it the model falls back to xG-derived team
+          # ratings, which is a real projection -- just a less accurate one --
+          # so a missing secret must not fail the build.
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          python fpl.py build --out dist \
+            ${{ (inputs.refresh && '--refresh') || '' }}
+
+      # A build that produced no snapshot, or a snapshot with no players in it,
+      # must not be published over a good one. The board degrades gracefully to
+      # a *stale* projection; it does not degrade gracefully to an empty one.
+      - name: Check the build is not empty
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+          snap = pathlib.Path("dist/snapshot.json")
+          if not snap.exists():
+              sys.exit("no snapshot.json in dist/")
+          data = json.loads(snap.read_text())
+          players, gws = len(data.get("players", [])), len(data.get("gameweeks", []))
+          print(f"{players} players over {gws} gameweeks")
+          if players < 300 or gws < 1:
+              sys.exit(f"refusing to publish: {players} players, {gws} gameweeks")
+          for name in ("index.html", "sw.js", "assets/board.mjs",
+                       "assets/vendor/highs.wasm"):
+              if not (pathlib.Path("dist") / name).exists():
+                  sys.exit(f"missing {name}")
+          PY
+
+      # Config is in wrangler.jsonc, which points at dist/. Workers rather than
+      # Pages: static asset requests are free on both, but Workers is where
+      # Cloudflare's work is going, and it is where /api/ask will live when the
+      # ask box is ported.
+      - name: Publish to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy

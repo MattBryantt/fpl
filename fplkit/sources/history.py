@@ -75,6 +75,59 @@ def gameweek_history(season: str = "2025-26",
     return df[KEEP]
 
 
+def start_form(history: pd.DataFrame, half_life_matches: float = 4.0) -> pd.DataFrame:
+    """A recency-weighted start rate, and how many matches stand behind it.
+
+    Separate from `recency_multipliers` on purpose, and not optional the way the
+    rate tilt is. That one is a stylistic choice about whether you believe late
+    form; this one corrects a plain error. A season-long start rate is the wrong
+    answer to "does he start next week" for anyone whose situation changed
+    inside the season -- the January signing, the man back from three months
+    out, the youngster who took a place in March -- and *every* player's
+    situation changes at least once.
+
+    How much better it is was measured rather than assumed. Scored honestly, one
+    gameweek ahead, over 724 outfield players and 21,900 predictions where each
+    prediction sees only the gameweeks before the one it is guessing:
+
+        flat season rate     Brier 0.11622
+        half-life 10         Brier 0.10838
+        half-life 6          Brier 0.10490
+        half-life 4          Brier 0.10193
+        half-life 3          Brier 0.09997
+        half-life 2          Brier 0.09789
+
+    The default sits at 4 rather than at the 2 that won, because the sweep above
+    is one gameweek ahead and a plan is not. The same measurement run at longer
+    leads reverses: at four gameweeks out and beyond a half-life of 10 wins, and
+    the flat rate is close behind. Four is where a single number is least wrong
+    across the leads a squad is actually built over -- and `model.start_form_weight`
+    then decays toward the flat rate as the horizon lengthens, which is the part
+    that handles the reversal properly.
+    """
+    if history.empty or not half_life_matches:
+        return pd.DataFrame(columns=["code", "recent_start_rate", "recent_matches"])
+
+    df = history.copy()
+    df["started"] = (pd.to_numeric(df["starts"], errors="coerce").fillna(0.0) > 0).astype(float)
+    latest = df["gw"].max()
+    df["w"] = 0.5 ** ((latest - df["gw"]) / float(half_life_matches))
+
+    grouped = df.groupby("code")
+    weight = grouped["w"].sum()
+    rate = grouped.apply(lambda g: (g["started"] * g["w"]).sum(), include_groups=False)
+    out = pd.DataFrame({
+        "code": weight.index.astype(int),
+        "recent_start_rate": (rate / weight.replace(0.0, pd.NA)).astype(float).values,
+        # In units of matches, so it can be weighed against a prior expressed the
+        # same way. A player present for the last four gameweeks carries about
+        # 2.9 of these at a half-life of 4, not 4 -- which is the point: the
+        # figure is how much *recent* evidence there is, not how much there is.
+        "recent_matches": weight.values,
+    })
+    return out.dropna(subset=["recent_start_rate"]).reset_index(drop=True)
+
+
 def recency_multipliers(history: pd.DataFrame, half_life_matches: float,
                         clip: tuple[float, float] = (0.6, 1.6),
                         min_minutes: float = 270.0) -> pd.DataFrame:

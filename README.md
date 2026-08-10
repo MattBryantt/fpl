@@ -32,6 +32,7 @@ data for 3 hours, odds for 6, Understat for 24. `--refresh` bypasses it.
 ```bash
 python fpl.py serve                                       # interactive squad board in a browser
 python fpl.py snapshot                                    # freeze the projection so the board runs offline
+python fpl.py build --out dist                            # the whole board as static files
 python fpl.py plan                                        # start here: squad + path + risk
 python fpl.py plan --recency 10                           # weight recent form above early season
 python fpl.py transfers --squad out/squad.csv             # transfer and chip strategy, in-season
@@ -322,11 +323,62 @@ tier means the player's numbers go to that provider — public football
 statistics, but an external service nonetheless, which is why the local option
 is the default and the box tells you which one is answering.
 
+### Putting it somewhere permanent
+
+The board runs the projection maths and the MILP **in the browser**, off
+`snapshot.json`. Once that was true, the laptop stopped being a server and
+became a build step that nobody had noticed was a build step. So make it one:
+
+```bash
+python fpl.py build --out dist     # the whole board, as files
+python -m http.server -d dist 8001 # check it, if you like
+```
+
+`dist/` is about 4.8 MB and needs nothing but a static host: pages, assets, the
+3.3 MB WASM solver, the club shirts and the frozen projection.
+[.github/workflows/deploy.yml](.github/workflows/deploy.yml) then runs that
+build on a six-hourly cron and publishes it to **Cloudflare Workers** (config in
+[wrangler.jsonc](wrangler.jsonc)), which means one permanent HTTPS URL, no Mac
+in the loop, no Tailscale, no launchd, no port, no token, and no URL that
+changes.
+
+Workers rather than Cloudflare Pages, though both are free and both would work:
+since Workers gained native static-asset serving, Cloudflare's guidance is to
+start new projects there, and two differences matter here. `run_worker_first`
+is where `/api/ask` goes when the ask box is ported — on a static host the
+browser already computes the projection, so a server only has to hold the model
+key and proxy the call. And Cron Triggers live there too, which is an escape
+route if GitHub Actions ever stops being the right place to build the snapshot.
+
+Neither, rather than GitHub Pages: Pages on a **private** repo needs a paid
+GitHub plan, and this repo does not want to be public. Static asset requests on
+Cloudflare are not billed.
+
+The cron is six-hourly rather than hourly because of the tightest external
+limit, not taste — The Odds API's free key allows 500 credits a month, one run
+spends two, and four runs a day is about 240. There is a **Run workflow** button
+for the hour before a deadline, with a `refresh` box that bypasses every cache.
+
+The build refuses to publish over a good site with an empty one: it checks the
+snapshot has 300+ players and that the shell files exist before deploying.
+Stale numbers degrade gracefully; no numbers do not.
+
+**What a static host does not have** is the write half of `server.py` —
+`/api/drafts`, `/api/overrides`, `/api/snapshot`. Those were always mirrors of
+state the browser already owns in `localStorage`, so what is lost is the mirror
+and not the data. The page probes for the endpoints on load and hides the three
+controls that need them (`Sync`, `Refresh sources`, `Load overrides.csv`), on
+the grounds that a control which cannot work is worse than one that is not
+there. **Not yet ported:** the `Ask why` box, which needs a server to hold the
+API key — it already hides itself when `/api/ai` is absent, and a Cloudflare
+Pages Function is the obvious home for it.
+
 ### Using it from a phone, with the laptop off
 
-The board installs to a phone's home screen and works with nothing behind it —
-no signal, no server, laptop shut. Picking a squad, editing a player's inputs
-and re-solving the optimiser all happen on the device.
+Still supported, and still the right answer if you would rather nothing left the
+house. The board installs to a phone's home screen and works with nothing behind
+it — no signal, no server, laptop shut. Picking a squad, editing a player's
+inputs and re-solving the optimiser all happen on the device.
 
 ```bash
 ./scripts/setup-phone-access.sh
@@ -541,6 +593,101 @@ pass `bench_slot_weights` instead — a weight per slot, keyed `"GKP"`, `1`, `2`
 `3`, used as-is in place of `bench_weight × BENCH_SLOT_PROFILE`. That is what the
 board's four sliders send. Missing slots fall back to the scaled default.
 
+## pStart: a season rate is the wrong answer to a weekly question
+
+`p_start` is the biggest lever in the model — it scales minutes, and minutes
+scale everything. It used to be a season-long rate: starts divided by matches
+played, blended with a price-based prior. That answers "what share of matches
+did he start". The question actually being asked is **"does he start the next
+one"**, and the two come apart for anyone whose situation changed inside a
+season — the January signing, the man back from three months out, the youngster
+who took a place in March. Most players are one of those at least once.
+
+So the model now carries two numbers and blends them by *how far ahead it is
+looking*: the long-run rate, and a recency-weighted one (half-life four
+gameweeks) from the per-gameweek archive.
+
+**How much the blend should count was measured, not chosen.** Scored out of
+sample on 2025-26 — 724 outfield players, ~21,900 predictions, each one built
+only from the gameweeks before the one it is guessing — by searching at each
+lead for the weight `w` in `p = long_run + w × (recent − long_run)` that
+minimised Brier score:
+
+| Lead | best `w` | Brier (blend) | Brier (flat) | improvement |
+| --- | --- | --- | --- | --- |
+| 1 | 1.09 | 0.10184 | 0.11622 | 12.4% |
+| 2 | 0.82 | 0.11452 | 0.12254 | 6.5% |
+| 3 | 0.63 | 0.12227 | 0.12704 | 3.8% |
+| 4 | 0.51 | 0.12796 | 0.13101 | 2.3% |
+| 6 | 0.36 | 0.13666 | 0.13811 | 1.1% |
+| 8 | 0.29 | 0.14309 | 0.14398 | 0.6% |
+
+Two things in that table are the whole feature. The blend beats the flat rate at
+**every** lead, so this is not a trade of near accuracy for far accuracy. And
+`w` decays geometrically — 1.09 down to 0.29, a ratio of 0.828 per gameweek —
+which is the measured form of the intuition that a nailed starter is more
+obviously nailed next week than he is in two months. `start_form_weight()`
+averages that curve over the horizon, so asking for one gameweek fills the board
+with who is starting *now*, and asking for twelve hands it back to the
+season-long rate.
+
+Reproduce or re-fit it against a new season with:
+
+```bash
+python scripts/calibrate-start-form.py --season 2025-26
+```
+
+**What it fixed, visibly.** The old shape leaked start probability off the real
+starters and onto players who never play — every squad member below the first
+team sat at a flat floor set by the price prior, and because each club is
+normalised to eleven starters, that floor was paid for by the eleven. Against
+last season's actual within-club distribution:
+
+| Within-club rank | Real | Model, before | Model, now (1 GW) |
+| --- | --- | --- | --- |
+| 1st | 0.95 | 0.95 | 0.95 |
+| 6th | 0.72 | 0.70 | 0.72 |
+| 11th | 0.48 | 0.34 | 0.49 |
+| 15th | 0.29 | 0.16 | 0.27 |
+| 20th | 0.09 | 0.16 | 0.07 |
+| 24th | 0.01 | 0.16 | 0.00 |
+
+League-wide, players above 0.7 went from 118 to 131 against a real figure of
+about 130, and the tail below 0.05 grew from 90 to 122. **So yes — a lot of
+players' pStart went up, and it was paid for by the players who were never
+starting anyway.**
+
+The editor shows both halves whenever they disagree by more than 0.05
+(`season-long 0.41, lately 0.83`), because that is the most useful thing to
+know before deciding whether to override him.
+
+**One limitation, stated plainly.** The blend is applied when the projection is
+built, so `--horizon` on the CLI changes it and the horizon slider on the board
+does not — the board's snapshot is frozen at 12 gameweeks, and the slider
+reweights points that are already known rather than re-deriving minutes. Press
+Sync, or re-run `snapshot --horizon N`, to see pStart itself move. Making it
+per-gameweek inside the fixture loop would remove the caveat entirely and is the
+natural next step.
+
+### Was there an API for this instead?
+
+Looked, and the answer is no — not one that is both free and useful:
+
+- **[API-Football](https://www.api-football.com/)** has a genuinely free tier
+  (100 requests/day, all endpoints). But its lineups arrive **20–40 minutes
+  before kickoff**, which is after the FPL deadline. Useless for picking a team.
+- **[Sportmonks Expected Lineups](https://www.sportmonks.com/football-api/expected-lineups-api/)**
+  is the real thing — human-curated predicted XIs updated as team news lands —
+  and costs €159/month as an add-on to a paid plan.
+- **Fantasy Football Scout**, **[Fantasy Football Pundit](https://www.fantasyfootballpundit.com/fantasy-premier-league-team-news/)**,
+  **[RotoWire](https://www.rotowire.com/soccer/lineups.php)** and the rest publish
+  predicted lineups as **web pages, not APIs**. Scraping them puts a
+  third-party's editorial judgement, and their uptime, inside the model.
+
+Which leaves the FPL API's own `status` and `chance_of_playing_next_round`
+(already used, as `availability`) and the per-gameweek archive (now used, as
+above). The measured 12% Brier improvement came from data already on disk.
+
 ## Where the data comes from
 
 `python fpl.py serve` then **/data** — a full provenance page: every field traced
@@ -633,8 +780,27 @@ fpl_id,web_name,gw,p_start,npxg_per90
 12,Saka,7,,0.9           # ...and gameweek 7, when he moves inside
 ```
 
-`Save to overrides.csv` writes exactly this shape, so an edit made while drafting
-carries over to `plan`, `squad` and the rest.
+`out/overrides.csv` is written in exactly this shape, so an edit made while
+drafting carries over to `plan`, `squad` and the rest.
+
+**Nothing here has a save button, on purpose.** There used to be two — `Apply`
+in the editor and `Save to overrides.csv` in the banner — and both were the
+wrong shape for what they did. Edits go to `localStorage` the moment you make
+them, which is the copy that is always there, including on a phone on a train;
+the file is only ever a mirror of that for the CLI to read. So a button marked
+save was a button that felt load-bearing and wasn't, and forgetting the second
+one meant the CLI quietly planned off numbers you had already corrected.
+
+Now the drawer commits as you drag, debounced, and the CSV mirrors itself a
+beat later. When the laptop is not reachable the mirror is skipped silently and
+retried when the connection comes back — `localStorage` already has the edits,
+so there is nothing to warn about. The banner says where things stand rather
+than asking you to do anything about it.
+
+The escape hatch that makes live commit safe is `Undo changes`, which puts the
+player back to how he was when you opened the drawer. That is a different thing
+from `Reset player`, which throws away every edit you have ever made to him,
+including ones from last week.
 
 **From the CLI:**
 
@@ -1191,6 +1357,7 @@ Other known limitations, roughly in order of how much they cost you:
 | [fplkit/cli.py](fplkit/cli.py) | commands, tables, filters |
 | [fplkit/server.py](fplkit/server.py) | squad-board API, static assets, club shirts, sync |
 | [fplkit/snapshot.py](fplkit/snapshot.py) | freezes a projection into the file the browser runs on |
+| [fplkit/site.py](fplkit/site.py) | writes the whole board to a directory a static host can serve |
 | [fplkit/web/index.html](fplkit/web/index.html) | squad-board UI |
 | [fplkit/web/pitch.mjs](fplkit/web/pitch.mjs) | draws a squad as a pitch: shirts, formation, bench order, the in/out diff |
 | [fplkit/web/board.mjs](fplkit/web/board.mjs) | derives the player pool from the snapshot — what `/api/pool` was |
@@ -1211,6 +1378,7 @@ Other known limitations, roughly in order of how much they cost you:
 | [scripts/verify-season-rollover.py](scripts/verify-season-rollover.py) | simulates a season rollover, which a live run cannot |
 | [scripts/verify-transfer-rules.py](scripts/verify-transfer-rules.py) | checks the transfer plan against the transfer rules, on projections built to catch it |
 | [scripts/calibrate-shrinkage.py](scripts/calibrate-shrinkage.py) | fits the shrinkage priors from three seasons; re-run when one ends |
+| [scripts/calibrate-start-form.py](scripts/calibrate-start-form.py) | fits the pStart recency blend and its decay; re-run when a season ends |
 | [scripts/verify-lineup-port.mjs](scripts/verify-lineup-port.mjs) | checks the browser rebalances a club the way the model does |
 
 Scoring rules and model constants are all in [config.py](fplkit/config.py) — if

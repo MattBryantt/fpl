@@ -119,6 +119,52 @@ SUBS_PER_MATCH = 6.0
 # weight faster.
 START_PRIOR_MINUTES = 700.0
 
+# --- Start form: why a season-long start rate is the wrong number -------------
+# A start rate over a season answers "what share of matches did he start". The
+# question actually being asked is "does he start the next one", and those come
+# apart for anyone whose situation changed inside the season. The season rate
+# reads a man who missed August to October injured and has started every match
+# since as a 0.6 starter. He is not one. He is a 0.95 starter with a bad autumn
+# behind him, and next Saturday is the only match the plan is about.
+#
+# So the model carries two numbers and blends them by *how far ahead it is
+# looking*: the long-run rate, and a recency-weighted one from the per-gameweek
+# archive. All three constants below were fitted out of sample on 2025-26 --
+# every prediction for gameweek t built only from gameweeks before t -- by
+# searching, at each lead k, for the blend weight w that minimised Brier score
+# against what actually happened. See scripts/calibrate-start-form.py.
+#
+#     lead k    best w    Brier(blend)   Brier(flat)   improvement
+#        1       1.09        0.10184        0.11622        12.4%
+#        2       0.82        0.11452        0.12254         6.5%
+#        3       0.63        0.12227        0.12704         3.8%
+#        4       0.51        0.12796        0.13101         2.3%
+#        5       0.42        0.13282        0.13481         1.5%
+#        6       0.36        0.13666        0.13811         1.1%
+#        7       0.32        0.14002        0.14111         0.8%
+#        8       0.29        0.14309        0.14398         0.6%
+#
+# Two things in that table are the whole feature. The blend beats the flat rate
+# at *every* lead, so this is not a trade of near accuracy for far accuracy. And
+# w decays geometrically -- 1.09 down to 0.29, a ratio of 0.828 per gameweek --
+# which is the measured version of the intuition that a nailed starter is more
+# obviously nailed next week than he is in two months.
+START_FORM_HALF_LIFE = 4.0
+START_FORM_WEIGHT = 1.09    # weight on the recent rate one gameweek out
+START_FORM_DECAY = 0.828    # ...falling by this much per gameweek of lead
+# w above 1 is not a typo: the fit wants the recent rate *extrapolated past*,
+# because a run of starts is a slightly under-confident signal of a settled
+# place. Capped so an extrapolation cannot invert the two numbers it sits
+# between, which is what an unbounded w would do to a player whose recent rate
+# is far below his long-run one.
+MAX_START_FORM_WEIGHT = 1.25
+# How many weighted recent matches it takes before the recent rate is believed
+# over the long-run one. Small, because the evidence is already recency-weighted
+# and a player with three recent matches behind him has genuinely told you
+# something -- but not zero, or one substitute appearance in a blank fortnight
+# would rewrite a season.
+START_FORM_PRIOR_MATCHES = 3.0
+
 # Ceiling on the per-club correction. A squad the data barely knows would
 # otherwise have its two familiar players multiplied into superstars -- a worse
 # error than the under-fielding being corrected.
@@ -465,9 +511,32 @@ def _start_prior(df: pd.DataFrame) -> pd.Series:
     return ((df["price"] - floor) + 0.5) ** 2
 
 
+def start_form_weight(horizon: int) -> float:
+    """How much of the recent start rate survives, averaged over the horizon.
+
+    The fitted weight applies to one lead at a time: w_k = W * DECAY^(k-1). A
+    projection totals `horizon` gameweeks and reports one number per player, so
+    the weight it should carry is the mean of that curve over the leads it
+    actually covers -- the closed form of which is the geometric series below.
+
+    That is what makes the horizon control do the right thing without anyone
+    having to think about it. Ask for one gameweek and you get w = 1.10, and the
+    board fills with the players who are starting *now*. Ask for twelve and you
+    get w = 0.40, because who starts in April is a question the last four
+    gameweeks cannot answer, and the season-long rate is the better guess.
+    """
+    n = max(1, int(horizon))
+    if START_FORM_DECAY >= 1.0:
+        mean_decay = 1.0
+    else:
+        mean_decay = (1 - START_FORM_DECAY ** n) / (n * (1 - START_FORM_DECAY))
+    return float(min(MAX_START_FORM_WEIGHT, START_FORM_WEIGHT * mean_decay))
+
+
 def minutes_model(players: pd.DataFrame,
                   overrides: pd.DataFrame | None = None,
-                  basis: SeasonBasis | None = None) -> pd.DataFrame:
+                  basis: SeasonBasis | None = None,
+                  horizon: int = 1) -> pd.DataFrame:
     """Probability of starting, of appearing, of reaching 60 minutes.
 
     Derived from the starts and minutes the FPL API is currently serving --
@@ -538,10 +607,44 @@ def minutes_model(players: pd.DataFrame,
     prior_start = (prior_share * np.where(df["is_keeper"], 1.0, XI_OUTFIELD)).clip(
         upper=MAX_P_START)
 
-    blended = (weight * raw_start + (1 - weight) * prior_start) * df["availability"]
+    long_run = weight * raw_start + (1 - weight) * prior_start
+
+    # Then tilt toward who has been starting lately, by how far ahead we are
+    # looking. Two shrinkages guard it: the recent rate is itself pulled back
+    # toward the long-run one by how many recent matches stand behind it, and
+    # the horizon weight decays the whole correction away as the plan lengthens.
+    # A player the archive has never heard of has recent_matches 0, which makes
+    # both terms vanish and leaves him exactly where the long-run rate put him.
+    # `.get` on a missing column returns None, not an empty Series, and
+    # pd.to_numeric(None) is a bare nan -- so the column has to be tested for
+    # before it is converted, or a frame without the archive raises here.
+    if "recent_start_rate" not in df:
+        tilted = long_run
+        recent = long_run
+    else:
+        recent = pd.to_numeric(df["recent_start_rate"], errors="coerce")
+        recent_matches = pd.to_numeric(
+            df.get("recent_matches", pd.Series(0.0, index=df.index)), errors="coerce")
+        recent = recent.fillna(long_run)
+        recent_matches = recent_matches.fillna(0.0).clip(lower=0.0)
+        believed = recent_matches / (recent_matches + START_FORM_PRIOR_MATCHES)
+        recent = long_run + believed * (recent - long_run)
+        tilted = long_run + start_form_weight(horizon) * (recent - long_run)
+
+    # Clipped before availability rather than after: the extrapolation above can
+    # land outside [0, 1], and a negative share would come back through
+    # normalisation as a club owing starts to its own bench.
+    tilted = tilted.clip(0.0, 1.0)
+
+    blended = tilted * df["availability"]
     blended_sub = (weight * raw_sub + (1 - weight) * prior_share) * df["availability"]
 
     df["p_start"] = _normalise_to(blended, df, {True: 1.0, False: float(XI_OUTFIELD)})
+    # Kept on the frame so the board can redo this blend at a different horizon
+    # without the laptop: the browser has p_start at the snapshot's horizon, and
+    # these two are what let it recompute one for any other.
+    df["start_long_run"] = long_run.clip(0.0, 1.0)
+    df["start_recent"] = recent.clip(0.0, 1.0)
 
     # Six substitute appearances per club per match: 11 starters x 78 minutes
     # leaves 132 of the 990 a team plays, and 132/22 is six. Keepers are excluded
@@ -1431,14 +1534,23 @@ def project(horizon: int = 5, start_gw: int | None = None,
     players = match_players(fpl_players, us_stats, team_map)
     players = detect_movers(players, team_map)
 
+    # The per-gameweek archive, fetched once and read for two different things.
+    # It is third-party and can be unavailable, so both readings degrade to the
+    # season-long behaviour rather than taking the projection down.
+    gw_history = history.gameweek_history(force_refresh=force_refresh)
+
     # Optional: tilt rates toward how players were performing late last season.
-    # The archive is third-party and can be unavailable, so a failure here costs
-    # the tilt and nothing else.
     if recency_half_life:
-        multipliers = history.recency_multipliers(
-            history.gameweek_history(force_refresh=force_refresh), recency_half_life)
+        multipliers = history.recency_multipliers(gw_history, recency_half_life)
         if len(multipliers):
             players = players.merge(multipliers, on="code", how="left")
+
+    # Not optional, unlike the tilt above. Who has been starting lately is not a
+    # stylistic preference about form, it is the difference between a start rate
+    # that answers this week's question and one that answers last season's.
+    form = history.start_form(gw_history, START_FORM_HALF_LIFE)
+    if len(form):
+        players = players.merge(form, on="code", how="left")
 
     # Team strength has to be known before player rates, because adjusting a
     # transferred player's output needs the ratings of both clubs involved.
@@ -1452,7 +1564,7 @@ def project(horizon: int = 5, start_gw: int | None = None,
     # other's output -- but a rate only becomes points by way of expected
     # minutes, and the bonus prior is calibrated against the pool those minutes
     # imply, so it needs them in hand.
-    players = minutes_model(players, basis=basis)
+    players = minutes_model(players, basis=basis, horizon=horizon)
     players = attach_rates(players, strength, us_attack_rating, basis)
     # Applied after every rate has been derived and shrunk, so that an asserted
     # number is the one the model actually uses.
