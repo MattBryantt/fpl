@@ -335,20 +335,22 @@ python -m http.server -d dist 8001 # check it, if you like
 `dist/` is about 4.8 MB and needs nothing but a static host: pages, assets, the
 3.3 MB WASM solver, the club shirts and the frozen projection.
 [.github/workflows/deploy.yml](.github/workflows/deploy.yml) then runs that
-build on a six-hourly cron and publishes it to **Cloudflare Pages**, which means
-one permanent HTTPS URL, no Mac in the loop, no Tailscale, no launchd, no port,
-no token, and no URL that changes.
+build on a six-hourly cron and publishes it to **Cloudflare Workers** (config in
+[wrangler.jsonc](wrangler.jsonc)), which means one permanent HTTPS URL, no Mac
+in the loop, no Tailscale, no launchd, no port, no token, and no URL that
+changes.
 
-Setup, once:
+Workers rather than Cloudflare Pages, though both are free and both would work:
+since Workers gained native static-asset serving, Cloudflare's guidance is to
+start new projects there, and two differences matter here. `run_worker_first`
+is where `/api/ask` goes when the ask box is ported — on a static host the
+browser already computes the projection, so a server only has to hold the model
+key and proxy the call. And Cron Triggers live there too, which is an escape
+route if GitHub Actions ever stops being the right place to build the snapshot.
 
-1. Create a Cloudflare Pages project called `fpl-board` (direct upload — the
-   workflow uploads a built directory, Cloudflare does not build anything).
-2. Add three repository secrets: `CLOUDFLARE_API_TOKEN`,
-   `CLOUDFLARE_ACCOUNT_ID`, and `ODDS_API_KEY`.
-
-Why Cloudflare Pages rather than GitHub Pages: Pages on a **private** repo needs
-a paid GitHub plan, and this repo does not want to be public. Cloudflare's free
-tier serves private-source projects with no bandwidth cap.
+Neither, rather than GitHub Pages: Pages on a **private** repo needs a paid
+GitHub plan, and this repo does not want to be public. Static asset requests on
+Cloudflare are not billed.
 
 The cron is six-hourly rather than hourly because of the tightest external
 limit, not taste — The Odds API's free key allows 500 credits a month, one run

@@ -101,9 +101,13 @@ jobs:
                   sys.exit(f"missing {name}")
           PY
 
-      - name: Publish to Cloudflare Pages
+      # Config is in wrangler.jsonc, which points at dist/. Workers rather than
+      # Pages: static asset requests are free on both, but Workers is where
+      # Cloudflare's work is going, and it is where /api/ask will live when the
+      # ask box is ported.
+      - name: Publish to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dist --project-name=fpl-board --branch=main
+          command: deploy
