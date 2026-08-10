@@ -34,6 +34,7 @@ python fpl.py serve                                       # interactive squad bo
 python fpl.py snapshot                                    # freeze the projection so the board runs offline
 python fpl.py plan                                        # start here: squad + path + risk
 python fpl.py plan --recency 10                           # weight recent form above early season
+python fpl.py transfers --squad out/squad.csv             # transfer and chip strategy, in-season
 python fpl.py horizon                                     # how much does the horizon matter?
 python fpl.py rank --pos MID --max-price 9.0 --limit 20   # ranked by projected points
 python fpl.py value --pos DEF                             # best points per £m
@@ -48,7 +49,8 @@ python fpl.py blindspots                                  # players the model ca
 
 Common flags: `--horizon N` (gameweeks), `--start-gw N`, `--full` (show the full
 points breakdown), `--csv name.csv` (write to `out/`), `--overrides file.csv`,
-`--refresh`. `plan` and `horizon` also take `--half-life N`.
+`--refresh`. `plan` and `horizon` also take `--half-life N`; `transfers` takes
+`--squad`, `--free-transfers`, `--bank`, `--chips-used` and `--chip-value`.
 
 ## The squad board
 
@@ -711,12 +713,15 @@ extreme. The knob exists, but the answer barely depends on it.
   be confident about. The rest are fixture-dependent and worth less conviction.
 - **A fixture timeline** — see below.
 - **Rank risk** — the high-ownership players you do not own.
-- **Chip timing**, and usually a refusal — see below.
+- **A transfer path** — which gameweeks to move in, which to bank for, what it
+  costs, and where the chips go. Solved under the real free-transfer rules; see
+  below.
+- **Chip timing**, and usually a hold — see below.
 - **Expected value change** from the price forecast.
 
-## Why there is no predicted transfer schedule
+## The transfer schedule, and why the old one was wrong
 
-There used to be one. It produced this:
+There used to be one, and it was deleted. It produced this:
 
 ```text
 gw 4   transfer   Guéhi   -> Lacroix   +0.60
@@ -724,15 +729,88 @@ gw 5   transfer   Lacroix -> Guéhi     +0.40
 gw 6   transfer   Guéhi   -> Lacroix   +0.59
 ```
 
-Which is nonsense. Two free transfers burned to end up where you started is
-strictly worse than holding, and no amount of tuning fixes the underlying
-problem: rolling a squad forward on projections alone has no idea that a
-transfer is a spent resource, and no idea that in three weeks you will know
-things — form, injuries, price moves — that you do not know now. The honest
-position is that you cannot know your gameweek-six transfer in gameweek one.
+Two free transfers burned to end up where you started. The conclusion drawn at
+the time was that you cannot know your gameweek-six transfer in gameweek one, so
+the schedule had to go — and that half is still true, and still says so below.
+But it was the wrong reading of *these three lines*. They are not over-confidence
+about the future. They are a model that does not know a transfer is a resource:
+each week it re-asked "what is the best squad for this week?" and paid whatever
+it cost to get there, because nothing in the objective charged it for spending.
 
-What *does* survive contact with reality is the fixture shape. `plan` prints a
-timeline instead:
+`transfers` puts the price of spending into the objective. Three things, all of
+them mechanical rather than predictive:
+
+1. **Transfers are a stock, not a flow.** One a gameweek, banked to a maximum of
+   five, and everything past the allowance costs −4. That is an inventory
+   problem with a hard cap, and it is why "hold this week, do two next week" is
+   a move rather than a delay. The balance follows the real rule, including the
+   2024/25 change that a wildcard or free hit costs you that week's new transfer
+   but no longer burns the ones you banked.
+2. **A banked transfer is worth points you have not scored yet.** Holding is
+   free to a solver that only counts points on the pitch, so it always spends.
+   The bank is priced at 1.5 points with diminishing returns (the second one you
+   bank is worth most, the fifth least — it can only ever be spent in a week you
+   spend the other four too).
+3. **Acting costs something.** A flat 0.2 per move. Between two players a tenth
+   of a point apart the model's own error is an order of magnitude larger than
+   the gap, and this buys nothing except a refusal to trade on noise.
+
+With those in, the swap-and-swap-back disappears without being banned — which is
+the test that the fix is the right one rather than a patch over the symptom.
+`scripts/verify-transfer-rules.py` checks it both ways round: the same synthetic
+projection, solved with the pricing switched off, brings the oscillation
+straight back. If it did not, the scenario would not be testing anything.
+
+```text
+$ python fpl.py transfers --squad out/squad.csv --free-transfers 2 --bank 1.5
+
+gw  chip  TRs  FT  hits  bank  XI xPts  weight
+ 1           1   2     0   0.5     55.8    1.00
+ 2           0   2     0   0.5     52.3    0.90
+ 3           0   3     0   0.5     48.3    0.81
+ 4           0   4     0   0.5     46.8    0.73
+ 5           1   5     0   1.0     45.1    0.65
+ 6           1   5     0   0.5     44.6    0.59
+
+gw  Pos  out             £ out  in       £ in  to   gain
+ 1  MID  Tavernier         6.0  Gakpo     7.0  LIV  1.57
+ 5  DEF  Virgil            6.5  Guéhi     6.0  MCI  0.46
+ 6  FWD  Calvert-Lewin     6.0  Mateta    6.5  CRY  0.76
+
+This gameweek: Tavernier → Gakpo — worth +0.06 against rolling the transfer instead.
+```
+
+That last number is the only one to act on, and it is the reason the command
+solves twice. **+0.06** is the whole plan's value with this gameweek free, minus
+the whole plan's value with this gameweek's transfers banned. Because both sides
+are scored on the same objective, it already nets off the four points a hit
+would cost, the friction, and the banked transfer the move spends. Here it says
+the move is worth making and barely: a sixteenth of a point, which is a way of
+saying *this is a coin flip, and rolling is fine.*
+
+Everything after gameweek one is a shape, not an instruction. It gets re-solved
+next week against team news, price moves and a fixture list this run cannot see,
+and it will come out differently. What it is good for is the question the
+timeline below was invented to answer — is there a run coming that I should bank
+a transfer for? — except now the answer is priced rather than eyeballed.
+
+The horizon is six gameweeks by default and the discount is gentler than
+`plan`'s: a 6.5-gameweek half-life, or 0.90 a gameweek, against `plan`'s 3.
+That is deliberate and it is not a disagreement. Three of the reasons `plan`
+discounts so hard *are* optionality — a bad fixture in five gameweeks is not one
+you are locked into, because you will have made transfers by then. This model
+makes the transfers explicit, so discounting at 3 again would charge for the
+same thing twice. 0.90 is where the two most used solvers in the FPL
+optimisation community sit (0.84–0.90) once optionality is modelled rather than
+assumed.
+
+`plan` runs this automatically and prints the path underneath the squad;
+`--no-transfer-plan` skips it if you only want the projection.
+
+### What still cannot be planned
+
+The fixture timeline is still printed, and still the more honest artefact for
+anything past the next gameweek or two:
 
 ```text
 Player      gw1    gw2    gw3    gw4    gw5    gw6   swing   worst v
@@ -746,10 +824,7 @@ own** average — `+` good week for him, `=` par, `-` bad. Sorted by swing, so t
 most fixture-dependent players are at the top; opponent in CAPS means at home.
 Below it, runs of two or more bad gameweeks are listed separately, because a
 single poor fixture is rarely worth a transfer but a run is worth banking one
-for. FPL lets you hold up to five.
-
-You decide the actual transfer when it arrives, with information this tool does
-not have.
+for.
 
 ## Rank risk: what happens if Haaland hauls and you don't own him
 
@@ -813,6 +888,61 @@ rather than live data for that reason.
 
 Treat the whole thing as a tie-breaker between similar players, never a reason
 to pick a worse one. The command always prints which basis it used.
+
+### Chips: the question is not "when", it is "instead of what"
+
+Chip timing used to be four independent heuristics — biggest single-player week
+for the triple captain, best bench week for the bench boost, and so on — each of
+which answered *when in this window?* and none of which could answer *is any
+week in this window good enough to spend it on?* On a flat fixture list the
+first question has no honest answer, so the old code hard-coded a refusal and
+printed "hold".
+
+The refusal was right and the reason was wrong. Chips are now decided inside the
+transfer model, for two reasons that are the same reason:
+
+- **A chip is a squad decision.** A bench boost is worth playing only if the
+  bench is worth fielding, and the bench is a transfer decision taken weeks
+  earlier. A wildcard is a gameweek with fifteen free transfers, so it competes
+  directly against the transfers either side of it. Solved separately, both come
+  out wrong.
+- **A chip has a reservation price.** This is the one that actually matters.
+  Left to itself over a six-gameweek window, a solver plays all four chips in
+  the first four gameweeks — not because those are good gameweeks, but because a
+  chip unplayed at the end of the window is worth exactly zero, and the window is
+  six gameweeks while the chip's window is nineteen. So each chip carries what it
+  is worth *held*: 14 points for a bench boost, 10 for a triple captain, 12 for
+  a free hit, 15 for a wildcard. Those are the published aggregates for a chip
+  played on a double or a blank — the gameweeks that are not on the calendar
+  until cup rounds are drawn and games postponed, which is the entire reason
+  holding is worth anything.
+
+The result preseason is the same "hold" the heuristic printed, now as an
+arithmetic comparison rather than a hard-coded refusal — which means it also
+knows when to stop refusing:
+
+```text
+chip             gw   worth   edge  read
+Free Hit          -       -      -  no blank or double to hit
+Wildcard          -       -      -  hold — beaten by keeping it
+Bench Boost       -       -      -  hold — beaten by keeping it
+Triple Captain    -       -      -  hold — beaten by keeping it
+```
+
+`--ignore-chip-hold` sets every reservation price to zero and asks the narrower
+question the heuristic was asking. It answers bench boost in GW2 worth 12.5, and
+triple captain in GW1 worth 6.1 — both with an `edge` of about 1.1 over the
+median gameweek in the window, which is the number that says *this is noise*.
+An edge of 1.1 points is not a reason to spend a chip you can hold for a double.
+
+Two chips have no payout of their own, because they pay through the squad they
+let you buy rather than through points on the day. `--chip-value` prices those
+by re-solving without them: the difference between the best plan that has the
+chip and the best plan that does not.
+
+Free hit gets skipped entirely when there is no blank or double in the window,
+which is both honest and a real saving — it is a second fifteen-man squad's
+worth of binaries to discover it is worth nothing.
 
 ## Form and players who changed club
 
@@ -1002,6 +1132,21 @@ a prediction — treat it as such.
 Other known limitations, roughly in order of how much they cost you:
 
 - **The price forecast is weak preseason** and clearly labelled as such.
+- **What a chip is worth held is an estimate**, and it is the number that
+  decides whether a chip is played at all. `CHIP_HOLD_VALUE` comes from
+  published aggregates for chips played on doubles and blanks, not from anything
+  this model measures, and it is deliberately set at the low end of the case for
+  waiting. Preseason it is doing almost all the work, because nothing else in a
+  flat six-gameweek window can tell one gameweek from another. It is a knob;
+  `--ignore-chip-hold` sets it to zero.
+- **Future prices are held fixed in the transfer plan.** A move planned for
+  gameweek five is costed at today's price, and the price forecast that sits
+  next to it is not fed into the budget. That understates the cost of waiting on
+  a riser and overstates it on a faller.
+- **The transfer plan cannot see the second half of the season.** The horizon is
+  six gameweeks and the chips expire at 19, so anything the plan says about
+  chips is about whether to spend one *now*, never about a sequence across the
+  half.
 - **Form within a season is not modelled at all.** Every rate is a season
   average; a player in the middle of a hot streak looks identical to one who
   front-loaded his returns. This matters most in the first few gameweeks of a
@@ -1056,13 +1201,15 @@ Other known limitations, roughly in order of how much they cost you:
 | [fplkit/web/sw.js](fplkit/web/sw.js) | service worker: caches the shell and the last snapshot |
 | [fplkit/web/data.html](fplkit/web/data.html) | data provenance page |
 | [fplkit/model.py](fplkit/model.py) | the three-layer projection |
-| [fplkit/planning.py](fplkit/planning.py) | decay, survival, transfer path, chips |
+| [fplkit/planning.py](fplkit/planning.py) | decay, survival, fixture timeline, rank risk |
+| [fplkit/transfers.py](fplkit/transfers.py) | multi-period MILP: transfers, free-transfer accounting, hits, chips |
 | [fplkit/poisson.py](fplkit/poisson.py) | odds → expected goals → points distributions |
 | [fplkit/optimise.py](fplkit/optimise.py) | MILP squad selection and marginal value |
 | [fplkit/matching.py](fplkit/matching.py) | fuzzy joins between the three sources |
 | [fplkit/config.py](fplkit/config.py) | scoring rules, squad rules, model constants |
 | [fplkit/sources/](fplkit/sources/) | FPL API, Understat, The Odds API, history archive |
 | [scripts/verify-season-rollover.py](scripts/verify-season-rollover.py) | simulates a season rollover, which a live run cannot |
+| [scripts/verify-transfer-rules.py](scripts/verify-transfer-rules.py) | checks the transfer plan against the transfer rules, on projections built to catch it |
 | [scripts/calibrate-shrinkage.py](scripts/calibrate-shrinkage.py) | fits the shrinkage priors from three seasons; re-run when one ends |
 | [scripts/verify-lineup-port.mjs](scripts/verify-lineup-port.mjs) | checks the browser rebalances a club the way the model does |
 
@@ -1080,6 +1227,7 @@ python scripts/make-override-cases.py && node scripts/verify-js-port.mjs
 python scripts/make-solver-cases.py   && node scripts/verify-solver-port.mjs
 python scripts/make-lineup-cases.py   && node scripts/verify-lineup-port.mjs
 python scripts/verify-season-rollover.py
+python scripts/verify-transfer-rules.py
 ```
 
 The first rescores every player in the pool and 700-odd override combinations —
@@ -1094,6 +1242,25 @@ disagreement lands orders of magnitude above them.
 
 The third is a different kind of check: it simulates something the calendar will
 only let you observe once a year. See below.
+
+The fourth checks the transfer plan against the transfer *rules*, which is the
+one part of this tool whose output cannot be sanity-checked by eye. A squad you
+can look at; a six-gameweek path through the free-transfer state machine, with
+hits and chips in it, you cannot — and the failure mode is not a crash, it is a
+plan that is quietly illegal or quietly oscillating. So it builds synthetic
+projections where the right answer is known by construction and the wrong answer
+is attractive: a squad with nothing to gain (roll), two alternating premiums the
+budget cannot both fit (hold one), an upgrade worth six points a week and one
+worth 0.2 (take the hit, refuse the hit), half the league improving at once
+(wildcard), a blank gameweek (free hit), a flat calendar (hold everything).
+Sixty-four checks over seventeen solves, including the free-transfer recursion
+gameweek by gameweek and the fact that a wildcard leaves the banked balance
+alone.
+
+One of those runs backwards on purpose. The alternating-premium scenario is
+solved a second time with the transfer pricing switched off, and it has to bring
+the swap-and-swap-back back — if it does not, the scenario was never testing the
+thing it claims to test.
 
 ## Making the model add up
 
