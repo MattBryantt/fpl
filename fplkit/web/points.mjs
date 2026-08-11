@@ -15,30 +15,57 @@ import { cleanSheetProb, expectedConcessionPenalty, expectedSavePoints,
          probAtLeast } from "./poisson.mjs";
 
 /* ------------------------------------------------------------------ minutes
-   p_start, p_sub, p_play, p60 and exp_minutes are five views of one assumption,
-   and the points model reads four of them. Setting p_start without re-deriving
-   the rest produces a player who starts every week and plays no minutes -- the
-   same trap the server hit through a different door. */
+   p_start, mins_if_start, p_sub, p_play, p60 and exp_minutes are six views of
+   one assumption, and the points model reads five of them. Setting p_start
+   without re-deriving the rest produces a player who starts every week and
+   plays no minutes -- the same trap the server hit through a different door. */
+
+/* One player's shift length, falling back to the league average. The field is
+ * younger than the rest of the family, so a snapshot written before it exists
+ * reads as the 78 minutes everybody used to be assumed to play — which is
+ * exactly what that snapshot was scored with. Port of model._mins_if_start. */
+const minsIfStart = (p, rules) =>
+  Number.isFinite(p.mins_if_start) ? p.mins_if_start : rules.ASSUMED_START_MINUTES;
+
+/* P(reaches 60 minutes | starts), given how long his shift is. A logistic
+ * pinned at two points rather than fitted — an hour-long shift reaches the hour
+ * half the time by definition, and the league-average shift reaches it
+ * P60_GIVEN_START of the time. Port of model._p60_given_start; the constants
+ * ride in on the snapshot, and the older ones are the fallback for a snapshot
+ * that predates them (where every shift is 78 minutes anyway). */
+function p60GivenStart(minutes, rules) {
+  const mid = rules.P60_MIDPOINT_MINUTES;
+  const slope = rules.P60_SLOPE_MINUTES;
+  if (!Number.isFinite(mid) || !Number.isFinite(slope)) return rules.P60_GIVEN_START;
+  return 1 / (1 + Math.exp(-(minutes - mid) / slope));
+}
+
 function recomputeMinutes(p, rules) {
-  p.p60 = p.p_start * rules.P60_GIVEN_START;
+  const mins = minsIfStart(p, rules);
   p.p_play = p.p_start + (1 - p.p_start) * p.p_sub;
-  p.exp_minutes = p.p_start * rules.ASSUMED_START_MINUTES
+  p.p60 = p.p_start * p60GivenStart(mins, rules);
+  p.exp_minutes = p.p_start * mins
                 + (1 - p.p_start) * p.p_sub * rules.ASSUMED_SUB_MINUTES;
 }
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-/* Inverts the forward minutes formula (see recomputeMinutes) to recover
- * p_start from an explicit exp_minutes. The naive `exp_minutes /
- * ASSUMED_START_MINUTES` shortcut ignores the player's own p_sub and
- * saturates at 1.0 for anything above 78 minutes -- a real player's
- * exp_minutes never reaches 78 unless p_start is already 1.0, so 90 read back
- * through the shortcut always claimed certainty. Clipped to rules.MAX_P_START
- * rather than 1.0 to match the ceiling every other minutes path uses. */
-function pStartFromExpMinutes(expMinutes, pSub, rules) {
-  const denom = rules.ASSUMED_START_MINUTES - pSub * rules.ASSUMED_SUB_MINUTES;
-  const pStart = (expMinutes - pSub * rules.ASSUMED_SUB_MINUTES) / denom;
-  return clamp(pStart, 0, rules.MAX_P_START);
+/* Inverts the forward minutes formula (see recomputeMinutes) from an explicit
+ * exp_minutes. Returns [p_start, mins_if_start]; port of
+ * model._solve_exp_minutes, and see there for why the shift is preferred over
+ * the start probability — lengthening a man's shift says nothing about anyone
+ * else, while raising his p_start takes a shirt off a team-mate. Only when the
+ * ninety runs out does p_start absorb the rest, clipped to rules.MAX_P_START
+ * to match the ceiling every other minutes path uses. */
+function solveExpMinutes(expMinutes, pStart, pSub, rules) {
+  const maxMins = rules.MAX_MINS_IF_START ?? 90;
+  if (pStart > 0) {
+    const shift = (expMinutes - (1 - pStart) * pSub * rules.ASSUMED_SUB_MINUTES) / pStart;
+    if (shift <= maxMins) return [pStart, clamp(shift, 0, maxMins)];
+  }
+  const denom = maxMins - pSub * rules.ASSUMED_SUB_MINUTES;
+  const solved = (expMinutes - pSub * rules.ASSUMED_SUB_MINUTES) / denom;
+  return [clamp(solved, 0, rules.MAX_P_START), maxMins];
 }
 
 /** A copy of `player` with the user's overrides applied, mirroring
@@ -63,10 +90,13 @@ export function applyOverrides(player, overrides, rules) {
     } else {
       continue;
     }
-    // exp_minutes wins if both are given: it is the more specific claim.
-    if (field === "p_start") minutesTouched = true;
+    // exp_minutes is solved last and wins: it is the more specific claim, and
+    // solveExpMinutes reads whatever the other two just set. Relies on
+    // rules.OVERRIDABLE keeping the Python dict's order, which JSON does.
+    if (field === "p_start" || field === "mins_if_start") minutesTouched = true;
     else if (field === "exp_minutes") {
-      p.p_start = pStartFromExpMinutes(p.exp_minutes, p.p_sub, rules);
+      [p.p_start, p.mins_if_start] =
+        solveExpMinutes(p.exp_minutes, p.p_start, p.p_sub, rules);
       minutesTouched = explicitMinutes = true;
     }
   }
@@ -80,14 +110,24 @@ export function applyOverrides(player, overrides, rules) {
   return p;
 }
 
-/* [probability, minutes] for the start case and the substitute case. Clean
-   sheets, concessions, saves and defensive contribution are all non-linear in
-   minutes, so they are evaluated per scenario and averaged. Evaluating once at
-   the mean would be a different — wrong — number. */
-const minutesScenarios = (p, rules) => [
-  [p.p_start, rules.ASSUMED_START_MINUTES],
-  [(1 - p.p_start) * p.p_sub, rules.ASSUMED_SUB_MINUTES],
-];
+/* [probability, minutes, reaches60] for the start case and the substitute case.
+   Clean sheets, concessions, saves and defensive contribution are all
+   non-linear in minutes, so they are evaluated per scenario and averaged.
+   Evaluating once at the mean would be a different — wrong — number.
+
+   reaches60 rides along rather than being recovered from minutes: a start of 78
+   minutes is a *mean*, reaching the hour 87% of the time, and a start of 60
+   reaches it about half the time. A substitute's 22 minutes never does — that
+   curve is calibrated on starts, and a man who came on with twenty left is
+   bounded by when he came on. Carrying it here is what keeps p60 equal to the
+   probability-weighted sum of this column. */
+const minutesScenarios = (p, rules) => {
+  const mins = minsIfStart(p, rules);
+  return [
+    [p.p_start, mins, p60GivenStart(mins, rules)],
+    [(1 - p.p_start) * p.p_sub, rules.ASSUMED_SUB_MINUTES, 0],
+  ];
+};
 
 /** Expected points for one player in one fixture, broken down by source. */
 export function playerFixturePoints(player, lamFor, lamAgainst, teamNpxg, teamXgc, rules) {
@@ -125,14 +165,14 @@ export function playerFixturePoints(player, lamFor, lamAgainst, teamNpxg, teamXg
   // for is the on-pitch one computed per scenario below.
   const teamCsProb = cleanSheetProb(lamAgainst);
 
-  for (const [probability, minutes] of minutesScenarios(player, rules)) {
+  for (const [probability, minutes, reaches60] of minutesScenarios(player, rules)) {
     if (probability <= 0) continue;
     const share = minutes / 90;
     const lamOnPitch = lamAgainst * share;
     // A clean sheet needs 60 minutes and a starter does not always get them.
     // Without this the model would say he reaches 60 minutes 87% of the time
     // for his appearance point and 100% of the time for his clean sheet.
-    const reaches60 = minutes >= 60 ? rules.P60_GIVEN_START : 0;
+    // Handed down by minutesScenarios, which is where the two are kept equal.
 
     // Paid for conceding nothing *while on the pitch*, not for the club keeping
     // a clean sheet -- the same on-pitch lambda the concession term below uses.

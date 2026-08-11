@@ -65,7 +65,7 @@ SNAPSHOT_HORIZON = 12
 # typed, but the scoring code needs them and the browser cannot re-derive p_sub
 # from anything it holds.
 SCORING_FIELDS = [
-    "p_start", "p_sub", "p_play", "p60", "exp_minutes",
+    "p_start", "mins_if_start", "p_sub", "p_play", "p60", "exp_minutes",
     "npxg_per90", "xa_per90", "dc_per90", "bonus_per90", "saves_per90",
     "yellow_per90", "penalties_order", "price",
 ]
@@ -103,9 +103,14 @@ def _rules() -> dict[str, Any]:
         "ASSUMED_START_MINUTES": config.ASSUMED_START_MINUTES,
         "ASSUMED_SUB_MINUTES": config.ASSUMED_SUB_MINUTES,
         "P60_GIVEN_START": config.P60_GIVEN_START,
+        # The curve that turns a shift length into P(reaches 60 | starts), so
+        # the phone can price a hooked-on-the-hour starter the same way.
+        "P60_MIDPOINT_MINUTES": config.P60_MIDPOINT_MINUTES,
+        "P60_SLOPE_MINUTES": config.P60_SLOPE_MINUTES,
         # The minutes pool, so the browser can put a club back to eleven
         # starters after an override the same way the model does.
         "MAX_P_START": model.MAX_P_START,
+        "MAX_MINS_IF_START": model.MAX_MINS_IF_START,
         "MAX_MINUTES_SCALE": model.MAX_MINUTES_SCALE,
         "XI_OUTFIELD": model.XI_OUTFIELD,
         "OVERRIDABLE": {k: list(v) for k, v in OVERRIDABLE.items()},

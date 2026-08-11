@@ -729,7 +729,8 @@ your own number:
 | Field | What it is |
 | --- | --- |
 | `p_start` | probability he starts — the biggest lever in the model |
-| `exp_minutes` | expected minutes, if you'd rather state it that way |
+| `mins_if_start` | how long his shift is on the weeks he starts (default 78) |
+| `exp_minutes` | the two multiplied out, if you'd rather state it that way |
 | `npxg_per90` | non-penalty xG per 90 (penalties are modelled separately) |
 | `xa_per90` | expected assists per 90 |
 | `dc_per90` | defensive contribution per 90 (threshold 10 for DEF, 12 otherwise) |
@@ -742,6 +743,31 @@ your own number:
 Add `_mult` to any of them to *scale* the model's value rather than replace it —
 often the more natural way to put it (`npxg_per90_mult=1.2` for "about 20% better
 than his old club suggests").
+
+### Starting and staying on are two different claims
+
+`p_start` and `mins_if_start` used to be one field wearing two hats, and the hat
+that lost was the one you needed for a striker who starts every week and comes
+off on the hour. Stating `exp_minutes` was the only way to say it, and stating
+`exp_minutes` back-solved `p_start` — so "always plays, hooked at 60" went into
+the model as "starts about 70% of the time, plays 78 minutes when he does". Those
+are not the same player. The second one loses the appearance point he definitely
+earns, and he keeps the full clean sheet the first one does not.
+
+They are separate now. `p_start` is how often he is in the side; `mins_if_start`
+is how long he stays on when he is, defaulting to the league-average 78. Both the
+60-minute appearance point and the clean-sheet gate follow the second one, along
+a logistic pinned at two points rather than fitted — an hour-long shift reaches
+the hour half the time by definition, and a 78-minute shift reaches it 87% of the
+time, which is the number already calibrated. Nothing moves for a player you have
+not touched: at 78 minutes the curve returns exactly the old constant.
+
+`exp_minutes` still exists and is still the two multiplied out. Stating it now
+spends the *shift* first and only reaches for `p_start` when ninety minutes still
+is not enough — because lengthening one man's shift says nothing about anybody
+else, while raising his start probability takes a shirt off a team-mate and drags
+his whole club through the rebalance below. A player the model has never heard of,
+asserted into the side at 60 minutes a week, still gets there the old way.
 
 **In the browser:** click the ✎ beside any player. The drawer shows what the
 model currently believes for each input, a live recomputed projection as you
@@ -1290,7 +1316,7 @@ project (summer signings, returning loanees) and writes an overrides template:
 
 ```bash
 python fpl.py blindspots                                    # writes out/overrides-template.csv
-# edit p_start (0-1) or exp_minutes (0-90), delete rows you don't care about
+# edit p_start (0-1), mins_if_start (0-90) or exp_minutes (0-90), drop the rest
 python fpl.py squad --overrides out/overrides-template.csv
 ```
 

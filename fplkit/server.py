@@ -410,6 +410,11 @@ Every number you are given comes from the projection itself. Field meanings:
 - xppg: xpts_raw divided by his club's fixtures in the horizon. This is the
   number to compare between two players on different fixture runs.
 - p_start: probability he starts a given match; the single biggest lever.
+- mins_if_start: how long his shift is on the matches he does start, defaulting
+  to the league-average 78. Independent of p_start, and the only way to say
+  "always plays, always hooked on the hour" -- which costs him the second
+  appearance point and most of a clean sheet, where a lower p_start would
+  instead have cost him the first appearance point too.
 - npxg_per90 / xa_per90: NON-penalty expected goals and expected assists per 90
   minutes. Penalties are modelled separately and only credited to the
   designated taker (penalties_order = 1).

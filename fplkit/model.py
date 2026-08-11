@@ -41,7 +41,8 @@ from .config import (
     HOME_ADVANTAGE,
     LEAGUE_MEAN_GOALS,
     MATCHES_PER_SEASON,
-    P60_GIVEN_START,
+    P60_MIDPOINT_MINUTES,
+    P60_SLOPE_MINUTES,
     PENALTY_CONVERSION,
     PENALTY_GOAL_SHARE,
     PENALTY_MISS_POINTS,
@@ -112,6 +113,11 @@ XI_OUTFIELD = 10  # the eleventh is the keeper, normalised separately
 MAX_P_START = 0.95
 # 11 starters x 78 minutes leaves 132 of 990, and 132 / 22 is six appearances.
 SUBS_PER_MATCH = 6.0
+
+# A shift cannot be longer than the match. Unlike MAX_P_START there is nothing
+# probabilistic to shade here: a player who starts and is never substituted
+# plays ninety, and that is the whole of it.
+MAX_MINS_IF_START = 90.0
 
 # How much evidence it takes before last season's start rate outweighs the
 # price-based prior. Lighter than the rate prior: minutes are a far more direct
@@ -680,12 +686,64 @@ def minutes_model(players: pd.DataFrame,
     df["p_sub"] = np.where(df["is_keeper"], blended_sub,
                            (blended_sub * df["team"].map(scale)).clip(0.0, 1.0))
 
-    df["p_play"] = df["p_start"] + (1 - df["p_start"]) * df["p_sub"]
-    df["p60"] = df["p_start"] * P60_GIVEN_START
-    df["exp_minutes"] = (df["p_start"] * ASSUMED_START_MINUTES
-                         + (1 - df["p_start"]) * df["p_sub"] * ASSUMED_SUB_MINUTES)
+    # How long he plays *when he starts*, which is a different question from how
+    # often he starts and until now had no way of being asked. The model has no
+    # per-player evidence for it -- season minutes divided by starts cannot
+    # separate "hooked on the hour" from "started two thirds of the time" -- so
+    # everyone opens on the league average and the user says otherwise where he
+    # knows better. See OVERRIDABLE and _p60_given_start.
+    df["mins_if_start"] = float(ASSUMED_START_MINUTES)
 
+    _derive_minutes(df)
     return df
+
+
+def _p60_given_start(mins_if_start):
+    """P(reaches 60 minutes | starts), given how long his shift is.
+
+    A logistic pinned at two points rather than fitted -- an hour-long shift
+    reaches the hour half the time by definition, and the league-average shift
+    reaches it P60_GIVEN_START of the time. See P60_SLOPE_MINUTES in config.
+
+    Not applied to substitutes. This curve describes the length of a *start*,
+    calibrated on starters; a player who came on with twenty minutes left is
+    bounded by when he came on, not by how a starter's match tends to end.
+
+    Accepts a scalar or a Series; returns a bare ndarray either way, so a
+    caller wanting one number wraps it in float().
+    """
+    minutes = np.asarray(mins_if_start, dtype=float)
+    return 1.0 / (1.0 + np.exp(-(minutes - P60_MIDPOINT_MINUTES) / P60_SLOPE_MINUTES))
+
+
+def _mins_if_start(player) -> float:
+    """One player's shift length, falling back to the league average.
+
+    The column is younger than the rest of the minutes family, so a row that
+    predates it -- a stored snapshot, a CSV round-trip -- reads as the 78
+    minutes everybody used to be assumed to play, which is exactly what that
+    row was scored with when it was written.
+    """
+    try:
+        value = float(player.get("mins_if_start", ASSUMED_START_MINUTES))
+    except (TypeError, ValueError):
+        return float(ASSUMED_START_MINUTES)
+    return float(ASSUMED_START_MINUTES) if np.isnan(value) else value
+
+
+def _derive_minutes(df: pd.DataFrame) -> None:
+    """p_play, p60 and exp_minutes from p_start, p_sub and mins_if_start.
+
+    The one place the forward minutes formula lives. Everything else that moves
+    a member of the family -- the pipeline, an override, a club rebalance --
+    comes back through here rather than restating it.
+    """
+    p_start, p_sub = df["p_start"], df["p_sub"]
+    mins = df["mins_if_start"]
+    df["p_play"] = p_start + (1 - p_start) * p_sub
+    df["p60"] = p_start * _p60_given_start(mins)
+    df["exp_minutes"] = (p_start * mins
+                         + (1 - p_start) * p_sub * ASSUMED_SUB_MINUTES)
 
 
 def conserve_team_output(players: pd.DataFrame,
@@ -884,8 +942,13 @@ def _normalise_to(value: pd.Series, df: pd.DataFrame,
 # allowed to take. Each also accepts a `<name>_mult` column, which multiplies
 # whatever the model derived instead of replacing it -- usually the more natural
 # way to express an opinion ("about 20% better than his old club suggests").
+# Order matters for the three minutes fields. They are applied in the order
+# listed, and exp_minutes is solved against whatever the two before it left --
+# so stating all three means "this start probability, this shift, and the
+# minutes I actually want", with the last one arbitrating.
 OVERRIDABLE = {
     "p_start": (0.0, 1.0),
+    "mins_if_start": (0.0, MAX_MINS_IF_START),
     "exp_minutes": (0.0, 90.0),
     "npxg_per90": (0.0, 3.0),
     "xa_per90": (0.0, 3.0),
@@ -898,38 +961,51 @@ OVERRIDABLE = {
 }
 
 
-def _p_start_from_exp_minutes(exp_minutes: float, p_sub: float) -> float:
-    """Invert the forward minutes formula to recover p_start from exp_minutes.
+def _solve_exp_minutes(exp_minutes: float, p_start: float,
+                       p_sub: float) -> tuple[float, float]:
+    """Invert the forward minutes formula. Returns (p_start, mins_if_start).
 
-    exp_minutes = p_start*ASSUMED_START_MINUTES + (1-p_start)*p_sub*ASSUMED_SUB_MINUTES
-    solved for p_start. The naive shortcut (p_start = exp_minutes /
-    ASSUMED_START_MINUTES) ignores the player's own sub-appearance rate and
-    saturates at 1.0 for anything above 78 minutes, both of which fight the
-    forward formula: a real player's exp_minutes never even reaches 78 unless
-    p_start is already 1.0, so 90 read back through the shortcut always claimed
-    certainty. Clipped to MAX_P_START rather than 1.0 to match the ceiling
-    every other minutes path in this file uses -- nobody is nailed on beyond it.
+    There are two ways a player comes to play more minutes -- he starts more
+    often, or he stays on longer when he does -- and stating exp_minutes does
+    not say which. This prefers the second, because it is the smaller claim:
+    lengthening a man's shift says nothing about anyone else, while raising his
+    start probability takes a shirt off a team-mate and drags the whole club
+    through renormalise_minutes. So holding p_start where the user left it,
+
+        exp_minutes = p_start*mins_if_start + (1-p_start)*p_sub*ASSUMED_SUB_MINUTES
+
+    solved for mins_if_start. Only when that runs out of room -- he cannot play
+    more than the ninety, and if he rarely starts even ninety is not enough --
+    does the shift go to its maximum and p_start absorb the remainder, which is
+    the old behaviour and still the right answer for the case it was written
+    for: a player the model has never seen, asserted into the side.
+
+    Clipped to MAX_P_START rather than 1.0 to match the ceiling every other
+    minutes path in this file uses -- nobody is nailed on beyond it.
     """
-    denom = ASSUMED_START_MINUTES - p_sub * ASSUMED_SUB_MINUTES
-    p_start = (exp_minutes - p_sub * ASSUMED_SUB_MINUTES) / denom
-    return float(np.clip(p_start, 0.0, MAX_P_START))
+    if p_start > 0.0:
+        shift = (exp_minutes - (1.0 - p_start) * p_sub * ASSUMED_SUB_MINUTES) / p_start
+        if shift <= MAX_MINS_IF_START:
+            return p_start, float(np.clip(shift, 0.0, MAX_MINS_IF_START))
+
+    denom = MAX_MINS_IF_START - p_sub * ASSUMED_SUB_MINUTES
+    solved = (exp_minutes - p_sub * ASSUMED_SUB_MINUTES) / denom
+    return float(np.clip(solved, 0.0, MAX_P_START)), MAX_MINS_IF_START
 
 
 def _recompute_minutes(df: pd.DataFrame, mask) -> None:
-    """Keep the minutes family consistent after p_start or exp_minutes moves.
+    """Keep the minutes family consistent after one of its members moves.
 
-    p_start and exp_minutes are two views of one assumption, so setting either
-    has to re-derive the rest: the appearance points, the 60-minute clean-sheet
-    gate and the minutes scaling all read from different members of this family,
-    and letting them drift apart produces a player who starts every week but
-    plays no minutes.
+    p_start, mins_if_start and exp_minutes are three views of one assumption, so
+    setting any of them has to re-derive the rest: the appearance points, the
+    60-minute clean-sheet gate and the minutes scaling all read from different
+    members of this family, and letting them drift apart produces a player who
+    starts every week but plays no minutes.
     """
-    p_start = df.loc[mask, "p_start"]
-    p_sub = df.loc[mask, "p_sub"]
-    df.loc[mask, "p60"] = p_start * P60_GIVEN_START
-    df.loc[mask, "p_play"] = p_start + (1 - p_start) * p_sub
-    df.loc[mask, "exp_minutes"] = (p_start * ASSUMED_START_MINUTES
-                                   + (1 - p_start) * p_sub * ASSUMED_SUB_MINUTES)
+    subset = df.loc[mask, ["p_start", "p_sub", "mins_if_start"]].copy()
+    _derive_minutes(subset)
+    for column in ("p_play", "p60", "exp_minutes"):
+        df.loc[mask, column] = subset[column]
 
 
 def apply_fields(player: Mapping[str, Any], fields: Mapping[str, Any]) -> dict:
@@ -965,19 +1041,22 @@ def apply_fields(player: Mapping[str, Any], fields: Mapping[str, Any]) -> dict:
         else:
             continue
 
-        # exp_minutes wins if both are given: it is the more specific claim.
-        if field == "p_start":
+        # exp_minutes is solved last and wins: it is the more specific claim,
+        # and _solve_exp_minutes reads whatever the other two just set.
+        if field in ("p_start", "mins_if_start"):
             minutes_touched = True
         elif field == "exp_minutes":
-            out["p_start"] = _p_start_from_exp_minutes(out["exp_minutes"], float(out["p_sub"]))
+            out["p_start"], out["mins_if_start"] = _solve_exp_minutes(
+                float(out["exp_minutes"]), float(out["p_start"]), float(out["p_sub"]))
             minutes_touched = explicit_minutes = True
 
     if minutes_touched:
         pinned = out["exp_minutes"] if explicit_minutes else None
         p_start, p_sub = float(out["p_start"]), float(out["p_sub"])
-        out["p60"] = p_start * P60_GIVEN_START
+        mins = _mins_if_start(out)
         out["p_play"] = p_start + (1 - p_start) * p_sub
-        out["exp_minutes"] = (p_start * ASSUMED_START_MINUTES
+        out["p60"] = p_start * float(_p60_given_start(mins))
+        out["exp_minutes"] = (p_start * mins
                               + (1 - p_start) * p_sub * ASSUMED_SUB_MINUTES)
         if pinned is not None:
             out["exp_minutes"] = pinned
@@ -1053,6 +1132,8 @@ def apply_overrides(df: pd.DataFrame, overrides: pd.DataFrame) -> pd.DataFrame:
         df["overridden"] = ""
     if "minutes_pinned" not in df:
         df["minutes_pinned"] = False
+    if "mins_if_start" not in df:
+        df["mins_if_start"] = float(ASSUMED_START_MINUTES)
 
     for _, row in overrides.iterrows():
         # A row carrying a `gw` is about one match, not about the player.
@@ -1070,6 +1151,10 @@ def apply_overrides(df: pd.DataFrame, overrides: pd.DataFrame) -> pd.DataFrame:
             continue
 
         touched, minutes_touched, explicit_minutes = [], False, False
+        # Whether p_start itself moved, which is the only part of the family the
+        # club has to be rebalanced around: lengthening one man's shift takes
+        # nothing off a team-mate, so it must not pin him.
+        start_moved = False
         for field, (low, high) in OVERRIDABLE.items():
             if field not in df.columns:
                 continue
@@ -1086,25 +1171,33 @@ def apply_overrides(df: pd.DataFrame, overrides: pd.DataFrame) -> pd.DataFrame:
             else:
                 continue
 
-            # exp_minutes wins if both are given: it is the more specific claim.
+            # exp_minutes is solved last and wins: it is the more specific
+            # claim, and _solve_exp_minutes reads whatever the other two set.
             if field == "p_start":
+                minutes_touched = start_moved = True
+            elif field == "mins_if_start":
                 minutes_touched = True
             elif field == "exp_minutes":
-                implied = _p_start_from_exp_minutes(df.loc[mask, "exp_minutes"].iloc[0],
-                                                    float(df.loc[mask, "p_sub"].iloc[0]))
-                df.loc[mask, "p_start"] = implied
+                was = float(df.loc[mask, "p_start"].iloc[0])
+                implied_start, implied_mins = _solve_exp_minutes(
+                    float(df.loc[mask, "exp_minutes"].iloc[0]), was,
+                    float(df.loc[mask, "p_sub"].iloc[0]))
+                df.loc[mask, "p_start"] = implied_start
+                df.loc[mask, "mins_if_start"] = implied_mins
                 minutes_touched = explicit_minutes = True
+                start_moved = start_moved or abs(implied_start - was) > 1e-12
 
         if minutes_touched:
             pinned = df.loc[mask, "exp_minutes"].copy() if explicit_minutes else None
             _recompute_minutes(df, mask)
             if pinned is not None:
-                # _recompute_minutes derives exp_minutes from p_start; if the
-                # user stated the minutes directly, that stands.
+                # _recompute_minutes derives exp_minutes from the other two; if
+                # the user stated the minutes directly, that stands.
                 df.loc[mask, "exp_minutes"] = pinned
-            # Renormalising a club back to eleven starters has to know whose
-            # number is not its to move. See renormalise_minutes().
-            df.loc[mask, "minutes_pinned"] = True
+            if start_moved:
+                # Renormalising a club back to eleven starters has to know whose
+                # number is not its to move. See renormalise_minutes().
+                df.loc[mask, "minutes_pinned"] = True
         for field in touched:
             # An assertion is the strongest evidence there is, so conservation
             # treats it as fully evidenced and takes its correction from the
@@ -1486,18 +1579,28 @@ def attach_rates(players: pd.DataFrame, strength: pd.DataFrame | None = None,
 # Layer 3: points
 # --------------------------------------------------------------------------- #
 
-def _minutes_scenarios(player: pd.Series) -> list[tuple[float, float]]:
-    """[(probability, minutes)] for the start case and the substitute case.
+def _minutes_scenarios(player: pd.Series) -> list[tuple[float, float, float]]:
+    """[(probability, minutes, reaches_60)] for the start and substitute cases.
 
     Clean sheets, goals conceded, saves and defensive contribution are all
     non-linear in minutes, so they must be evaluated per scenario and then
     averaged -- evaluating them once at the mean would be wrong.
+
+    `reaches_60` rides along rather than being recovered from `minutes` because
+    the two are not the same question. A start of 78 minutes is a *mean*: it
+    reaches the hour 87% of the time, not always, and a start of 60 reaches it
+    about half the time. A substitute's 22 minutes never does. Carrying it here
+    is also what keeps the appearance term honest -- p60 is the probability-
+    weighted sum of this column, by construction, so the model cannot say a
+    player reaches 60 minutes one often for his appearance point and another
+    often for his clean sheet.
     """
     p_start = float(player["p_start"])
     p_sub_given_no_start = float(player["p_sub"])
+    mins_if_start = _mins_if_start(player)
     return [
-        (p_start, ASSUMED_START_MINUTES),
-        ((1 - p_start) * p_sub_given_no_start, ASSUMED_SUB_MINUTES),
+        (p_start, mins_if_start, float(_p60_given_start(mins_if_start))),
+        ((1 - p_start) * p_sub_given_no_start, ASSUMED_SUB_MINUTES, 0.0),
     ]
 
 
@@ -1541,7 +1644,7 @@ def _player_fixture_points(player: pd.Series, lam_for: float, lam_against: float
     # for is the on-pitch one computed per scenario below.
     team_cs_prob = ps.clean_sheet_prob(lam_against)
 
-    for probability, minutes in _minutes_scenarios(player):
+    for probability, minutes, reaches_60 in _minutes_scenarios(player):
         if probability <= 0:
             continue
         share = minutes / 90.0
@@ -1551,8 +1654,8 @@ def _player_fixture_points(player: pd.Series, lam_for: float, lam_against: float
         # get them -- he is subbed, or injured, or sent off. The appearance term
         # already prices that in through p60; without the same factor here the
         # model would say a starter reaches 60 minutes 87% of the time for his
-        # appearance point and 100% of the time for his clean sheet.
-        reaches_60 = P60_GIVEN_START if minutes >= 60 else 0.0
+        # appearance point and 100% of the time for his clean sheet. Handed down
+        # by _minutes_scenarios, which is where the two are kept equal.
 
         # The rule pays for conceding nothing *while he is on the pitch*, not
         # for the team keeping a clean sheet: a defender subbed at 78 minutes

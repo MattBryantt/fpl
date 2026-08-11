@@ -31,9 +31,16 @@ const sum = (xs, upTo) => {
   return total;
 };
 
-/* Which edits move a player's minutes, and so oblige his club to rebalance.
-   A `_mult` on either counts: the question is whether the number changed, not
-   how it was expressed. */
+/* Which edits move a player's *start probability*, and so oblige his club to
+   rebalance. A `_mult` on either counts: the question is whether the number
+   changed, not how it was expressed.
+
+   mins_if_start is deliberately absent. Minutes are a fixed pool only in the
+   sense that eleven shirts are — saying a man stays on for ninety rather than
+   seventy-eight takes nothing off a team-mate, so it must not pin him or drag
+   his club through a rebalance. exp_minutes stays on the list because solving
+   it *can* land on p_start when the ninety runs out (see solveExpMinutes); when
+   it does not, the rebalance below finds nothing moved and returns empty. */
 const touchesMinutes = (edit) =>
   !!edit && ["p_start", "exp_minutes", "p_start_mult", "exp_minutes_mult"]
     .some((f) => edit[f] !== undefined && edit[f] !== null);

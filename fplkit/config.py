@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
@@ -180,6 +181,22 @@ ASSUMED_START_MINUTES = 78.0  # average minutes played by a player who starts
 ASSUMED_SUB_MINUTES = 22.0  # average minutes played by a player off the bench
 P60_GIVEN_START = 0.87  # a starter reaches 60 minutes this often
 MATCHES_PER_SEASON = 38
+
+# How often a starter reaches the hour, as a function of how long his shift
+# actually is. `mins_if_start` lets a player say his shift is not the league's
+# 78 minutes, and the 60-minute appearance point and the clean-sheet gate both
+# have to move with it -- a man hooked on the hour every week cannot keep
+# collecting the second appearance point 87% of the time.
+#
+# A logistic in minutes, pinned at two points rather than fitted: a shift of
+# exactly the hour reaches the hour half the time, by definition, and the
+# league-average shift reaches it P60_GIVEN_START of the time, which is the
+# number already calibrated above. Those two fix the curve completely, so
+# P60_SLOPE_MINUTES is solved from them rather than chosen -- change
+# P60_GIVEN_START and the curve still passes through it.
+P60_MIDPOINT_MINUTES = 60.0
+P60_SLOPE_MINUTES = ((ASSUMED_START_MINUTES - P60_MIDPOINT_MINUTES)
+                     / math.log(P60_GIVEN_START / (1.0 - P60_GIVEN_START)))
 
 # Bench players are worth something but rarely play; weight them down in the
 # optimiser objective so the solver does not overpay for a strong bench.

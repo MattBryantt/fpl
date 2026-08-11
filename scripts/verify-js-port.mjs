@@ -121,6 +121,28 @@ if (fs.existsSync(casesPath)) {
   if (Math.abs(pinned.derived.exp_minutes - 90) > 1e-9) {
     problems.push(`explicit exp_minutes was overwritten (${pinned.derived.exp_minutes})`);
   }
+
+  // The whole point of mins_if_start: shortening a man's shift must cost him
+  // the 60-minute appearance point and the clean sheet without costing him the
+  // appearance point he definitely earns. p_play must not move; p60 must.
+  const hooked = reprojectPlayer(snap, subject, { p_start: 0.95, mins_if_start: 55 });
+  const nailed = reprojectPlayer(snap, subject, { p_start: 0.95 });
+  if (Math.abs(hooked.derived.p_play - nailed.derived.p_play) > 1e-9) {
+    problems.push(`mins_if_start moved p_play (${nailed.derived.p_play} -> ${hooked.derived.p_play})`);
+  }
+  if (!(hooked.derived.p60 < nailed.derived.p60 - 1e-6)) {
+    problems.push(`a shorter shift did not lower p60 (${nailed.derived.p60} -> ${hooked.derived.p60})`);
+  }
+  if (!(hooked.derived.exp_minutes < nailed.derived.exp_minutes - 1e-6)) {
+    problems.push(`a shorter shift did not lower exp_minutes`);
+  }
+  // And the converse: stating exp_minutes on a player who already starts should
+  // spend his shift rather than reach for his start probability.
+  const shortened = reprojectPlayer(snap, subject, { p_start: 0.9, exp_minutes: 45 });
+  if (Math.abs(shortened.inputs.p_start - 0.9) > 1e-9) {
+    problems.push(`exp_minutes moved p_start when the shift had room `
+      + `(0.9 -> ${shortened.inputs.p_start})`);
+  }
   console.log(`minutes  : ${problems.length ? "BROKEN" : "coupled"} `
     + `(${subject.name}: p_play ${subject.p_play.toFixed(3)} -> ${d.p_play.toFixed(3)})`);
   failures.push(...problems);

@@ -685,11 +685,13 @@ def cmd_blindspots(args) -> None:
 
     template = blind[["fpl_id", "web_name", "pos", "team_short", "price"]].copy()
     template["p_start"] = ""
+    template["mins_if_start"] = ""
     template["exp_minutes"] = ""
     _save(template, args.csv or "overrides-template.csv")
     console.print(
-        "[dim]fill in p_start (0-1) or exp_minutes (0-90) in that file, delete the "
-        "rows you do not care about, then rerun with "
+        "[dim]fill in p_start (0-1), mins_if_start (0-90, how long his shift is on "
+        "the weeks he plays) or exp_minutes (0-90, the two multiplied out) in that "
+        "file, delete the rows you do not care about, then rerun with "
         "--overrides out/overrides-template.csv[/dim]"
     )
 

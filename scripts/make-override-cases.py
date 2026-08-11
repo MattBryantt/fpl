@@ -38,6 +38,9 @@ def check_apply_fields_matches_apply_overrides(players: pd.DataFrame) -> None:
         {"p_start": 0.9, "npxg_per90": 0.8}, {"exp_minutes": 20.0, "p_start": 0.95},
         {"price": 4.0, "penalties_order": 1}, {"saves_per90_mult": 0.3},
         {"p_start": 0.0}, {"dc_per90": 22.0, "bonus_per90_mult": 2.5},
+        # The shift, on its own and against each of the other two.
+        {"mins_if_start": 60.0}, {"p_start": 0.95, "mins_if_start": 55.0},
+        {"mins_if_start": 90.0, "exp_minutes": 40.0}, {"exp_minutes": 45.0},
     ]
     fields = list(OVERRIDABLE) + ["p_sub", "p_play", "p60"]
     problems = []
@@ -98,6 +101,16 @@ def main() -> None:
             {"p_start": 0.95, "npxg_per90": 0.9},
             {"exp_minutes": 90.0, "p_start": 0.1},   # exp_minutes must win
             {"p_start": 0.0},                        # every scenario probability zero
+            # The three minutes fields against each other. exp_minutes is solved
+            # against whatever the two before it left, and it prefers to spend
+            # the shift before it touches the start probability -- so the first
+            # of these must move mins_if_start alone and the second must run out
+            # of shift and fall back to raising p_start.
+            {"p_start": 0.9, "exp_minutes": 45.0},
+            {"p_start": 0.05, "exp_minutes": 75.0},
+            {"mins_if_start": 55.0},                 # nailed, but hooked on the hour
+            {"mins_if_start": 90.0, "p_start": 0.2},  # rare starter, full shift
+            {"mins_if_start": 90.0, "exp_minutes": 30.0},  # exp_minutes still wins
             {"penalties_order": 1, "p_start": 1.0},
             {"saves_per90": 6.0, "dc_per90": 20.0},
             {"price": 3.5, "bonus_per90_mult": 3.0},  # _mult must clip at the cap

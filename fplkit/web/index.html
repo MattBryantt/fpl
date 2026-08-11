@@ -2625,10 +2625,14 @@ function renderComparison() {
 const EDIT_FIELDS = [
   { k: "p_start", label: "Start probability", min: 0, max: 1, step: 0.01, dp: 2,
     help: "The biggest lever in the model. Last season's starts cannot see a transfer or a new manager." },
+  { k: "mins_if_start", label: "Minutes when he starts", min: 0, max: 90, step: 1, dp: 0,
+    help: "How long his shift is, on the weeks he is in the side — independent of how often that is. "
+        + "The league average is 78. Drop it for a striker hooked on the hour and the second appearance "
+        + "point and the clean sheet go with him, which is the part a start probability cannot say." },
   { k: "exp_minutes", label: "Expected minutes", min: 0, max: 90, step: 1, dp: 0,
-    help: "A direct minutes figure, for when you trust a specific number more than a start probability — "
-        + "an update on a rotation plan, a return from injury eased in gradually. Setting this overrides "
-        + "start probability outright; setting start probability back clears this instead." },
+    help: "Minutes per match across starts and cameos both, for when you trust one figure more than the "
+        + "two above it. Setting it lengthens or shortens his shift first, and only reaches for start "
+        + "probability when ninety minutes still is not enough. Setting either of those back clears it." },
   { k: "npxg_per90", label: "Non-penalty xG per 90", min: 0, max: 1.5, step: 0.01, dp: 3,
     help: "Penalties are modelled separately, so this is open play only." },
   { k: "xa_per90", label: "Expected assists per 90", min: 0, max: 1.2, step: 0.01, dp: 3 },
@@ -2992,7 +2996,7 @@ async function inlineMinutesEdit(id, field, raw) {
   const base = entry ? entry.base : p.inputs?.[field];
   const store = tidy(S.edits[id] ? JSON.parse(JSON.stringify(S.edits[id])) : {});
   if (Math.abs(n - base) < 1e-9) delete store[field];
-  else { store[field] = n; delete store[MINUTES_PAIR[field]]; }
+  else { store[field] = n; for (const k of MINUTES_CLEARS[field] || []) delete store[k]; }
   const tidied = tidy(store);
   if (Object.keys(tidied).length) S.edits[id] = tidied;
   else delete S.edits[id];
@@ -3175,12 +3179,18 @@ async function sendAsk(question) {
    in — the season-level buffer, or one gameweek's — so the same code renders
    both and they cannot drift in behaviour. `idPrefix` keeps element ids unique
    once the same field appears twelve times over. */
-/* p_start and exp_minutes are two views of one assumption -- the model derives
-   whichever you did not set from the one you did, and exp_minutes wins if both
-   are present. Leaving both stored would show two sliders as "changed" while
-   only one of them is actually shaping the score, so setting one here drops
-   the other from the same store. */
-const MINUTES_PAIR = { p_start: "exp_minutes", exp_minutes: "p_start" };
+/* How often he starts, how long he stays on, and the two multiplied out.
+   p_start and mins_if_start are genuinely independent -- that is the point of
+   having both -- but exp_minutes is their product, so it cannot be stated
+   alongside either without one of them quietly losing. Setting a component
+   clears the aggregate; setting the aggregate clears both components and lets
+   the solve decide where the minutes came from. Leaving them all stored would
+   show three sliders as "changed" while only some of them shape the score. */
+const MINUTES_CLEARS = {
+  p_start: ["exp_minutes"],
+  mins_if_start: ["exp_minutes"],
+  exp_minutes: ["p_start", "mins_if_start"],
+};
 
 function renderField(box, f, base, store, idPrefix, onChange, hint = "", prevSeason) {
   const value = store[f.k] !== undefined ? store[f.k] : base;
@@ -3211,7 +3221,7 @@ function renderField(box, f, base, store, idPrefix, onChange, hint = "", prevSea
     const n = Math.min(f.max, Math.max(f.min, +v));
     range.value = n; num.value = n.toFixed(f.dp);
     if (Math.abs(n - base) < 1e-9) delete store[f.k];
-    else { store[f.k] = n; delete store[MINUTES_PAIR[f.k]]; }
+    else { store[f.k] = n; for (const k of MINUTES_CLEARS[f.k] || []) delete store[k]; }
     div.classList.toggle("changed", Math.abs(n - base) > 1e-9);
     onChange();
   };
@@ -3231,8 +3241,10 @@ const REBALANCED_FIELD = "p_start";
 // exp_minutes moves with p_start under a rebalance -- it is derived from it,
 // not an independent consequence -- so the edit tab has to open on the same
 // pair the squad view already shows or the two disagree about a player
-// neither the user nor the board ever asked to look different.
-const REBALANCED_FIELDS = new Set([REBALANCED_FIELD, MINUTES_PAIR[REBALANCED_FIELD]]);
+// neither the user nor the board ever asked to look different. mins_if_start
+// is not on the list: a rebalance redistributes shirts, not shift lengths, and
+// it leaves that field exactly where it found it.
+const REBALANCED_FIELDS = new Set([REBALANCED_FIELD, "exp_minutes"]);
 
 /** The overrides this player is actually being scored with: yours, plus the
  *  start probability his club's books owe him. `renormaliseMinutes` produced it;
@@ -3362,7 +3374,7 @@ function renderMatches() {
         const n = +e.target.value;
         out.textContent = n.toFixed(2);
         if (Math.abs(n - base) < 1e-9) delete store.p_start;
-        else { store.p_start = n; delete store.exp_minutes; }
+        else { store.p_start = n; for (const k of MINUTES_CLEARS.p_start) delete store[k]; }
         commit();
         // exp_minutes lives in the collapsible extra fields, not this inline
         // row -- if it was showing "changed" it just went stale, so refresh it.
