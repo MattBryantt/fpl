@@ -3214,6 +3214,11 @@ function renderField(box, f, base, store, idPrefix, onChange, hint = "", prevSea
    reading 0.49 is the board contradicting itself about the number that matters
    most. */
 const REBALANCED_FIELD = "p_start";
+// exp_minutes moves with p_start under a rebalance -- it is derived from it,
+// not an independent consequence -- so the edit tab has to open on the same
+// pair the squad view already shows or the two disagree about a player
+// neither the user nor the board ever asked to look different.
+const REBALANCED_FIELDS = new Set([REBALANCED_FIELD, MINUTES_PAIR[REBALANCED_FIELD]]);
 
 /** The overrides this player is actually being scored with: yours, plus the
  *  start probability his club's books owe him. `renormaliseMinutes` produced it;
@@ -3255,7 +3260,7 @@ function editableFields(player) {
     // says where it came from.
     const prevSeason = player.raw_inputs?.[f.k];
     const form = f.k === "p_start" ? startFormHint(player) : "";
-    if (f.k === REBALANCED_FIELD && player.adjusted) {
+    if (REBALANCED_FIELDS.has(f.k) && player.adjusted) {
       const hint = [`rebalanced from ${base.toFixed(f.dp)}`, form].filter(Boolean).join(" · ");
       out.push({ f, base: player[f.k], hint });
       continue;
