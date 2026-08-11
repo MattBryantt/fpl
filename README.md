@@ -411,22 +411,21 @@ exactly as it did before this existed.
 
 ### Using it from a phone, with the laptop off
 
-Still supported, and still the right answer if you would rather nothing left the
-house. The board installs to a phone's home screen and works with nothing behind
-it — no signal, no server, laptop shut. Picking a squad, editing a player's
-inputs and re-solving the optimiser all happen on the device.
+The board installs to a phone's home screen and works with nothing behind it —
+no signal, no server, laptop shut. Picking a squad, editing a player's inputs
+and re-solving the optimiser all happen on the device.
 
-```bash
-./scripts/setup-phone-access.sh
-```
+Open the Cloudflare URL once, **Share → Add to Home Screen**, and let it finish
+loading. That one load is the install. It caches the app shell, the 3.3 MB WASM
+solver and the current projection; after it, the link is only needed when you
+want fresher numbers.
 
-It walks through Tailscale, installs a launchd agent so the board is up whenever
-the Mac is, and points a tailnet-only HTTPS hostname at it. Then on the phone:
-open the link once, **Share → Add to Home Screen**, and let it finish loading.
-
-That one load is the install. It caches the app shell, the 3.3 MB WASM solver
-and the current projection; after it, the link is only needed when you want
-fresher numbers.
+This used to mean a Mac kept awake and reachable over Tailscale — `scripts/
+setup-phone-access.sh` installed a launchd agent for exactly that. Once the
+board became a static build (above), that machinery had nothing left to do:
+the permanent Cloudflare URL and the `/api/sync` route are the phone's only
+dependency now, so the launchd agent, its plist and the setup script were
+retired.
 
 **What works offline** — the whole board, except the two things that are the
 projection rather than a view of it:
@@ -473,39 +472,6 @@ puts every knob back; it never touches your squad, drafts or edits.
 | HiGHS WASM solver | 3.3 MB, cached once |
 | Full re-solve on the phone | 0.1–2 s, in a worker so the page stays live |
 | Horizon or half-life change | a few ms, no network |
-
-#### The security position
-
-The board has write endpoints: it saves drafts, writes a CSV to disk, and can
-force a refetch that spends your Odds API quota. So it will not listen beyond
-this machine without a token:
-
-```bash
-python fpl.py serve --lan
-```
-
-That binds every interface, generates a token if you haven't set one, prints a
-link with the token embedded and a **scannable QR code** for the phone. The
-token is required on every request; the page moves it out of the URL into
-`sessionStorage` on first load so it stops showing in the address bar, history
-and screenshots. Set your own with `--token` or `FPL_TOKEN`.
-
-`--lan` alone only covers the same network. For reaching it from anywhere, in
-order of preference:
-
-| Approach | How it works | Verdict |
-| --- | --- | --- |
-| **Tailscale** | phone and Mac join one private WireGuard network; `tailscale serve` gives the Mac a stable HTTPS hostname | **Recommended, and what the setup script does.** Nothing is exposed publicly, no domain to buy, free for personal use. The board binds loopback, so there is no port for anything else to find |
-| **Cloudflare Tunnel + Access** | `cloudflared` dials out; Access gates the hostname behind your SSO | Good if you want a URL you'd type — but Access needs a domain you own on Cloudflare, so it is not free unless you already have one |
-| **ngrok / quick tunnels** | outbound tunnel, public URL | The URL changes on every restart, which defeats installing to a home screen. Keep the token on |
-| **Port forwarding on your router** | expose the port to the internet | **Don't.** A token on plain HTTP over the open internet is a bad trade, and you'd be publishing a write-capable service on your home network |
-
-Because the phone caches everything, the Mac no longer has to stay awake — which
-is why `scripts/board-agent.sh` deliberately does *not* hold a sleep assertion
-any more. It serves when the Mac happens to be up; the phone does not care.
-
-`--insecure` exists to turn the token off, and is only sensible behind a tunnel
-that does its own authentication, or on loopback behind Tailscale.
 
 ### Drafts
 
