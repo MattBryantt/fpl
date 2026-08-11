@@ -3497,7 +3497,7 @@ async function undoEdit() {
    that produced it in the first place. There is no second "recompute one
    player" route that could disagree with the first — which is exactly how the
    server version came to show one number and hand the optimiser another. */
-function recomputeEdited(ids, { solveDelay = 0 } = {}) {
+function recomputeEdited(ids, { solveDelay = 0, sync = true } = {}) {
   const failed = [];
   for (const id of ids) {
     const fields = S.edits[id];
@@ -3511,7 +3511,15 @@ function recomputeEdited(ids, { solveDelay = 0 } = {}) {
       delete S.edits[id];
     }
   }
-  saveEdits();
+  // sync: false is for edits just adopted from a pullSyncState() pull -- they
+  // came from another device's push, so writing them back to localStorage is
+  // right, but re-marking them via markSynced() would re-timestamp them with
+  // this device's clock and immediately push them straight back out, which
+  // both is a pointless round trip and -- if this device's checkOverridable
+  // above dropped one on a stale/mismatched local snapshot -- would broadcast
+  // that smaller set as authoritative and erase the edit for everyone.
+  if (sync) saveEdits();
+  else { saveLocal(STORE.edits, S.edits); pushOverrides(); }
   rebuildPool();
   if (failed.length) {
     alert("These edits were rejected and have been dropped:\n\n" + failed.join("\n"));
@@ -3741,7 +3749,7 @@ async function pullSyncState() {
     saveLocal(STORE.squad, S.squad);
     if (remote.settings) applySyncedSettings(remote.settings);
     setSyncMeta({ updated_at: remote.updated_at });
-    await recomputeEdited(Object.keys(S.edits).map(Number));
+    await recomputeEdited(Object.keys(S.edits).map(Number), { sync: false });
     renderAll();
   } catch (_) { /* offline, or the Worker's KV is empty on a fresh setup */ }
 }

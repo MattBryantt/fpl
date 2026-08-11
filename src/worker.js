@@ -82,6 +82,18 @@ async function handleSync(request, env) {
     // would need to agree on drift, and they never will. What each client
     // needs is a number it recognises as its own, so it can tell "this is
     // what I sent" from "this is newer than what I sent" on the next pull.
+    //
+    // That comparison has to happen here too, not just on the client's pull:
+    // two devices can push within the same round trip, and the network is
+    // free to deliver them out of order. Without this check, a push that left
+    // a client earlier but arrives here later would win outright and silently
+    // erase a newer edit -- exactly the kind of loss this endpoint exists to
+    // prevent.
+    const existing = await env.FPL_STATE.get(STATE_KEY, "json");
+    if (existing && typeof existing.updated_at === "number" && existing.updated_at >= body.updated_at) {
+      return json({ ok: true, stale: true, updated_at: existing.updated_at });
+    }
+
     const record = {
       updated_at: body.updated_at,
       drafts: Array.isArray(body.drafts) ? body.drafts : [],
