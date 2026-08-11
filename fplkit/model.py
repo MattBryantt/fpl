@@ -119,6 +119,20 @@ SUBS_PER_MATCH = 6.0
 # weight faster.
 START_PRIOR_MINUTES = 700.0
 
+# A blended figure that is already low is more likely to describe a player who
+# simply does not feature for a run of matches than one who plays a token ten
+# minutes in every game -- real fringe involvement is lumpy, not a smooth
+# trickle. Below this share, and only while there is not yet enough of this
+# player's own evidence to say otherwise (see `weight` in minutes_model), both
+# his start and sub chances are pulled further toward nothing.
+FRINGE_SHARE = 0.15
+# How much of that pull is applied at the extreme -- no evidence at all
+# (weight 0) and no involvement at all (blended 0). Established evidence turns
+# this off entirely regardless of the constant, which is why it can afford to
+# be this aggressive: a player who demonstrably does get used off the bench
+# every week is not touched by it.
+FRINGE_COLLAPSE_STRENGTH = 0.85
+
 # --- Start form: why a season-long start rate is the wrong number -------------
 # A start rate over a season answers "what share of matches did he start". The
 # question actually being asked is "does he start the next one", and those come
@@ -638,6 +652,18 @@ def minutes_model(players: pd.DataFrame,
 
     blended = tilted * df["availability"]
     blended_sub = (weight * raw_sub + (1 - weight) * prior_share) * df["availability"]
+
+    # Fringe collapse. See FRINGE_SHARE: a player already projected low, with
+    # not much of his own evidence behind that projection, is pulled further
+    # toward nothing rather than left as a smooth trickle across every fixture.
+    # `_normalise_to` below then redistributes what he gave up to the rest of
+    # his club the same way any other shortfall is redistributed, so this is a
+    # reallocation within the group, not extra minutes invented or destroyed.
+    involvement = blended + (1 - blended) * blended_sub
+    thin = (1 - weight).clip(0.0, 1.0)
+    fringe_pull = thin * FRINGE_COLLAPSE_STRENGTH * (1 - involvement / FRINGE_SHARE).clip(0.0, 1.0)
+    blended = blended * (1 - fringe_pull)
+    blended_sub = blended_sub * (1 - fringe_pull)
 
     df["p_start"] = _normalise_to(blended, df, {True: 1.0, False: float(XI_OUTFIELD)})
     # Kept on the frame so the board can redo this blend at a different horizon
