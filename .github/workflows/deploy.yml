@@ -111,3 +111,8 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
+          # Pinned rather than left to the action's default: 3.90.0 predates
+          # Wrangler learning to auto-load wrangler.jsonc (it only knew
+          # wrangler.toml), so it silently found no config at all and reported
+          # a missing entry-point instead of a missing file.
+          wranglerVersion: "4"
