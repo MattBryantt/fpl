@@ -793,6 +793,7 @@ def cmd_build(args) -> None:
     console.print(f"[dim]{counts['pages']} pages · {counts['assets']} assets · "
                   f"{counts['shirts']} shirts · {counts['players']} players over "
                   f"{counts['gameweeks']} gameweeks[/dim]")
+    console.print(f"[dim]shell: {counts['shell_version']}[/dim]")
     console.print("[dim]serve it with any static host, or check it locally:\n"
                   f"  python -m http.server -d {out} 8001[/dim]")
 

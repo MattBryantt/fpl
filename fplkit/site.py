@@ -20,7 +20,9 @@ for the endpoints and hides the controls that need them.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -111,7 +113,42 @@ def _headers_file(out: Path) -> None:
         "  Cache-Control: public, max-age=31536000\n", encoding="utf-8")
 
 
-def build(out_dir: Path, snapshot_path: Path) -> dict[str, int]:
+def _shell_version() -> str:
+    """A short hash of everything the service worker caches cache-first.
+
+    `SHELL_VERSION` used to be a hand-bumped counter in sw.js, and it drifted
+    both ways: a shell change shipped with the old cache still live (2b4a7a5),
+    and there is no way to tell from the diff alone whether a change *needed*
+    a bump. Deriving it from the actual bytes removes the judgement call --
+    the version changes exactly when, and only when, a cached file does.
+    """
+    digest = hashlib.sha256()
+    files = [WEB_DIR / "index.html", WEB_DIR / "manifest.webmanifest", WEB_DIR / "icon.png"]
+    files += [WEB_DIR / name for name in sorted(ASSETS)]
+    for path in files:
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:12]
+
+
+def _write_service_worker(out: Path) -> str:
+    """Stamp the computed shell version into sw.js on the way to `out`.
+
+    The source file keeps a literal placeholder -- `fpl.py serve` reads it
+    unstamped, which is fine, since local dev never needs the cache-busting a
+    hash provides. Only the built copy, the one an installed phone actually
+    runs, carries the real version.
+    """
+    text = (WEB_DIR / "sw.js").read_text(encoding="utf-8")
+    version = f"fpl-shell-{_shell_version()}"
+    text, count = re.subn(r'const SHELL_VERSION = "[^"]*";',
+                           f'const SHELL_VERSION = "{version}";', text, count=1)
+    if count != 1:
+        raise RuntimeError("sw.js: could not find SHELL_VERSION to stamp")
+    (out / "sw.js").write_text(text, encoding="utf-8")
+    return version
+
+
+def build(out_dir: Path, snapshot_path: Path) -> dict[str, int | str]:
     """Write the whole board to `out_dir`. Returns a count of what was written."""
     out = Path(out_dir)
     if out.exists():
@@ -124,7 +161,10 @@ def build(out_dir: Path, snapshot_path: Path) -> dict[str, int]:
         shutil.copy2(WEB_DIR / source, target)
 
     for name in ROOT_FILES:
+        if name == "sw.js":
+            continue
         shutil.copy2(WEB_DIR / name, out / name)
+    shell_version = _write_service_worker(out)
 
     assets = out / "assets"
     for name in ASSETS:
@@ -138,6 +178,7 @@ def build(out_dir: Path, snapshot_path: Path) -> dict[str, int]:
 
     _headers_file(out)
     return {
+        "shell_version": shell_version,
         "pages": len(PAGES),
         "assets": len(ASSETS),
         "shirts": shirts,
