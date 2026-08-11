@@ -15,10 +15,12 @@
  * replayed one would be a lie.
  */
 
-// Bump whenever the shell changes. The shell is served cache-first, so an
-// installed phone keeps whatever it already has until this string moves --
-// which is the point on a train and a silent way to ship nothing otherwise.
-const SHELL_VERSION = "fpl-shell-v8";
+// Stamped by `python fpl.py build` (site.py: _write_service_worker) with a
+// hash of the shell files, so a built copy always carries the right version
+// without anyone having to remember to bump it. This literal only shows up
+// when serving straight from source (`fpl.py serve`), where a stale shell
+// cache was never the failure mode a hash needed to guard against.
+const SHELL_VERSION = "fpl-shell-dev";
 const DATA_CACHE = "fpl-data-v1";
 // Club shirts, kept apart from the shell: they are fetched as the pitch meets
 // each club rather than listed up front, and they outlive a shell version --

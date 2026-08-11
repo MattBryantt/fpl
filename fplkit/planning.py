@@ -56,10 +56,6 @@ DOUBTFUL_HAZARD_MULTIPLIER = 2.0
 FALL_OWNERSHIP_AMPLIFIER = 1.5
 RISE_OWNERSHIP_DAMPING = 0.5
 
-# Chip windows come straight from the API's `chips` block, but these are the
-# defaults if it cannot be read.
-FIRST_HALF_END = 19
-
 
 @dataclass
 class Plan:
@@ -71,7 +67,6 @@ class Plan:
     windows: pd.DataFrame  # runs of bad fixtures worth banking a transfer for
     exposure: pd.DataFrame  # high-ownership players not owned
     coverage: dict  # share of the field's expected points the squad covers
-    chips: pd.DataFrame  # suggested chip timing
     core: pd.DataFrame  # players the plan keeps at every horizon
     horizon: list[int]
     half_life: float | None  # None = no decay: every gameweek at full value
@@ -517,134 +512,17 @@ def sell_windows(timeline: pd.DataFrame, gameweeks: list[int],
 # --------------------------------------------------------------------------- #
 # Chips
 # --------------------------------------------------------------------------- #
-
-def chip_advice(squad: Squad, players: pd.DataFrame, raw: pd.DataFrame,
-                counts: pd.DataFrame, chip_windows: dict[str, tuple[int, int]],
-                ) -> pd.DataFrame:
-    """Where in the horizon each chip looks best, and how confident that is.
-
-    Chip timing is mostly decided by double and blank gameweeks, which the
-    fixture list does not know about until the cup rounds are drawn and games
-    get postponed. Early in the season every team plays exactly once every
-    gameweek, so these recommendations carry very little signal -- they are
-    marked accordingly rather than dressed up.
-    """
-    squad_ids = list(squad.players["fpl_id"])
-    gameweeks = [gw for gw in raw.columns]
-    positions = players.set_index("fpl_id")["pos"]
-    names = players.set_index("fpl_id")["web_name"]
-    teams = players.set_index("fpl_id")["team"]
-
-    doubles = {gw: sorted(counts.index[counts[gw] >= 2]) for gw in gameweeks}
-    blanks = {gw: sorted(counts.index[counts[gw] == 0]) for gw in gameweeks}
-    any_variation = any(doubles[gw] or blanks[gw] for gw in gameweeks)
-
-    rows = []
-
-    def in_window(chip: str, gw: int) -> bool:
-        start, stop = chip_windows.get(chip, (1, 38))
-        return start <= gw <= stop
-
-    # Triple captain: the single biggest one-player gameweek.
-    best_gw, best_id, best_value = None, None, -1.0
-    for gw in gameweeks:
-        if not in_window("3xc", gw):
-            continue
-        column = raw.loc[raw.index.intersection(squad_ids), gw]
-        if column.empty:
-            continue
-        if column.max() > best_value:
-            best_value, best_id, best_gw = float(column.max()), column.idxmax(), gw
-    if best_gw:
-        rows.append({
-            "chip": "Triple Captain", "gw": best_gw,
-            "detail": f"{names[best_id]} ({best_value:.1f} xPts)",
-            "confidence": "medium" if doubles.get(best_gw) else "low",
-        })
-
-    # Bench boost: the gameweek where the four bench players score most.
-    bench_ids = list(squad.bench["fpl_id"])
-    best_gw, best_value = None, -1.0
-    for gw in gameweeks:
-        if not in_window("bboost", gw):
-            continue
-        value = float(raw.loc[raw.index.intersection(bench_ids), gw].sum())
-        if value > best_value:
-            best_value, best_gw = value, gw
-    if best_gw:
-        rows.append({
-            "chip": "Bench Boost", "gw": best_gw,
-            "detail": f"bench projects {best_value:.1f} xPts",
-            "confidence": "medium" if doubles.get(best_gw) else "low",
-        })
-
-    # Free hit: the gameweek where most of the squad has no fixture.
-    best_gw, worst_available = None, XI_SIZE + 1
-    for gw in gameweeks:
-        if not in_window("freehit", gw):
-            continue
-        playing = sum(counts.loc[teams[i], gw] > 0 for i in squad_ids
-                      if teams[i] in counts.index)
-        if playing < worst_available:
-            worst_available, best_gw = playing, gw
-    if best_gw and worst_available < len(squad_ids):
-        rows.append({
-            "chip": "Free Hit", "gw": best_gw,
-            "detail": f"only {worst_available}/15 have a fixture",
-            "confidence": "medium",
-        })
-
-    # Wildcard: where the squad drifts furthest from what you would pick fresh.
-    best_gw, worst_gap = None, -1.0
-    for gw in gameweeks:
-        if not in_window("wildcard", gw):
-            continue
-        held = squad_points_by_gw(squad_ids, players, raw[[gw]], captain=False).iloc[0]
-
-        # The benchmark is the best legal XI available anywhere in the league
-        # that gameweek, ignoring budget. Both sides of the comparison have to
-        # be an XI for the gap to mean anything.
-        ranked = {
-            position: raw.loc[[i for i in raw.index if positions.get(i) == position],
-                              gw].nlargest(XI_MAX_BY_POS.get(position, 5)).to_numpy()
-            for position in ("GKP", "DEF", "MID", "FWD")
-        }
-        ideal = 0.0
-        for defenders, midfielders, forwards in FORMATIONS:
-            if (ranked["GKP"].size < 1 or ranked["DEF"].size < defenders
-                    or ranked["MID"].size < midfielders
-                    or ranked["FWD"].size < forwards):
-                continue
-            ideal = max(ideal, float(ranked["GKP"][0]
-                                     + ranked["DEF"][:defenders].sum()
-                                     + ranked["MID"][:midfielders].sum()
-                                     + ranked["FWD"][:forwards].sum()))
-        gap = ideal - held
-        if gap > worst_gap:
-            worst_gap, best_gw = gap, gw
-    if best_gw:
-        rows.append({
-            "chip": "Wildcard", "gw": best_gw,
-            "detail": "largest gap to a freshly picked squad",
-            "confidence": "low",
-        })
-
-    chips = pd.DataFrame(rows)
-
-    # Chip value comes overwhelmingly from double gameweeks and from covering
-    # blanks, and neither exists on the calendar until cup rounds are drawn and
-    # games are postponed. With a flat fixture list the "best" gameweek for a
-    # chip is whichever one noise favours, so say nothing rather than dress that
-    # up as a recommendation. The first-half set does not expire until GW19,
-    # which is a long time to wait for real information.
-    if not chips.empty and not any_variation:
-        window_end = min((stop for _, stop in chip_windows.values()), default=FIRST_HALF_END)
-        chips["gw"] = pd.NA
-        chips["detail"] = ("hold — no doubles or blanks scheduled in this window; "
-                           f"the first-half set does not expire until GW{window_end}")
-        chips["confidence"] = "n/a (nothing to time against yet)"
-    return chips
-
+#
+# Chip timing used to be decided here, by four independent heuristics: the
+# biggest single-player gameweek for the triple captain, the best bench week for
+# the bench boost, and so on. Each of them answered "when in this window?" and
+# none of them could answer "is any week in this window good enough to spend the
+# chip on?", which is the question that decides whether you play it at all.
+#
+# That question needs the transfers alongside it -- a bench boost is only worth
+# playing if the bench is worth fielding, and the bench is a transfer decision
+# taken weeks earlier -- so it now lives in `transfers.plan_transfers`, which
+# solves both together against the real rules. See that module for why.
 
 # --------------------------------------------------------------------------- #
 # Horizon sensitivity
@@ -697,7 +575,6 @@ def horizon_sensitivity(projection: Projection, budget: float, bench_weight: flo
 def build_plan(projection: Projection, budget: float, bench_weight: float,
                min_minutes_prob: float,
                half_life: float | None = DEFAULT_HALF_LIFE,
-               chip_windows: dict[str, tuple[int, int]] | None = None,
                total_managers: int = 0, include: list[int] | None = None,
                exclude: list[int] | None = None,
                ownership_weight: float = 0.0) -> Plan:
@@ -722,9 +599,6 @@ def build_plan(projection: Projection, budget: float, bench_weight: float,
         bool(projection.fixtures.loc[projection.fixtures["gw"] == gw, "has_odds"].any())
         for gw in raw.columns
     ]
-
-    counts = fixture_counts(projection)
-    chips = chip_advice(squad, players, raw, counts, chip_windows or {})
 
     lineups = gw_lineups(squad_ids, players, raw)
     timeline = fixture_timeline(squad_ids, players, raw, projection)
@@ -760,5 +634,5 @@ def build_plan(projection: Projection, budget: float, bench_weight: float,
 
     return Plan(squad=squad, players=players, per_gw=per_gw, lineups=lineups,
                 timeline=timeline, windows=windows, exposure=exposure, coverage=cover,
-                chips=chips, core=core, horizon=list(raw.columns),
+                core=core, horizon=list(raw.columns),
                 half_life=half_life, bank=bank, notes=notes)

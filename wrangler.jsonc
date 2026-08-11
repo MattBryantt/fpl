@@ -1,0 +1,49 @@
+{
+  // The board, as a Worker that serves a directory of static files plus one
+  // small script for the one thing static files cannot do: hold state two
+  // devices both need to see.
+  //
+  // Workers rather than Pages, though both would work, both are free, and both
+  // can bind KV. Cloudflare's own guidance since Workers gained native
+  // static-asset serving is to start new projects here -- Pages is supported
+  // but no longer where the work is going.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fpl-board",
+  "compatibility_date": "2026-08-10",
+  // Not needed by src/worker.js today, but saves a surprise later: /api/ask
+  // will be a Worker route too, and a proxy to an LLM endpoint tends to pull
+  // in something that expects Node builtins.
+  "compatibility_flags": ["nodejs_compat"],
+
+  "main": "src/worker.js",
+
+  "assets": {
+    // Written by `python fpl.py build --out dist`.
+    "directory": "dist",
+    // Only /api/* invokes src/worker.js at all -- everything else (the shell,
+    // the WASM solver, the snapshot, the shirts) is served straight from this
+    // binding without the script running, which is what keeps a board that is
+    // mostly static actually free to run. /api/ask lands in the same list
+    // when it is ported.
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+
+  // The one piece of state two devices both need: drafts, edits, squad. See
+  // src/worker.js. Free tier is 100k reads/day and 1k writes/day -- a
+  // personal board pushing on every edit does not come close.
+  "kv_namespaces": [
+    {
+      "binding": "FPL_STATE",
+      "id": "150fab35200a4cd7aa313b87cfd4fdf6"
+    }
+  ],
+
+  // Cache-Control per path is in dist/_headers, written by fplkit/site.py --
+  // it has to travel with the build rather than live here, because the rule
+  // that matters (never cache sw.js or snapshot.json) is a property of what the
+  // board is, not of where it happens to be deployed.
+  "observability": {
+    "enabled": true
+  }
+}

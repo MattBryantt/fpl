@@ -119,6 +119,66 @@ SUBS_PER_MATCH = 6.0
 # weight faster.
 START_PRIOR_MINUTES = 700.0
 
+# A blended figure that is already low is more likely to describe a player who
+# simply does not feature for a run of matches than one who plays a token ten
+# minutes in every game -- real fringe involvement is lumpy, not a smooth
+# trickle. Below this share, and only while there is not yet enough of this
+# player's own evidence to say otherwise (see `weight` in minutes_model), both
+# his start and sub chances are pulled further toward nothing.
+FRINGE_SHARE = 0.15
+# How much of that pull is applied at the extreme -- no evidence at all
+# (weight 0) and no involvement at all (blended 0). Established evidence turns
+# this off entirely regardless of the constant, which is why it can afford to
+# be this aggressive: a player who demonstrably does get used off the bench
+# every week is not touched by it.
+FRINGE_COLLAPSE_STRENGTH = 0.85
+
+# --- Start form: why a season-long start rate is the wrong number -------------
+# A start rate over a season answers "what share of matches did he start". The
+# question actually being asked is "does he start the next one", and those come
+# apart for anyone whose situation changed inside the season. The season rate
+# reads a man who missed August to October injured and has started every match
+# since as a 0.6 starter. He is not one. He is a 0.95 starter with a bad autumn
+# behind him, and next Saturday is the only match the plan is about.
+#
+# So the model carries two numbers and blends them by *how far ahead it is
+# looking*: the long-run rate, and a recency-weighted one from the per-gameweek
+# archive. All three constants below were fitted out of sample on 2025-26 --
+# every prediction for gameweek t built only from gameweeks before t -- by
+# searching, at each lead k, for the blend weight w that minimised Brier score
+# against what actually happened. See scripts/calibrate-start-form.py.
+#
+#     lead k    best w    Brier(blend)   Brier(flat)   improvement
+#        1       1.09        0.10184        0.11622        12.4%
+#        2       0.82        0.11452        0.12254         6.5%
+#        3       0.63        0.12227        0.12704         3.8%
+#        4       0.51        0.12796        0.13101         2.3%
+#        5       0.42        0.13282        0.13481         1.5%
+#        6       0.36        0.13666        0.13811         1.1%
+#        7       0.32        0.14002        0.14111         0.8%
+#        8       0.29        0.14309        0.14398         0.6%
+#
+# Two things in that table are the whole feature. The blend beats the flat rate
+# at *every* lead, so this is not a trade of near accuracy for far accuracy. And
+# w decays geometrically -- 1.09 down to 0.29, a ratio of 0.828 per gameweek --
+# which is the measured version of the intuition that a nailed starter is more
+# obviously nailed next week than he is in two months.
+START_FORM_HALF_LIFE = 4.0
+START_FORM_WEIGHT = 1.09    # weight on the recent rate one gameweek out
+START_FORM_DECAY = 0.828    # ...falling by this much per gameweek of lead
+# w above 1 is not a typo: the fit wants the recent rate *extrapolated past*,
+# because a run of starts is a slightly under-confident signal of a settled
+# place. Capped so an extrapolation cannot invert the two numbers it sits
+# between, which is what an unbounded w would do to a player whose recent rate
+# is far below his long-run one.
+MAX_START_FORM_WEIGHT = 1.25
+# How many weighted recent matches it takes before the recent rate is believed
+# over the long-run one. Small, because the evidence is already recency-weighted
+# and a player with three recent matches behind him has genuinely told you
+# something -- but not zero, or one substitute appearance in a blank fortnight
+# would rewrite a season.
+START_FORM_PRIOR_MATCHES = 3.0
+
 # Ceiling on the per-club correction. A squad the data barely knows would
 # otherwise have its two familiar players multiplied into superstars -- a worse
 # error than the under-fielding being corrected.
@@ -465,9 +525,32 @@ def _start_prior(df: pd.DataFrame) -> pd.Series:
     return ((df["price"] - floor) + 0.5) ** 2
 
 
+def start_form_weight(horizon: int) -> float:
+    """How much of the recent start rate survives, averaged over the horizon.
+
+    The fitted weight applies to one lead at a time: w_k = W * DECAY^(k-1). A
+    projection totals `horizon` gameweeks and reports one number per player, so
+    the weight it should carry is the mean of that curve over the leads it
+    actually covers -- the closed form of which is the geometric series below.
+
+    That is what makes the horizon control do the right thing without anyone
+    having to think about it. Ask for one gameweek and you get w = 1.10, and the
+    board fills with the players who are starting *now*. Ask for twelve and you
+    get w = 0.40, because who starts in April is a question the last four
+    gameweeks cannot answer, and the season-long rate is the better guess.
+    """
+    n = max(1, int(horizon))
+    if START_FORM_DECAY >= 1.0:
+        mean_decay = 1.0
+    else:
+        mean_decay = (1 - START_FORM_DECAY ** n) / (n * (1 - START_FORM_DECAY))
+    return float(min(MAX_START_FORM_WEIGHT, START_FORM_WEIGHT * mean_decay))
+
+
 def minutes_model(players: pd.DataFrame,
                   overrides: pd.DataFrame | None = None,
-                  basis: SeasonBasis | None = None) -> pd.DataFrame:
+                  basis: SeasonBasis | None = None,
+                  horizon: int = 1) -> pd.DataFrame:
     """Probability of starting, of appearing, of reaching 60 minutes.
 
     Derived from the starts and minutes the FPL API is currently serving --
@@ -538,10 +621,56 @@ def minutes_model(players: pd.DataFrame,
     prior_start = (prior_share * np.where(df["is_keeper"], 1.0, XI_OUTFIELD)).clip(
         upper=MAX_P_START)
 
-    blended = (weight * raw_start + (1 - weight) * prior_start) * df["availability"]
+    long_run = weight * raw_start + (1 - weight) * prior_start
+
+    # Then tilt toward who has been starting lately, by how far ahead we are
+    # looking. Two shrinkages guard it: the recent rate is itself pulled back
+    # toward the long-run one by how many recent matches stand behind it, and
+    # the horizon weight decays the whole correction away as the plan lengthens.
+    # A player the archive has never heard of has recent_matches 0, which makes
+    # both terms vanish and leaves him exactly where the long-run rate put him.
+    # `.get` on a missing column returns None, not an empty Series, and
+    # pd.to_numeric(None) is a bare nan -- so the column has to be tested for
+    # before it is converted, or a frame without the archive raises here.
+    if "recent_start_rate" not in df:
+        tilted = long_run
+        recent = long_run
+    else:
+        recent = pd.to_numeric(df["recent_start_rate"], errors="coerce")
+        recent_matches = pd.to_numeric(
+            df.get("recent_matches", pd.Series(0.0, index=df.index)), errors="coerce")
+        recent = recent.fillna(long_run)
+        recent_matches = recent_matches.fillna(0.0).clip(lower=0.0)
+        believed = recent_matches / (recent_matches + START_FORM_PRIOR_MATCHES)
+        recent = long_run + believed * (recent - long_run)
+        tilted = long_run + start_form_weight(horizon) * (recent - long_run)
+
+    # Clipped before availability rather than after: the extrapolation above can
+    # land outside [0, 1], and a negative share would come back through
+    # normalisation as a club owing starts to its own bench.
+    tilted = tilted.clip(0.0, 1.0)
+
+    blended = tilted * df["availability"]
     blended_sub = (weight * raw_sub + (1 - weight) * prior_share) * df["availability"]
 
+    # Fringe collapse. See FRINGE_SHARE: a player already projected low, with
+    # not much of his own evidence behind that projection, is pulled further
+    # toward nothing rather than left as a smooth trickle across every fixture.
+    # `_normalise_to` below then redistributes what he gave up to the rest of
+    # his club the same way any other shortfall is redistributed, so this is a
+    # reallocation within the group, not extra minutes invented or destroyed.
+    involvement = blended + (1 - blended) * blended_sub
+    thin = (1 - weight).clip(0.0, 1.0)
+    fringe_pull = thin * FRINGE_COLLAPSE_STRENGTH * (1 - involvement / FRINGE_SHARE).clip(0.0, 1.0)
+    blended = blended * (1 - fringe_pull)
+    blended_sub = blended_sub * (1 - fringe_pull)
+
     df["p_start"] = _normalise_to(blended, df, {True: 1.0, False: float(XI_OUTFIELD)})
+    # Kept on the frame so the board can redo this blend at a different horizon
+    # without the laptop: the browser has p_start at the snapshot's horizon, and
+    # these two are what let it recompute one for any other.
+    df["start_long_run"] = long_run.clip(0.0, 1.0)
+    df["start_recent"] = recent.clip(0.0, 1.0)
 
     # Six substitute appearances per club per match: 11 starters x 78 minutes
     # leaves 132 of the 990 a team plays, and 132/22 is six. Keepers are excluded
@@ -769,6 +898,23 @@ OVERRIDABLE = {
 }
 
 
+def _p_start_from_exp_minutes(exp_minutes: float, p_sub: float) -> float:
+    """Invert the forward minutes formula to recover p_start from exp_minutes.
+
+    exp_minutes = p_start*ASSUMED_START_MINUTES + (1-p_start)*p_sub*ASSUMED_SUB_MINUTES
+    solved for p_start. The naive shortcut (p_start = exp_minutes /
+    ASSUMED_START_MINUTES) ignores the player's own sub-appearance rate and
+    saturates at 1.0 for anything above 78 minutes, both of which fight the
+    forward formula: a real player's exp_minutes never even reaches 78 unless
+    p_start is already 1.0, so 90 read back through the shortcut always claimed
+    certainty. Clipped to MAX_P_START rather than 1.0 to match the ceiling
+    every other minutes path in this file uses -- nobody is nailed on beyond it.
+    """
+    denom = ASSUMED_START_MINUTES - p_sub * ASSUMED_SUB_MINUTES
+    p_start = (exp_minutes - p_sub * ASSUMED_SUB_MINUTES) / denom
+    return float(np.clip(p_start, 0.0, MAX_P_START))
+
+
 def _recompute_minutes(df: pd.DataFrame, mask) -> None:
     """Keep the minutes family consistent after p_start or exp_minutes moves.
 
@@ -823,7 +969,7 @@ def apply_fields(player: Mapping[str, Any], fields: Mapping[str, Any]) -> dict:
         if field == "p_start":
             minutes_touched = True
         elif field == "exp_minutes":
-            out["p_start"] = float(np.clip(out["exp_minutes"] / ASSUMED_START_MINUTES, 0.0, 1.0))
+            out["p_start"] = _p_start_from_exp_minutes(out["exp_minutes"], float(out["p_sub"]))
             minutes_touched = explicit_minutes = True
 
     if minutes_touched:
@@ -944,8 +1090,8 @@ def apply_overrides(df: pd.DataFrame, overrides: pd.DataFrame) -> pd.DataFrame:
             if field == "p_start":
                 minutes_touched = True
             elif field == "exp_minutes":
-                implied = float(np.clip(df.loc[mask, "exp_minutes"].iloc[0]
-                                        / ASSUMED_START_MINUTES, 0.0, 1.0))
+                implied = _p_start_from_exp_minutes(df.loc[mask, "exp_minutes"].iloc[0],
+                                                    float(df.loc[mask, "p_sub"].iloc[0]))
                 df.loc[mask, "p_start"] = implied
                 minutes_touched = explicit_minutes = True
 
@@ -1008,7 +1154,35 @@ def _calibrate_bonus_prior(df: pd.DataFrame, raw: pd.Series, prior: pd.Series,
     return prior * multiplier
 
 
-def renormalise_minutes(players: pd.DataFrame) -> pd.DataFrame:
+def _bisect_scale(values: np.ndarray, target: float) -> np.ndarray:
+    """One bounded multiplier that brings `values` to `target`, each clipped at
+    MAX_P_START. Shared by every tier of `renormalise_minutes`: the same shape
+    solves "bring this group to eleven" and "bring this position's free players
+    back to what they would have had," just with a different `values`/`target`.
+    """
+    if not len(values) or values.sum() <= 0:
+        return values.copy()
+
+    def fielded(lam: float) -> float:
+        return float(np.minimum(MAX_P_START, values * lam).sum())
+
+    cap = fielded(MAX_MINUTES_SCALE)
+    if cap <= target:
+        lam = MAX_MINUTES_SCALE
+    else:
+        lo, hi = 0.0, MAX_MINUTES_SCALE
+        for _ in range(60):
+            mid = (lo + hi) / 2
+            if fielded(mid) < target:
+                lo = mid
+            else:
+                hi = mid
+        lam = (lo + hi) / 2
+    return np.minimum(MAX_P_START, values * lam)
+
+
+def renormalise_minutes(players: pd.DataFrame,
+                        baseline_p_start: pd.Series | None = None) -> pd.DataFrame:
     """Put each club back to eleven starters after an override moved somebody.
 
     Minutes are a fixed pool. Eleven players start, and asserting that one of
@@ -1019,11 +1193,23 @@ def renormalise_minutes(players: pd.DataFrame) -> pd.DataFrame:
     the odds said they would, with the extra goals conjured out of nothing rather
     than taken from a team-mate.
 
-    So the assertion is kept and the rest of the club absorbs it. Overridden
-    players are pinned -- the whole point of an override is that the model does
-    not get a vote -- and everyone else is scaled by one bounded multiplier per
-    club, the same shape `_normalise_to` uses, so the pecking order the data
-    supports survives the adjustment.
+    So the assertion is kept and the rest of the club absorbs it -- and absorbs
+    it unevenly. A promoted winger competes for a shirt with the other wingers,
+    not with the centre-backs, so whoever shares a position with the player who
+    moved feels most of the consequence: their free peers at the same position
+    are rescaled first, by one bounded multiplier, to soak up exactly what that
+    position gained or lost. Only what they cannot absorb -- because they are
+    already at nought, or already as nailed as it gets -- spills into the rest
+    of the club, scaled the same way `_normalise_to` does it, so the pecking
+    order the data supports survives the adjustment either way. Goalkeepers
+    have no such split: a club fields one, so there is no "same position" to
+    prefer among the rest.
+
+    `baseline_p_start` is each player's p_start before *any* override touched
+    the pool -- `minutes_model`'s own answer -- which is what "what this
+    position gained or lost" is measured against. Falls back to the current
+    column if not given, which loses the position split for pinned players
+    whose own value has already moved, but still balances the club.
 
     If the pinned players alone already exceed eleven, that stands: the user has
     said so, and quietly scaling their numbers back to fit would be the model
@@ -1035,36 +1221,48 @@ def renormalise_minutes(players: pd.DataFrame) -> pd.DataFrame:
 
     df = players.copy()
     pinned = df["minutes_pinned"].fillna(False).astype(bool)
+    baseline = baseline_p_start if baseline_p_start is not None else df["p_start"]
 
-    for is_keeper, target in ((True, 1.0), (False, float(XI_OUTFIELD))):
-        group = df["is_keeper"] == is_keeper
-        for team in df.loc[group, "team"].dropna().unique():
-            club = group & (df["team"] == team)
-            free = club & ~pinned
-            if not free.any():
+    for team in df.loc[df["is_keeper"], "team"].dropna().unique():
+        club = (df["is_keeper"]) & (df["team"] == team)
+        free = club & ~pinned
+        if not free.any():
+            continue
+        spoken_for = float(df.loc[club & pinned, "p_start"].sum())
+        remaining = max(1.0 - spoken_for, 0.0)
+        values = df.loc[free, "p_start"].to_numpy(dtype=float)
+        df.loc[free, "p_start"] = _bisect_scale(values, remaining)
+
+    for team in df.loc[~df["is_keeper"], "team"].dropna().unique():
+        club = (~df["is_keeper"]) & (df["team"] == team)
+        free = club & ~pinned
+        if not free.any():
+            continue
+
+        spoken_for = float(df.loc[club & pinned, "p_start"].sum())
+        remaining = max(float(XI_OUTFIELD) - spoken_for, 0.0)
+
+        claimed = 0.0
+        settled = pd.Series(False, index=df.index)
+        for pos in df.loc[club & pinned, "pos"].unique():
+            pos_free = free & (df["pos"] == pos)
+            if not pos_free.any():
                 continue
+            pinned_pos = club & pinned & (df["pos"] == pos)
+            delta = (float(df.loc[pinned_pos, "p_start"].sum())
+                     - float(baseline.loc[pinned_pos].sum()))
+            values = df.loc[pos_free, "p_start"].to_numpy(dtype=float)
+            cap = float(pos_free.sum()) * MAX_P_START
+            want = float(np.clip(values.sum() - delta, 0.0, cap))
+            df.loc[pos_free, "p_start"] = _bisect_scale(values, want)
+            claimed += want
+            settled |= pos_free
 
-            spoken_for = float(df.loc[club & pinned, "p_start"].sum())
-            remaining = max(target - spoken_for, 0.0)
-            values = df.loc[free, "p_start"].to_numpy(dtype=float)
-            if values.sum() <= 0:
-                continue
-
-            def fielded(lam: float) -> float:
-                return float(np.minimum(MAX_P_START, values * lam).sum())
-
-            if fielded(MAX_MINUTES_SCALE) <= remaining:
-                lam = MAX_MINUTES_SCALE
-            else:
-                lo, hi = 0.0, MAX_MINUTES_SCALE
-                for _ in range(60):
-                    mid = (lo + hi) / 2
-                    if fielded(mid) < remaining:
-                        lo = mid
-                    else:
-                        hi = mid
-                lam = (lo + hi) / 2
-            df.loc[free, "p_start"] = np.minimum(MAX_P_START, values * lam)
+        other_free = free & ~settled
+        if other_free.any():
+            remaining_other = max(remaining - claimed, 0.0)
+            values = df.loc[other_free, "p_start"].to_numpy(dtype=float)
+            df.loc[other_free, "p_start"] = _bisect_scale(values, remaining_other)
 
     # Everyone who moved needs the rest of the minutes family re-derived from
     # the new p_start; the pinned players already had that done for them.
@@ -1431,14 +1629,23 @@ def project(horizon: int = 5, start_gw: int | None = None,
     players = match_players(fpl_players, us_stats, team_map)
     players = detect_movers(players, team_map)
 
+    # The per-gameweek archive, fetched once and read for two different things.
+    # It is third-party and can be unavailable, so both readings degrade to the
+    # season-long behaviour rather than taking the projection down.
+    gw_history = history.gameweek_history(force_refresh=force_refresh)
+
     # Optional: tilt rates toward how players were performing late last season.
-    # The archive is third-party and can be unavailable, so a failure here costs
-    # the tilt and nothing else.
     if recency_half_life:
-        multipliers = history.recency_multipliers(
-            history.gameweek_history(force_refresh=force_refresh), recency_half_life)
+        multipliers = history.recency_multipliers(gw_history, recency_half_life)
         if len(multipliers):
             players = players.merge(multipliers, on="code", how="left")
+
+    # Not optional, unlike the tilt above. Who has been starting lately is not a
+    # stylistic preference about form, it is the difference between a start rate
+    # that answers this week's question and one that answers last season's.
+    form = history.start_form(gw_history, START_FORM_HALF_LIFE)
+    if len(form):
+        players = players.merge(form, on="code", how="left")
 
     # Team strength has to be known before player rates, because adjusting a
     # transferred player's output needs the ratings of both clubs involved.
@@ -1452,8 +1659,13 @@ def project(horizon: int = 5, start_gw: int | None = None,
     # other's output -- but a rate only becomes points by way of expected
     # minutes, and the bonus prior is calibrated against the pool those minutes
     # imply, so it needs them in hand.
-    players = minutes_model(players, basis=basis)
+    players = minutes_model(players, basis=basis, horizon=horizon)
     players = attach_rates(players, strength, us_attack_rating, basis)
+    # renormalise_minutes prefers the same position as whoever an override
+    # moved, which means it needs to know what that position had *before* the
+    # override -- captured here, since apply_overrides is about to overwrite
+    # the very column it would otherwise have to read that from.
+    minutes_baseline = players["p_start"].copy()
     # Applied after every rate has been derived and shrunk, so that an asserted
     # number is the one the model actually uses.
     players = apply_overrides(players, overrides)
@@ -1466,7 +1678,7 @@ def project(horizon: int = 5, start_gw: int | None = None,
     # Neither step can touch what was asserted: renormalise_minutes pins the
     # overridden players, and conserve_team_output sees an asserted rate as
     # fully evidenced and takes its correction from the modelled ones instead.
-    players = renormalise_minutes(players)
+    players = renormalise_minutes(players, minutes_baseline)
     players = conserve_team_output(players, strength)
     per_gameweek = gameweek_overrides(overrides, players)
 

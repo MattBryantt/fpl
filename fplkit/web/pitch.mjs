@@ -124,16 +124,21 @@ export function cleanMetrics(keys) {
  *  incomplete one has neither, and pretending otherwise would demote players to
  *  a bench that does not exist yet — so it is drawn as fifteen slots by
  *  position, which is what you are actually filling in.
+ *
+ *  `rowOrder`, if given, replaces the default best-first sort within each
+ *  position row: `(pos, members) => sorted members`. The lineup pitch uses it
+ *  to lay a row out left-to-right by where a player actually plays, rather
+ *  than by how well he scores -- see index.html's laneComparator.
  */
-export function squadLayout({ ids, lookup, need, xiIds, benchOrder }) {
+export function squadLayout({ ids, lookup, need, xiIds, benchOrder, rowOrder }) {
   const owned = ids.map((id) => lookup.get(id)).filter(Boolean);
   const xi = new Set(xiIds || []);
   const byPoints = (a, b) => (b.xpts_plan || 0) - (a.xpts_plan || 0);
   const complete = xi.size === 11;
 
   const rows = POS_ORDER.map((pos) => {
-    const members = owned.filter((p) => p.pos === pos && (!complete || xi.has(p.id)))
-      .sort(byPoints);
+    const inRow = owned.filter((p) => p.pos === pos && (!complete || xi.has(p.id)));
+    const members = rowOrder ? rowOrder(pos, inRow) : inRow.slice().sort(byPoints);
     const slots = members.map((p) => ({ player: p }));
     if (!complete) {
       for (let i = members.length; i < (need?.[pos] || 0); i++) slots.push({ pos });
@@ -175,7 +180,7 @@ const STATUS_MARK = {
 };
 
 function card(player, opts) {
-  const { teams, metrics, captain, vice, tag, remove, swap, badge, versus } = opts;
+  const { teams, metrics, captain, vice, tag, remove, swap, badge, versus, nudge } = opts;
   const keys = metrics.length ? metrics : ["xpts"];
   const url = shirtUrl(teams, player);
   const mark = player.status && player.status !== "a" ? STATUS_MARK[player.status] : null;
@@ -222,6 +227,12 @@ function card(player, opts) {
     ${rest.length ? `<div class="psub">${rest.map(cell).join("")}</div>` : ""}
     ${badge ? `<div class="pslot">${escape(badge)}</div>` : ""}
     ${tag ? `<div class="ptag ${tag.kind}">${escape(tag.text)}</div>` : ""}
+    ${nudge ? `<div class="pnudge">
+      <button class="pnudgebtn" data-nudge="${player.id}" data-dir="-1"
+              aria-label="Move ${escape(player.name)} left" title="Move left">‹</button>
+      <button class="pnudgebtn" data-nudge="${player.id}" data-dir="1"
+              aria-label="Move ${escape(player.name)} right" title="Move right">›</button>
+    </div>` : ""}
   </div>`;
 }
 
@@ -242,18 +253,20 @@ const emptyCard = (pos, badge) => `
  */
 export function pitchHTML({ layout, teams, metrics = ["xpts"], captain = null,
                             vice = null, tags = null, remove = false, swap = false,
-                            versus = false, benchLabels = true }) {
-  const opts = (player, badge) => ({
-    teams, metrics, captain, vice, badge, versus,
+                            versus = false, benchLabels = true, reorder = false }) {
+  const opts = (player, badge, nudge = false) => ({
+    teams, metrics, captain, vice, badge, versus, nudge,
     tag: tags?.[player.id] || null,
     remove,
     swap: swap && tags?.[player.id]?.kind === "in",
   });
 
+  // Nudging a lone keeper does nothing, so the keeper row skips it even when
+  // the pitch as a whole allows reordering.
   const rows = layout.rows.map((row) => `
     <div class="pitchrow" data-pos="${row.pos}">
       ${row.slots.map((slot) => (slot.player
-        ? card(slot.player, opts(slot.player))
+        ? card(slot.player, opts(slot.player, "", reorder && row.pos !== "GKP" && row.slots.length > 1))
         : emptyCard(slot.pos))).join("")}
     </div>`).join("");
 

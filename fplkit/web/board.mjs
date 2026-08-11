@@ -38,13 +38,44 @@ const touchesMinutes = (edit) =>
   !!edit && ["p_start", "exp_minutes", "p_start_mult", "exp_minutes_mult"]
     .some((f) => edit[f] !== undefined && edit[f] !== null);
 
+/* One bounded multiplier that brings `values` to `target`, each clipped at
+ * maxStart. Shared by every tier of renormaliseMinutes: the same shape solves
+ * "bring this group to eleven" and "bring this position's free players back
+ * to what they would have had," just with a different values/target. */
+function bisectScale(values, target, maxStart, maxScale) {
+  if (!values.length) return values.slice();
+  const total = values.reduce((a, b) => a + b, 0);
+  if (total <= 0) return values.slice();
+  const fielded = (lam) => values.reduce((a, v) => a + Math.min(maxStart, v * lam), 0);
+  const cap = fielded(maxScale);
+  let lam;
+  if (cap <= target) {
+    lam = maxScale;
+  } else {
+    let lo = 0, hi = maxScale;
+    for (let i = 0; i < 60; i++) {
+      const mid = (lo + hi) / 2;
+      if (fielded(mid) < target) lo = mid; else hi = mid;
+    }
+    lam = (lo + hi) / 2;
+  }
+  return values.map((v) => Math.min(maxStart, v * lam));
+}
+
 /** Put each club back to eleven starters after an override moved somebody.
  *
  *  The port of model.renormalise_minutes, and the reason it exists: minutes are
  *  a fixed pool. Saying a player starts can only mean somebody else does not,
  *  and without this the board would happily show a club fielding twelve men and
- *  out-scoring the odds. Overridden players are pinned; everyone else is scaled
- *  by one bounded multiplier per club, so the pecking order survives.
+ *  out-scoring the odds. Overridden players are pinned; everyone else absorbs
+ *  it -- unevenly. A promoted winger competes for a shirt with the other
+ *  wingers, not the centre-backs, so free players who share a position with
+ *  whoever moved are rescaled first, by one bounded multiplier, to soak up
+ *  exactly what that position gained or lost (measured against `p.p_start`,
+ *  which is always the model's own baseline here -- edits live in `edits`,
+ *  never on `snap.players` itself). Only what they cannot absorb spills into
+ *  the rest of the club, scaled the same way. Goalkeepers skip the split: a
+ *  club fields one, so there is no "same position" to prefer among the rest.
  *
  *  Returns fpl_id -> p_start for the players the rebalance *moved*, which the
  *  caller layers underneath the user's own edits.
@@ -54,6 +85,7 @@ export function renormaliseMinutes(snap, edits) {
   const maxStart = rules.MAX_P_START ?? 0.95;
   const maxScale = rules.MAX_MINUTES_SCALE ?? 2.5;
   const outfield = rules.XI_OUTFIELD ?? 10;
+  const bisect = (values, target) => bisectScale(values, target, maxStart, maxScale);
 
   const touched = new Set();
   for (const [id, edit] of Object.entries(edits || {})) {
@@ -65,46 +97,62 @@ export function renormaliseMinutes(snap, edits) {
   for (const p of snap.players) if (touched.has(p.id)) clubs.add(p.team);
 
   const moved = new Map();
+  // Only players the rebalance actually moved get recorded. A group with
+  // nothing pinned in it -- the keepers, when the override was an outfielder
+  // -- solves to a multiplier of one, and recording those would label a
+  // goalkeeper "adjusted" for standing still, as well as paying to rescore a
+  // whole club that did not change.
+  const record = (free, next) => free.forEach((p, i) => {
+    if (Math.abs(next[i] - p.p_start) > 1e-9) moved.set(p.id, next[i]);
+  });
+
   for (const club of clubs) {
-    for (const keeper of [true, false]) {
-      const target = keeper ? 1 : outfield;
-      const group = snap.players.filter(
-        (p) => p.team === club && (p.pos === "GKP") === keeper);
-      const free = group.filter((p) => !touched.has(p.id));
-      if (!free.length) continue;
-
+    const keepers = snap.players.filter((p) => p.team === club && p.pos === "GKP");
+    const keeperFree = keepers.filter((p) => !touched.has(p.id));
+    if (keeperFree.length) {
       let spokenFor = 0;
-      for (const p of group) {
-        if (!touched.has(p.id)) continue;
-        spokenFor += applyOverrides(p, edits[p.id], rules).p_start;
+      for (const p of keepers) {
+        if (touched.has(p.id)) spokenFor += applyOverrides(p, edits[p.id], rules).p_start;
       }
-      const remaining = Math.max(target - spokenFor, 0);
+      const remaining = Math.max(1 - spokenFor, 0);
+      record(keeperFree, bisect(keeperFree.map((p) => p.p_start), remaining));
+    }
 
-      const values = free.map((p) => p.p_start);
-      if (values.reduce((a, b) => a + b, 0) <= 0) continue;
-      const fielded = (lam) =>
-        values.reduce((a, v) => a + Math.min(maxStart, v * lam), 0);
+    const group = snap.players.filter((p) => p.team === club && p.pos !== "GKP");
+    const free = group.filter((p) => !touched.has(p.id));
+    if (!free.length) continue;
 
-      let lam;
-      if (fielded(maxScale) <= remaining) {
-        lam = maxScale;
-      } else {
-        let lo = 0, hi = maxScale;
-        for (let i = 0; i < 60; i++) {
-          const mid = (lo + hi) / 2;
-          if (fielded(mid) < remaining) lo = mid; else hi = mid;
-        }
-        lam = (lo + hi) / 2;
-      }
-      // Only players the rebalance actually moved. A group with nothing pinned
-      // in it -- the keepers, when the override was an outfielder -- solves to
-      // a multiplier of one, and recording those would label a goalkeeper
-      // "adjusted" for standing still, as well as paying to rescore a whole
-      // club that did not change.
-      free.forEach((p, i) => {
-        const next = Math.min(maxStart, values[i] * lam);
-        if (Math.abs(next - p.p_start) > 1e-9) moved.set(p.id, next);
-      });
+    let spokenFor = 0;
+    const pinnedByPos = new Map();
+    for (const p of group) {
+      if (!touched.has(p.id)) continue;
+      const now = applyOverrides(p, edits[p.id], rules).p_start;
+      spokenFor += now;
+      const rec = pinnedByPos.get(p.pos) || { orig: 0, now: 0 };
+      rec.orig += p.p_start; rec.now += now;
+      pinnedByPos.set(p.pos, rec);
+    }
+    const remaining = Math.max(outfield - spokenFor, 0);
+
+    let claimed = 0;
+    const settled = new Set();
+    for (const [pos, rec] of pinnedByPos) {
+      const posFree = free.filter((p) => p.pos === pos);
+      if (!posFree.length) continue;
+      const delta = rec.now - rec.orig;
+      const values = posFree.map((p) => p.p_start);
+      const total = values.reduce((a, b) => a + b, 0);
+      const cap = posFree.length * maxStart;
+      const want = Math.min(cap, Math.max(0, total - delta));
+      record(posFree, bisect(values, want));
+      claimed += want;
+      posFree.forEach((p) => settled.add(p.id));
+    }
+
+    const otherFree = free.filter((p) => !settled.has(p.id));
+    if (otherFree.length) {
+      const remainingOther = Math.max(remaining - claimed, 0);
+      record(otherFree, bisect(otherFree.map((p) => p.p_start), remainingOther));
     }
   }
   return moved;
@@ -217,6 +265,10 @@ export function derivePool(snap, edits, { horizon, halfLife }) {
       cs,
       owned: raw.owned, price_change: raw.price_change,
       confidence: raw.confidence, recency: raw.recency,
+      // The two halves p_start was blended from. Carried for display only --
+      // the blend happened in pandas and is already in p_start -- so that the
+      // editor can say why a number is what it is.
+      start_long_run: raw.start_long_run, start_recent: raw.start_recent,
       moved: raw.moved, previous_club: raw.previous_club,
       status: raw.status, news: raw.news,
       gw, opp: raw.opp.slice(0, count),

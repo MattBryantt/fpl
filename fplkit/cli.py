@@ -14,12 +14,13 @@ from rapidfuzz import fuzz, process
 from rich.console import Console
 from rich.table import Table
 
-from . import cache
-from .config import DEFAULT_BENCH_WEIGHT, DEFAULT_BUDGET, OUT_DIR
+from . import cache, transfers
+from .config import CHIPS, DEFAULT_BENCH_WEIGHT, DEFAULT_BUDGET, OUT_DIR
 from .model import OVERRIDABLE, Projection, project
 from .optimise import marginal_value, optimise
 from .planning import DEFAULT_HALF_LIFE, build_plan, horizon_sensitivity
 from .snapshot import SNAPSHOT_HORIZON
+from .transfers import DEFAULT_TRANSFER_HORIZON, TRANSFER_HALF_LIFE
 from .sources import fpl_api
 
 console = Console()
@@ -48,6 +49,12 @@ HEADERS = {
     "exp_price_change": "Δ£ fcast", "xi_xpts": "XI xPts", "decay": "weight",
     "odds_priced": "priced", "changed_vs_prev": "churn",
     "shared_with_plan": "∩ plan", "frontloaded": "front",
+    "chip": "chip", "transfers": "TRs", "free": "FT", "hits": "hits",
+    "out": "out", "in": "in", "out_price": "£ out", "in_price": "£ in",
+    "in_team": "to", "gain": "gain", "worth": "worth", "edge": "edge",
+    "verdict": "read", "weight": "weight", "xi_points": "XI xPts",
+    "formation": "shape", "captain": "captain", "vice_captain": "vice",
+    "bench_order": "bench (autosub order)",
 }
 
 FLOAT_FORMATS = {
@@ -62,6 +69,9 @@ FLOAT_FORMATS = {
     "gain": "{:.2f}", "cost": "{:+.1f}", "bank": "{:.1f}",
     "horizon": "{:.0f}", "last_gw": "{:.0f}", "changed_vs_prev": "{:.0f}",
     "shared_with_plan": "{:.0f}", "gw": "{:.0f}", "frontloaded": "{:.2f}",
+    "transfers": "{:.0f}", "free": "{:.0f}", "hits": "{:.0f}",
+    "out_price": "{:.1f}", "in_price": "{:.1f}", "worth": "{:.1f}",
+    "edge": "{:+.1f}", "weight": "{:.2f}", "xi_points": "{:.1f}",
 }
 
 
@@ -359,7 +369,6 @@ def cmd_plan(args) -> None:
         plan = build_plan(
             projection, budget=args.budget, bench_weight=args.bench_weight,
             min_minutes_prob=args.min_start, half_life=args.half_life,
-            chip_windows=fpl_api.chip_windows(projection.horizon[0]),
             total_managers=fpl_api.total_managers(),
             include=include or None, exclude=exclude or None,
             ownership_weight=args.ownership_weight,
@@ -428,9 +437,15 @@ def cmd_plan(args) -> None:
         f"with --ownership-weight.[/dim]"
     )
 
-    if len(plan.chips):
+    if not args.no_transfer_plan:
         console.print()
-        _render(plan.chips, "Chip timing", ["chip", "gw", "detail", "confidence"])
+        with console.status("[cyan]solving the transfer path and chip timing…"):
+            path = transfers.plan_transfers(
+                projection, plan.players, horizon=args.transfer_horizon,
+                budget=args.budget, min_minutes_prob=args.min_start,
+                chip_windows=fpl_api.chip_windows(projection.horizon[0]),
+                include=include or None, exclude=exclude or None)
+        _print_transfer_path(path)
 
     console.print()
     console.print(f"[bold]{len(plan.core)}[/bold] of 15 are core picks — chosen "
@@ -442,6 +457,137 @@ def cmd_plan(args) -> None:
         "be right for the first few gameweeks — it can be rebuilt from GW2.[/dim]"
     )
     _save(plan.squad.players, args.csv)
+
+
+def _print_transfer_path(path, show_lineups: bool = False) -> None:
+    """The transfer ledger, the moves, and what the chips are worth."""
+    _render(path.ledger, "Transfer path — free transfers, hits and chips by gameweek",
+            ["gw", "chip", "transfers", "free", "hits", "bank", "xi_xpts", "weight"])
+    console.print(
+        "[dim]free = free transfers available that gameweek, after banking. A "
+        "wildcard or free hit costs you that week's new transfer but no longer "
+        "burns the ones you saved. Points past the first gameweek are weighted "
+        "down; hits and banked transfers are weighted with them.[/dim]")
+
+    if len(path.moves):
+        console.print()
+        _render(path.moves, "Moves", ["gw", "pos", "out", "out_price", "in",
+                                      "in_price", "in_team", "gain"])
+        console.print("[dim]gain is the incoming player's projected points from that "
+                      "gameweek to the end of the window, minus the outgoing "
+                      "player's over the same weeks — before the transfer is "
+                      "charged for what it spends.[/dim]")
+    else:
+        console.print("\n[dim]no transfer anywhere in the window clears what it "
+                      "costs to make it.[/dim]")
+
+    if len(path.chips):
+        console.print()
+        _render(path.chips, "Chips", ["chip", "gw", "worth", "edge", "verdict"])
+        console.print(
+            "[dim]worth is the chip's payout in the gameweek chosen; edge is how "
+            "much better that gameweek is than the median one in the window. A "
+            "chip is only played when it beats what it is worth held for a "
+            "well-timed gameweek later (see CHIP_HOLD_VALUE) — which is why a "
+            "flat fixture list produces a row of holds.[/dim]")
+
+    if show_lineups:
+        console.print()
+        _render(path.lineups, "Squad each gameweek",
+                ["gw", "chip", "formation", "captain", "bench_order", "xi_points"])
+
+    for note in path.notes:
+        console.print(f"[dim]· {note}[/dim]")
+
+
+def _load_squad(players: pd.DataFrame, path: str | None) -> tuple[list[int], dict]:
+    """Read the fifteen you own from a CSV, with purchase prices if given.
+
+    Accepts whatever `plan --csv` writes, so the usual route is to plan a squad,
+    keep the file, and feed it back in once the season is running.
+    """
+    if not path:
+        return [], {}
+    df = pd.read_csv(path)
+    if "fpl_id" in df.columns:
+        ids = [int(i) for i in df["fpl_id"]]
+    else:
+        ids = [int(_resolve(players, str(name))["fpl_id"]) for name in df["web_name"]]
+
+    sell = {}
+    column = next((c for c in ("sell_price", "purchase_price") if c in df.columns), None)
+    if column:
+        sell = {i: float(v) for i, v in zip(ids, df[column]) if pd.notna(v)}
+    return ids, sell
+
+
+def cmd_transfers(args) -> None:
+    """Transfers and chips over the window, under the actual rules."""
+    args.horizon = max(args.horizon, args.transfer_horizon)
+    projection = _run_projection(args)
+    players = projection.players
+    owned, sell_prices = _load_squad(players, args.squad)
+    include = [int(_resolve(players, name)["fpl_id"]) for name in (args.include or [])]
+    exclude = [int(_resolve(players, name)["fpl_id"]) for name in (args.exclude or [])]
+
+    settings = dict(
+        horizon=args.transfer_horizon, budget=args.budget, squad=owned or None,
+        bank=args.bank, free_transfers=args.free_transfers,
+        sell_prices=sell_prices or None, min_minutes_prob=args.min_start,
+        chip_windows=fpl_api.chip_windows(projection.horizon[0]),
+        chips_used=args.chips_used or None,
+        chip_hold=({chip: 0.0 for chip in CHIPS} if args.ignore_chip_hold else None),
+        half_life=args.transfer_half_life, include=include or None,
+        exclude=exclude or None, hit_limit=args.hit_limit, seconds=args.seconds,
+    )
+
+    with console.status("[cyan]solving transfers and chips together…"):
+        path = transfers.plan_transfers(projection, players, **settings)
+
+    console.print(
+        f"[bold]GW{path.gameweeks[0]}–GW{path.gameweeks[-1]}[/bold], "
+        f"{'preseason — the opening fifteen is a free choice' if not owned else f'from the {len(owned)} you own'}"
+        f", discounting at a {args.transfer_half_life:g}-gameweek half-life.\n")
+    _print_transfer_path(path, show_lineups=args.lineups)
+
+    # Only the first gameweek is a decision. Price it.
+    if owned:
+        console.print()
+        with console.status("[cyan]pricing this week's move against rolling…"):
+            decision = transfers.value_of_acting(projection, players, plan=path,
+                                                 **settings)
+        gain, moves = decision["gain"], decision["moves"]
+        if len(moves):
+            names = ", ".join(f"{r['out']} → {r['in']}" for _, r in moves.iterrows())
+            console.print(
+                f"[bold]This gameweek:[/bold] {names} — worth "
+                f"[bold]{gain:+.2f}[/bold] against rolling the transfer instead.")
+        else:
+            console.print("[bold]This gameweek:[/bold] roll. Nothing available "
+                          "beats banking the transfer.")
+        console.print("[dim]that number already nets off the four points a hit costs, "
+                      "the transfer it spends and the friction charge, because both "
+                      "sides are scored on the same objective. Everything after this "
+                      "gameweek is the shape of the plan, not an instruction — it "
+                      "gets re-solved next week with team news you do not have.[/dim]")
+
+    if args.chip_value:
+        console.print()
+        with console.status("[cyan]pricing each chip by taking it away…"):
+            values = transfers.chip_values(projection, players, **settings)
+        _render(values, "What each chip is worth to the plan", ["chip", "gw", "worth"])
+        console.print(
+            "[dim]measured by re-solving without it: the difference between the best "
+            "plan that has the chip and the best plan that does not. That is not the "
+            "chip's payout — having a bench boost changes which fifteen you buy in "
+            "the weeks before it.[/dim]")
+        if not values.empty and values["worth"].abs().max() < 0.01:
+            console.print("[dim]all zero because the plan holds every chip: taking "
+                          "away something it was not going to play costs nothing. "
+                          "Rerun with --ignore-chip-hold to see what they would be "
+                          "worth if you had to spend them inside this window.[/dim]")
+
+    _save(path.ledger, args.csv)
 
 
 def cmd_horizon(args) -> None:
@@ -623,6 +769,35 @@ def cmd_snapshot(args) -> None:
                   "to refresh or press Sync while the laptop is reachable[/dim]")
 
 
+def cmd_build(args) -> None:
+    """Freeze the board into a directory any static host can serve."""
+    from . import site
+    from . import snapshot as snapshot_module
+
+    out = Path(args.out)
+    snapshot_path = Path(args.snapshot) if args.snapshot else None
+
+    if snapshot_path is None or not snapshot_path.exists():
+        with console.status("[cyan]projecting and freezing…"):
+            written, _ = snapshot_module.write(
+                horizon=args.horizon, start_gw=args.start_gw,
+                recency=args.recency, force_refresh=args.refresh)
+        snapshot_path = Path(written)
+        console.print(f"[dim]built {snapshot_path}[/dim]")
+
+    with console.status("[cyan]assembling the site…"):
+        counts = site.build(out, snapshot_path)
+
+    total = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
+    console.print(f"[bold]{out}[/bold]  [dim]{total / 1024:.0f} KB[/dim]")
+    console.print(f"[dim]{counts['pages']} pages · {counts['assets']} assets · "
+                  f"{counts['shirts']} shirts · {counts['players']} players over "
+                  f"{counts['gameweeks']} gameweeks[/dim]")
+    console.print(f"[dim]shell: {counts['shell_version']}[/dim]")
+    console.print("[dim]serve it with any static host, or check it locally:\n"
+                  f"  python -m http.server -d {out} 8001[/dim]")
+
+
 def cmd_serve(args) -> None:
     """Run the drafting board."""
     import secrets
@@ -785,7 +960,53 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--ownership-weight", type=float, default=0.0,
                       help="tilt toward widely owned players as insurance "
                            "against the field (0 = pure points, 0.15 = mild)")
+    plan.add_argument("--transfer-horizon", type=int, default=DEFAULT_TRANSFER_HORIZON,
+                      help=f"gameweeks to plan transfers and chips over "
+                           f"(default {DEFAULT_TRANSFER_HORIZON})")
+    plan.add_argument("--no-transfer-plan", action="store_true",
+                      help="skip the transfer path and chip timing, which is the "
+                           "slow part")
     plan.set_defaults(func=cmd_plan, horizon=8)
+
+    tr = subparsers.add_parser(
+        "transfers", help="transfers and chips over the window, solved together "
+                          "under the free-transfer and hit rules")
+    add_common(tr)
+    tr.add_argument("--squad", default=None,
+                    help="CSV of the fifteen you own (fpl_id or web_name, and "
+                         "optionally sell_price). Omit before the season starts, "
+                         "when the opening squad is a free choice")
+    tr.add_argument("--bank", type=float, default=0.0,
+                    help="money not in the squad, in millions")
+    tr.add_argument("--free-transfers", type=int, default=1,
+                    help="free transfers available this gameweek (1-5)")
+    tr.add_argument("--budget", type=float, default=DEFAULT_BUDGET)
+    tr.add_argument("--transfer-horizon", type=int, default=DEFAULT_TRANSFER_HORIZON,
+                    help=f"gameweeks to plan over (default {DEFAULT_TRANSFER_HORIZON})")
+    tr.add_argument("--transfer-half-life", type=float, default=TRANSFER_HALF_LIFE,
+                    help="gameweeks until a future point is worth half of one now "
+                         f"(default {TRANSFER_HALF_LIFE:g}; gentler than the plan's "
+                         "because optionality is modelled here rather than assumed)")
+    tr.add_argument("--chips-used", nargs="*", default=None, choices=list(CHIPS),
+                    help="chips already played this half of the season")
+    tr.add_argument("--ignore-chip-hold", action="store_true",
+                    help="set every chip's reservation price to zero, which asks "
+                         "the narrower question 'when in this window is each chip "
+                         "best?' and will always spend all four")
+    tr.add_argument("--chip-value", action="store_true",
+                    help="price each chip by re-solving without it (one extra "
+                         "solve per chip)")
+    tr.add_argument("--hit-limit", type=int, default=None,
+                    help="cap the total points hits taken across the window")
+    tr.add_argument("--lineups", action="store_true",
+                    help="also print the XI, bench order and captain each gameweek")
+    tr.add_argument("--include", nargs="*", default=None,
+                    help="players to hold for the whole window")
+    tr.add_argument("--exclude", nargs="*", default=None)
+    tr.add_argument("--min-start", type=float, default=0.3)
+    tr.add_argument("--seconds", type=int, default=transfers.SOLVER_SECONDS,
+                    help="solver time limit")
+    tr.set_defaults(func=cmd_transfers, horizon=DEFAULT_TRANSFER_HORIZON)
 
     movers = subparsers.add_parser(
         "movers", help="players who changed club, whose past rates describe a "
@@ -832,6 +1053,18 @@ def build_parser() -> argparse.ArgumentParser:
                       help="bypass the cache and refetch every source first")
     snap.add_argument("--out", default=None, help="where to write it")
     snap.set_defaults(func=cmd_snapshot)
+
+    build_cmd = subparsers.add_parser(
+        "build", help="write the whole board to a directory a static host can serve")
+    build_cmd.add_argument("--out", default="dist", help="directory to write (default dist/)")
+    build_cmd.add_argument("--snapshot", default=None,
+                           help="use an existing snapshot instead of projecting")
+    build_cmd.add_argument("--horizon", type=int, default=SNAPSHOT_HORIZON)
+    build_cmd.add_argument("--start-gw", type=int, default=None)
+    build_cmd.add_argument("--recency", type=float, default=0.0, metavar="N")
+    build_cmd.add_argument("--refresh", action="store_true",
+                           help="bypass the cache and refetch every source first")
+    build_cmd.set_defaults(func=cmd_build)
 
     serve_cmd = subparsers.add_parser(
         "serve", help="run the interactive drafting board in a browser")

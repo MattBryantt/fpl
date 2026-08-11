@@ -238,6 +238,9 @@ svg { display: block; max-width: 100%; height: auto; }
    regardless of source order -- .loading below is exactly that case, and left
    unqualified the overlay stays up and swallows every click. */
 .hidden { display: none !important; }
+/* Controls that ask the laptop to do something. On a static host there is no
+   laptop, so they are removed rather than left to fail — see detectServer(). */
+body.noserver .needs-server { display: none !important; }
 
 /* ------------------------------------------------------------------ phones
    The board is usable on a phone, which mainly means three things: nothing may
@@ -442,8 +445,29 @@ svg { display: block; max-width: 100%; height: auto; }
   font-size: 10px; color: var(--muted); border: 1px solid var(--border);
   border-radius: 4px; padding: 0 4px;
 }
+/* Detailed position (LW, CB, ...) shown wherever the base FPL position is --
+   a small badge rather than a column, since most players do not have one. */
+.postagbadge {
+  font-size: 9.5px; font-weight: 600; color: var(--series-2);
+  border: 1px solid var(--series-2); border-radius: 4px; padding: 0 4px;
+  margin-left: 4px; white-space: nowrap;
+}
+.postags { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
+.postagchip {
+  font-size: 11px; font-weight: 600; color: var(--muted); cursor: pointer;
+  border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px;
+  background: transparent;
+}
+.postagchip.on { background: var(--series-2); color: #fff; border-color: var(--series-2); }
 .minbar { height: 4px; border-radius: 2px; background: var(--series-1); margin-top: 3px; }
 .minbar.sub { background: var(--axis); }
+.mininput {
+  width: 46px; padding: 2px 4px; font: inherit; font-size: 12.5px; text-align: right;
+  border: 1px solid var(--border); border-radius: 5px; background: var(--surface-1);
+  color: var(--text-primary); font-variant-numeric: tabular-nums;
+}
+.mininput:focus { border-color: var(--series-2); outline: none; }
+.mininput::-webkit-inner-spin-button, .mininput::-webkit-outer-spin-button { opacity: 0.4; }
 .tag {
   font-size: 10px; border-radius: 4px; padding: 0 5px; font-weight: 600; white-space: nowrap;
 }
@@ -721,6 +745,17 @@ svg { display: block; max-width: 100%; height: auto; }
 .ptag.in { background: #0ca30c; color: #fff; }
 .ptag.out { background: rgba(0,0,0,0.5); color: #fff; }
 
+/* Left/right nudge on the team-lineup pitch, so a row can be reordered to
+   look like how the club actually lines up rather than however the model's
+   own point-scoring happened to sort it. */
+.pnudge { display: flex; gap: 3px; margin-top: 3px; justify-content: center; }
+.pnudgebtn {
+  width: 18px; height: 16px; border-radius: 3px; border: 0; cursor: pointer;
+  line-height: 1; padding: 0; font-size: 11px; font-weight: 700;
+  background: rgba(0,0,0,0.45); color: #fff;
+}
+.pnudgebtn:hover { background: var(--series-2); }
+
 .benchband {
   border-radius: 0 0 12px 12px; padding: 11px 10px 13px;
   background: var(--surface-1); border: 1px solid var(--border); border-top: 0;
@@ -757,6 +792,12 @@ svg { display: block; max-width: 100%; height: auto; }
 .pitchpair.solo { grid-template-columns: minmax(0, 1fr); max-width: 760px; }
 @media (max-width: 1080px) { .pitchpair { grid-template-columns: minmax(0, 1fr); } }
 .pitchside { min-width: 0; display: flex; flex-direction: column; }
+
+/* Pitch on the left, the editable list of who's on it on the right -- the
+   two are one picture of the same lineup, so they read left-to-right rather
+   than stacked. */
+.lineuplayout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 420px); gap: 16px; align-items: start; }
+@media (max-width: 900px) { .lineuplayout { grid-template-columns: minmax(0, 1fr); } }
 .sidehead {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;
   min-height: 32px;
@@ -856,7 +897,7 @@ svg { display: block; max-width: 100%; height: auto; }
   <span class="sub" id="freshness" title="The board runs on a frozen projection — this is how old it is"></span>
   <button class="btn ghost" id="settingsBtn" aria-expanded="false"
           title="Horizon, budget and everything else that scopes the numbers">Settings ▾</button>
-  <button class="btn ghost" id="syncBtn" title="Re-run the projection on the laptop and pull it down">Sync</button>
+  <button class="btn ghost needs-server" id="syncBtn" title="Re-run the projection on the laptop and pull it down">Sync</button>
   <a class="btn ghost" href="/data" id="dataLink" title="Every number traced back to its source"
      style="text-decoration:none">Data</a>
   <button class="btn ghost" id="theme" title="Toggle theme">◐</button>
@@ -916,11 +957,11 @@ Drag to 1.00× to count every fixture in the horizon equally.">Fixture decay
       <option>5-4-1</option><option>5-2-3</option>
     </select>
   </div>
-  <div class="ctl">
+  <div class="ctl needs-server">
     <label>&nbsp;</label>
     <button class="btn ghost" id="refreshData" title="Bypass the cache and refetch every source">Refresh sources</button>
   </div>
-  <div class="ctl">
+  <div class="ctl needs-server">
     <label>&nbsp;</label>
     <button class="btn ghost" id="loadOverrides"
             title="Replace your edits with whatever is in out/overrides.csv">Load overrides.csv</button>
@@ -973,8 +1014,8 @@ Drag to 1.00× to count every fixture in the horizon equally.">Fixture decay
 
 <div class="banner hidden" id="editBanner">
   <span id="editCount"></span>
+  <span class="sub" id="editSaved" style="text-transform:none;letter-spacing:0"></span>
   <span style="flex:1"></span>
-  <button class="btn ghost" id="saveOverrides">Save to overrides.csv</button>
   <button class="btn ghost" id="clearEdits">Discard all edits</button>
 </div>
 
@@ -1123,7 +1164,9 @@ Drag to 1.00× to count every fixture in the horizon equally.">Fixture decay
       <h2 style="margin:0 0 3px">Team lineups</h2>
       <div class="sub">Who the model expects to start, and for how long. Minutes are a
         fixed pool — eleven players start — so overriding one man's start probability
-        takes the minutes off his team-mates rather than inventing a twelfth starter.</div>
+        takes the minutes off his team-mates rather than inventing a twelfth starter.
+        Each row is ordered left-to-right by tagged position where one is set; use
+        ‹ › on a shirt to correct it — the shape is remembered per club.</div>
     </div>
     <div class="lineupctl">
       <select id="lineupTeam" aria-label="Club"></select>
@@ -1132,12 +1175,12 @@ Drag to 1.00× to count every fixture in the horizon equally.">Fixture decay
   </div>
   <!-- The same pitch, drawn from expected minutes rather than from a draft:
        the eleven this club is likeliest to field, the four next in line
-       beneath them. The table under it keeps every number and the whole
-       squad; this is the shape of the rotation at a glance. -->
-  <div class="pitchpair solo" style="margin-bottom:14px">
+       beneath them. The table beside it keeps every number and the whole
+       squad, editable inline; this is the shape of the rotation at a glance. -->
+  <div class="lineuplayout">
     <div class="pitchside"><div id="lineupPitch"></div></div>
+    <div id="lineupBox"></div>
   </div>
-  <div id="lineupBox"></div>
 </div>
 </section>
 
@@ -1217,6 +1260,7 @@ Drag to 1.00× to count every fixture in the horizon equally.">Fixture decay
 <aside class="drawer" id="drawer" aria-label="Edit player stats">
   <h3 id="edName">—</h3>
   <div class="who" id="edWho"></div>
+  <div class="postags" id="edPosTags"></div>
   <div class="editpts" id="edPts"></div>
   <div class="why" id="edWhy"></div>
 
@@ -1267,9 +1311,9 @@ Drag to 1.00× to count every fixture in the horizon equally.">Fixture decay
   <div class="drawerfoot">
     <button class="btn ghost" id="edReq" title="Require in the optimal squad">⊕ Require</button>
     <button class="btn ghost" id="edBan" title="Bar from the optimal squad">⊘ Bar</button>
-    <button class="btn" id="edApply">Apply</button>
+    <button class="btn ghost" id="edUndo" title="Put this player back to how he was when you opened him">Undo changes</button>
     <button class="btn ghost" id="edReset">Reset player</button>
-    <button class="btn ghost" id="edClose">Close</button>
+    <button class="btn" id="edClose">Done</button>
   </div>
 </aside>
 
@@ -1281,24 +1325,32 @@ import { derivePool, editPlayer, explainPlayer, clubLineup, checkOverridable,
          age, POINT_SOURCES } from "/assets/board.mjs";
 import { pitchHTML, cardsHTML, squadLayout, wireShirts, shirtUrl,
          METRICS, METRIC_KEYS, MAX_METRICS, cleanMetrics } from "/assets/pitch.mjs";
+import { POSITION_TAGS, POSITION_TAG_LABELS, SEED_TAGS } from "/assets/position-tags.mjs";
 
 const $ = (s) => document.querySelector(s);
 
 /* ---------------------------------------------------------------- auth token
-   When the board is reachable beyond this machine the server requires a shared
-   token. It arrives once in the URL (from the printed link or a QR code), then
-   moves into sessionStorage and rides on a header so it stops appearing in the
-   address bar, in history, and in any screenshot of the page. */
+   Two write-capable things need this, not one: the old `--lan` server, and now
+   /api/sync on the Workers deployment. Both check the same X-FPL-Token header,
+   so one token and one storage slot cover both without the client having to
+   know which kind of backend it is talking to.
+
+   It arrives once in the URL (from a printed link or a QR code), then moves out
+   of it so it stops appearing in the address bar, in history, and in any
+   screenshot of the page. localStorage rather than sessionStorage -- sync is
+   only worth having if reopening the app tomorrow does not mean typing the
+   token in again, and a token that never leaves this device in the first place
+   is not meaningfully less safe sitting in localStorage than in sessionStorage. */
 const TOKEN = (() => {
   const url = new URL(location.href);
   const fromUrl = url.searchParams.get("t");
   if (fromUrl) {
-    sessionStorage.setItem("fplToken", fromUrl);
+    localStorage.setItem("fplToken", fromUrl);
     url.searchParams.delete("t");
     history.replaceState(null, "", url.pathname + url.search + url.hash);
     return fromUrl;
   }
-  return sessionStorage.getItem("fplToken") || "";
+  return localStorage.getItem("fplToken") || "";
 })();
 
 const api = (path, init = {}) => fetch(path, {
@@ -1316,7 +1368,8 @@ const SVGNS = "http://www.w3.org/2000/svg";
    out/overrides.csv are still written on sync, so the CLI keeps working from
    the same squads -- but this is the copy that is always there. */
 const STORE = { drafts: "fpl.drafts", edits: "fpl.edits", squad: "fpl.squad",
-                settings: "fpl.settings", stateSyncedAt: "fpl.stateSyncedAt" };
+                settings: "fpl.settings", posTags: "fpl.postags",
+                lineupOrder: "fpl.lineuporder" };
 
 function loadLocal(key, fallback) {
   try {
@@ -1327,11 +1380,12 @@ function loadLocal(key, fallback) {
 function saveLocal(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* private mode */ }
 }
-// Every local write also queues a push to the laptop -- see "cross-device
-// sync" below. That is what lets an edit made here show up on the phone with
-// nothing pressed.
-const saveEdits = () => { saveLocal(STORE.edits, S.edits); scheduleStatePush(); };
-const saveSquad = () => { saveLocal(STORE.squad, S.squad); scheduleStatePush(); };
+/* Edits are saved twice, to two stores with different jobs. localStorage is the
+   copy that is always there, including on a phone on a train. out/overrides.csv
+   is the copy the CLI reads, and it only exists when the laptop is reachable --
+   so it is written on a debounce, silently, and its failure is not an error. */
+const saveEdits = () => { saveLocal(STORE.edits, S.edits); pushOverrides(); markSynced(); };
+const saveSquad = () => { saveLocal(STORE.squad, S.squad); markSynced(); };
 
 const S = {
   snapshot: null,
@@ -1340,6 +1394,15 @@ const S = {
   optimalState: "idle", optimalError: "",
   pos: "ALL", search: "", sort: "xpts_plan", dir: -1,
   edits: loadLocal(STORE.edits, {}), drafts: loadLocal(STORE.drafts, []),
+  // Detailed positions (LW, CB, and the rest) FPL itself does not carry --
+  // see position-tags.mjs. Keyed by id here, unlike the seed it starts from,
+  // because this is a browser preference rather than something meant to
+  // travel with the player across a season rollover.
+  posTags: loadLocal(STORE.posTags, {}),
+  // Per-club, per-row left-to-right order on the team-lineup pitch: {team: {pos:
+  // [ids]}}. Only ever set by the ‹ › nudge buttons; everything else falls back
+  // to the tag-based lane order (see TAG_LANE, effectiveRowOrder).
+  lineupOrder: loadLocal(STORE.lineupOrder, {}),
   compare: [], draftsPath: "", include: [], exclude: [],
   views: { gw: "chart", exp: "chart", tl: "chart" },
   // How you have chosen to look at the board: which section, which numbers ride
@@ -1556,7 +1619,7 @@ let settingsTimer = null;
 function saveSettings() {
   clearTimeout(settingsTimer);
   settingsTimer = setTimeout(() => saveLocal(STORE.settings, readSettings()), 250);
-  scheduleStatePush();
+  markSynced();
 }
 
 /** Put a saved blob back on screen. Runs before the snapshot has loaded, so it
@@ -1641,6 +1704,24 @@ const el = (tag, attrs = {}, parent = null) => {
   if (parent) parent.appendChild(node);
   return node;
 };
+
+/* ------------------------------------------------------------ detailed positions
+   A player's own tags win over the seed; the seed wins over showing nothing.
+   Both are optional, so most players show only their base FPL position. */
+function playerTags(player) {
+  const own = S.posTags[player.id];
+  if (own) return own;
+  return SEED_TAGS[player.full_name] || [];
+}
+function savePosTags() { saveLocal(STORE.posTags, S.posTags); }
+function togglePosTag(id, tag) {
+  const current = new Set(S.posTags[id] ?? playerTags(S.byId.get(id)));
+  if (current.has(tag)) current.delete(tag); else current.add(tag);
+  S.posTags[id] = [...current];
+  savePosTags();
+}
+const posTagBadges = (tags) => tags.map((t) =>
+  `<span class="postagbadge" title="${POSITION_TAG_LABELS[t] || t}">${t}</span>`).join("");
 
 /* ---------------------------------------------------------------- squad maths
    Formation enumeration, mirroring the server's rules exactly so the browser
@@ -1812,7 +1893,7 @@ function renderPool() {
                 title="Compare this player head to head" aria-label="Compare ${p.name}">⇄</button>
         <span>${p.name}</span>${flags.join("")}
       </div></td>
-      <td>${p.pos}</td><td>${p.team_short}</td><td>${fmt(p.price, 1)}</td>
+      <td>${p.pos}${posTagBadges(playerTags(p))}</td><td>${p.team_short}</td><td>${fmt(p.price, 1)}</td>
       <td>${fmt(p.xpts_plan, 1)}</td>
       <td>${fmt(p.xppg, 2)}</td>
       <td class="${ppgClass(p)}" title="${ppgTitle(p)}">${p.ppg ? fmt(p.ppg, 1) : "—"}</td>
@@ -2338,7 +2419,7 @@ function draftMetrics(ids) {
    reads out/drafts.json, so the laptop's copy should not rot either. Merging by
    name and keeping the newer saved_at means editing the same draft on both
    sides converges instead of one silently winning. */
-const persistDrafts = () => saveLocal(STORE.drafts, S.drafts);
+const persistDrafts = () => { saveLocal(STORE.drafts, S.drafts); markSynced(); };
 
 /* Reconciling with the laptop happens on Sync, not on load. Doing it on load
    meant every offline open fired a request that could only fail — handled, but
@@ -2374,115 +2455,6 @@ async function syncDrafts() {
   }
   renderDrafts();
 }
-
-/* ------------------------------------------------------- cross-device sync
-   Squad, edits and the Settings panel show up on the other device with
-   nothing pressed: pushed (debounced) on every local change, pulled on load
-   and whenever the tab comes back to the foreground. Same last-write-wins
-   policy as drafts, but over one blob instead of a named list -- there is
-   nothing to merge field-by-field, so whichever device's `updated_at` is
-   newer simply wins.
-
-   Deliberately narrower than the full local settings blob: which tab is open,
-   what the pool is sorted by, which chart is showing -- that is how you are
-   currently looking at the board, not a fact about the plan, and yanking it
-   out from under you because the *other* device changed tabs would be a
-   worse bug than the one this exists to fix. Only the actual model inputs
-   travel: the Settings panel, bench weights, and the required/banned chips.
-
-   Best-effort throughout, like every other laptop round trip on this page:
-   localStorage stays the durable copy, and a phone with no route to the
-   laptop keeps working exactly as it did before this existed. */
-let statePushTimer = null;
-let statePulling = false;
-
-function syncableSettings() {
-  return {
-    controls: Object.fromEntries(SETTING_IDS.map((id) => [id, $("#" + id).value])),
-    bench: Object.fromEntries(BENCH_KEYS.map((k) => [k, $(`#bw_${k}`).value])),
-    benchTouched,
-  };
-}
-
-/** The syncable-settings counterpart to applySettings() -- same shape, but
-    stops at the model inputs and never touches which tab, sort or chart mode
-    is on screen. */
-function applySyncedSettings(saved) {
-  if (!saved || typeof saved !== "object") return;
-  for (const id of SETTING_IDS) {
-    const value = saved.controls?.[id];
-    if (value !== undefined && value !== null) $("#" + id).value = value;
-  }
-  if (saved.bench) {
-    benchTouched = !!saved.benchTouched;
-    for (const k of BENCH_KEYS) if (saved.bench[k] != null) $(`#bw_${k}`).value = saved.bench[k];
-  }
-  renderControlValues();
-}
-
-function scheduleStatePush() {
-  clearTimeout(statePushTimer);
-  statePushTimer = setTimeout(pushState, 900);
-}
-
-async function pushState() {
-  clearTimeout(statePushTimer);
-  const updated_at = new Date().toISOString();
-  try {
-    const res = await api("/api/state", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ squad: S.squad, edits: S.edits,
-                             include: S.include, exclude: S.exclude,
-                             settings: syncableSettings(), updated_at }),
-    });
-    if (res.ok) saveLocal(STORE.stateSyncedAt, updated_at);
-  } catch (_) { /* laptop unreachable; localStorage is still right */ }
-}
-
-/** Pull whatever the laptop last saw and adopt it if it is newer than what
-    this device already knows about -- so a phone that made its own edits
-    offline does not have them silently overwritten by something stale. If
-    nothing has ever been pushed but this device already holds a squad worth
-    sharing, seed the laptop with it instead of waiting for the next edit. */
-async function pullState() {
-  if (statePulling) return;
-  statePulling = true;
-  try {
-    const res = await api("/api/state");
-    if (!res.ok) return;
-    const remote = await res.json();
-    const known = loadLocal(STORE.stateSyncedAt, "");
-    if (remote.updated_at && remote.updated_at > known) {
-      if (Array.isArray(remote.squad)) { S.squad = remote.squad; saveLocal(STORE.squad, S.squad); }
-      if (remote.edits && typeof remote.edits === "object") {
-        S.edits = remote.edits; saveLocal(STORE.edits, S.edits);
-      }
-      if (Array.isArray(remote.include)) S.include = remote.include.map(Number);
-      if (Array.isArray(remote.exclude)) S.exclude = remote.exclude.map(Number);
-      if (remote.settings) applySyncedSettings(remote.settings);
-      // Folds the pulled controls/bench/include/exclude into this device's own
-      // settings blob (tab, sort, views stay whatever they already were) --
-      // written straight to storage, not through saveSettings(), so adopting
-      // someone else's change does not turn around and re-push it as new.
-      saveLocal(STORE.settings, readSettings());
-      saveLocal(STORE.stateSyncedAt, remote.updated_at);
-      renderConstraints();
-      if (S.snapshot) { rebuildPool(); renderAll(); scheduleSolve(0); }
-    } else if (!remote.updated_at && (S.squad.length || Object.keys(S.edits).length)) {
-      pushState();
-    }
-  } catch (_) { /* offline; local state stands */ } finally {
-    statePulling = false;
-  }
-}
-
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") pullState();
-  else pushState();   // flush anything pending before the tab is backgrounded
-});
-// Catches a change on the laptop while the phone is already open and awake --
-// cheap enough on a local network to poll rather than needing a live channel.
-setInterval(() => { if (document.visibilityState === "visible") pullState(); }, 20000);
 
 function saveDraft() {
   const name = $("#draftName").value.trim();
@@ -2639,6 +2611,10 @@ function renderComparison() {
 const EDIT_FIELDS = [
   { k: "p_start", label: "Start probability", min: 0, max: 1, step: 0.01, dp: 2,
     help: "The biggest lever in the model. Last season's starts cannot see a transfer or a new manager." },
+  { k: "exp_minutes", label: "Expected minutes", min: 0, max: 90, step: 1, dp: 0,
+    help: "A direct minutes figure, for when you trust a specific number more than a start probability — "
+        + "an update on a rotation plan, a return from injury eased in gradually. Setting this overrides "
+        + "start probability outright; setting start probability back clears this instead." },
   { k: "npxg_per90", label: "Non-penalty xG per 90", min: 0, max: 1.5, step: 0.01, dp: 3,
     help: "Penalties are modelled separately, so this is open play only." },
   { k: "xa_per90", label: "Expected assists per 90", min: 0, max: 1.2, step: 0.01, dp: 3 },
@@ -2651,16 +2627,26 @@ const EDIT_FIELDS = [
     help: "For hypotheticals — it does not change what FPL charges you." },
 ];
 
-/* The drawer edits a copy, not S.edits itself. Writing straight through meant
-   that closing the drawer — with Close, Escape or the scrim — kept whatever the
-   sliders were last on, without ever recomputing the player: the board went on
-   showing his old points while the optimiser was quietly handed the new ones.
-   Apply commits the copy; anything else throws it away. */
-let editingId = null, editBuffer = {}, previewTimer = null;
+/* The drawer still edits a copy, but the copy is now committed for you.
+   It used to require Apply, and the reason was real: writing straight through on
+   every keystroke, without recomputing the player, left the board showing his old
+   points while the optimiser was quietly handed the new ones. That is a reason to
+   recompute on commit, not a reason to make you press a button — so the commit is
+   debounced and *always* runs the recompute, and closing the drawer by any route
+   keeps what you typed rather than silently binning it.
+
+   `editBaseline` is what makes that safe: it is the player's edits as they were
+   when the drawer opened, so Undo changes is a real escape hatch rather than
+   Reset player, which throws away edits you made a week ago too. */
+let editingId = null, editBuffer = {}, previewTimer = null, commitTimer = null;
+let editBaseline = null;
 
 function openEditor(id) {
   editingId = id;
   editBuffer = { ...(S.edits[id] || {}) };
+  // Deep, because the per-match block is nested and a shallow copy would hand
+  // Undo the same object the sliders are busy mutating.
+  editBaseline = JSON.parse(JSON.stringify(S.edits[id] || null));
   const p = S.byId.get(id);
   $("#edName").textContent = p.name;
   $("#edWho").textContent = `${p.full_name} · ${p.pos} · ${p.team} · £${p.price.toFixed(1)}m`
@@ -2670,6 +2656,7 @@ function openEditor(id) {
        adjustment and a heavier prior. If you think the model still has him wrong, say so here.`
     : `Rates are last season's, shrunk toward the positional average. An override replaces
        that number outright — the model uses exactly what you type.`;
+  renderPosTags(id);
   expandedMatches.clear();
   renderEditorFields();
   renderMatches();
@@ -2681,10 +2668,27 @@ function openEditor(id) {
   $("#scrim").classList.remove("hidden");
 }
 
+/* Detailed position, edited as a set of toggle chips rather than a slider --
+   it is not a number the model reads, just a tag the board shows back next to
+   the base FPL position wherever it lists him. */
+function renderPosTags(id) {
+  const p = S.byId.get(id);
+  const active = new Set(playerTags(p));
+  $("#edPosTags").innerHTML = POSITION_TAGS.map((t) =>
+    `<button type="button" class="postagchip${active.has(t) ? " on" : ""}"
+             data-postag="${t}" title="${POSITION_TAG_LABELS[t]}">${t}</button>`).join("");
+}
+
 function closeEditor() {
+  // Flush before dropping the buffer. The debounce means a slider moved half a
+  // second before Escape has a commit still in flight, and losing that is
+  // exactly the bug autosave is supposed to remove.
+  commitEdit({ immediate: true });
   clearTimeout(previewTimer);
+  clearTimeout(commitTimer);
   editingId = null;
   editBuffer = {};
+  editBaseline = null;
   $("#drawer").classList.remove("open");
   // The pool or the comparison can be open underneath — a player is usually
   // edited on the way to deciding whether to buy him — so the scrim belongs to
@@ -2799,6 +2803,52 @@ function teamsInPool() {
   return [...new Set(S.players.map((p) => p.team))].sort();
 }
 
+/* ---------------------------------------------------------- lineup pitch shape
+   FPL's own row template is one line per GKP/DEF/MID/FWD, which says nothing
+   about whether a back four's flanks are full-backs or wing-backs, or whether
+   the front line is two wingers round a striker or a front two. Left-to-right
+   order within a row is the one thing that can say it without a redesign, so
+   a row sorts by lane -- left, centre, right, read off the detailed tags
+   (position-tags.mjs) -- rather than by points. A player without a tag has no
+   lane opinion and sits centre, same as before this existed.
+
+   That default is a guess, and the whole point of tagging positions yourself
+   is that a guess should be correctable: the ‹ › buttons on each shirt swap it
+   with its neighbour, and the result is remembered per club so it does not
+   reset the next time the fixtures refresh. */
+const TAG_LANE = { LB: 0, LM: 0, LW: 0, RB: 2, RM: 2, RW: 2 };
+function playerLane(player) {
+  const lanes = playerTags(player).map((t) => TAG_LANE[t]).filter((v) => v !== undefined);
+  return lanes.length ? lanes.reduce((a, b) => a + b, 0) / lanes.length : 1;
+}
+function defaultRowOrder(members) {
+  return members.slice().sort((a, b) =>
+    playerLane(a) - playerLane(b) || (b.xpts_plan || 0) - (a.xpts_plan || 0));
+}
+function effectiveRowOrder(team, pos, members) {
+  const custom = S.lineupOrder[team]?.[pos];
+  const ids = new Set(members.map((p) => p.id));
+  if (custom && custom.length === ids.size && custom.every((id) => ids.has(id))) {
+    return custom.map((id) => members.find((p) => p.id === id));
+  }
+  return defaultRowOrder(members);
+}
+function nudgeLineupPlayer(id, dir) {
+  if (!lineupPitchState) return;
+  const { team, layout } = lineupPitchState;
+  const row = layout.rows.find((r) => r.slots.some((s) => s.player?.id === id));
+  if (!row) return;
+  const order = row.slots.map((s) => s.player).filter(Boolean);
+  const i = order.findIndex((p) => p.id === id);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= order.length) return;
+  [order[i], order[j]] = [order[j], order[i]];
+  const byTeam = S.lineupOrder[team] || (S.lineupOrder[team] = {});
+  byTeam[row.pos] = order.map((p) => p.id);
+  saveLocal(STORE.lineupOrder, S.lineupOrder);
+  renderLineupPitch(clubLineup(S.players, team));
+}
+
 /* The club as a pitch: the eleven it is likeliest to field, in a legal shape,
    with the next four beneath. Same renderer as a squad, because it is the same
    question asked of a different fifteen -- and expected minutes is exactly the
@@ -2807,11 +2857,12 @@ function teamsInPool() {
    Ranked on start probability rather than points: this is who plays, not who
    scores. `bestXI` enumerates the same formations the optimiser is allowed, so
    the shape on screen is one a manager could actually field. */
+let lineupPitchState = null;
 function renderLineupPitch(line) {
   const host = $("#lineupPitch");
   const ids = line.players.map((p) => p.id);
   const xi = bestXI(ids, (p) => p.p_start || 0);
-  if (!xi.ids.length) { host.innerHTML = ""; return; }
+  if (!xi.ids.length) { host.innerHTML = ""; lineupPitchState = null; return; }
 
   const chosen = new Set(xi.ids);
   const next = line.players.filter((p) => !chosen.has(p.id))
@@ -2826,12 +2877,15 @@ function renderLineupPitch(line) {
   const layout = squadLayout({
     ids: [...xi.ids, ...bench.map((p) => p.id)], lookup: S.byId,
     need: S.meta.squad_by_pos, xiIds: xi.ids, benchOrder,
+    rowOrder: (pos, members) => effectiveRowOrder(line.team, pos, members),
   });
+  lineupPitchState = { team: line.team, layout };
   // Fixed, and not the squad's metrics: this section is about who plays and for
   // how long, so those lead whatever you happen to be reading a squad by.
   const metrics = ["start", "mins", "xppg"];
   host.innerHTML = pitchHTML({
     layout, teams: S.snapshot?.teams, metrics, versus: true, benchLabels: false,
+    reorder: true,
   });
   wireShirts(host);
   markVersus(host);
@@ -2876,11 +2930,17 @@ function renderLineup() {
     const starter = p.p_start >= 0.5;
     return `<tr class="${starter ? "" : "benchrow"}">
       <td>
-        <div class="who2">${p.name}<span class="posn">${p.pos}</span>${tag}</div>
+        <div class="who2">${p.name}<span class="posn">${p.pos}</span>${posTagBadges(playerTags(p))}${tag}</div>
         <div class="minbar${starter ? "" : " sub"}" style="width:${Math.max(2, (p.exp_minutes / 90) * 100)}%"></div>
       </td>
-      <td>${p.p_start.toFixed(2)}</td>
-      <td>${p.exp_minutes.toFixed(0)}</td>
+      <td><input class="mininput" type="number" inputmode="decimal"
+          data-mininput="${p.id}" data-field="p_start"
+          min="0" max="1" step="0.01" value="${p.p_start.toFixed(2)}"
+          aria-label="Start probability for ${p.name}"></td>
+      <td><input class="mininput" type="number" inputmode="numeric"
+          data-mininput="${p.id}" data-field="exp_minutes"
+          min="0" max="90" step="1" value="${p.exp_minutes.toFixed(0)}"
+          aria-label="Expected minutes for ${p.name}"></td>
       <td>${fmt(p.xppg, 2)}</td>
       <td><button class="editbtn" data-edit="${p.id}" title="Edit ${p.name}">✎</button></td>
     </tr>`;
@@ -2902,6 +2962,32 @@ function renderLineup() {
           + "to bring it back."
         : "Fewer than eleven start, so this club is under-projected. Raise whoever you "
           + "expect to fill the gap."}</p>`;
+}
+
+/* Editing Start or Mins straight from the lineup table, without opening the
+   drawer for a one-number change. Writes to S.edits exactly as the drawer's
+   commitEdit does, so a number typed here and a slider dragged there are the
+   same override -- neither shadows the other, and the drawer (if open on this
+   same player) is kept in step rather than going stale. */
+async function inlineMinutesEdit(id, field, raw) {
+  const p = S.byId.get(id);
+  const f = EDIT_FIELDS.find((x) => x.k === field);
+  if (!p || !f || raw === "" || Number.isNaN(+raw)) { renderLineup(); return; }
+  const n = Math.min(f.max, Math.max(f.min, +raw));
+  const entry = editableFields(p).find((x) => x.f.k === field);
+  const base = entry ? entry.base : p.inputs?.[field];
+  const store = tidy(S.edits[id] ? JSON.parse(JSON.stringify(S.edits[id])) : {});
+  if (Math.abs(n - base) < 1e-9) delete store[field];
+  else { store[field] = n; delete store[MINUTES_PAIR[field]]; }
+  const tidied = tidy(store);
+  if (Object.keys(tidied).length) S.edits[id] = tidied;
+  else delete S.edits[id];
+  await recomputeEdited([id], { solveDelay: 400 });
+  renderAll();
+  if (editingId === id) {
+    editBuffer = S.edits[id] ? JSON.parse(JSON.stringify(S.edits[id])) : {};
+    renderEditorFields(); renderMatches(); previewEdit();
+  }
 }
 
 /* The same rebalance, previewed live while the slider is still moving. It costs
@@ -3075,6 +3161,13 @@ async function sendAsk(question) {
    in — the season-level buffer, or one gameweek's — so the same code renders
    both and they cannot drift in behaviour. `idPrefix` keeps element ids unique
    once the same field appears twelve times over. */
+/* p_start and exp_minutes are two views of one assumption -- the model derives
+   whichever you did not set from the one you did, and exp_minutes wins if both
+   are present. Leaving both stored would show two sliders as "changed" while
+   only one of them is actually shaping the score, so setting one here drops
+   the other from the same store. */
+const MINUTES_PAIR = { p_start: "exp_minutes", exp_minutes: "p_start" };
+
 function renderField(box, f, base, store, idPrefix, onChange, hint = "", prevSeason) {
   const value = store[f.k] !== undefined ? store[f.k] : base;
   const changed = store[f.k] !== undefined && Math.abs(store[f.k] - base) > 1e-9;
@@ -3104,7 +3197,7 @@ function renderField(box, f, base, store, idPrefix, onChange, hint = "", prevSea
     const n = Math.min(f.max, Math.max(f.min, +v));
     range.value = n; num.value = n.toFixed(f.dp);
     if (Math.abs(n - base) < 1e-9) delete store[f.k];
-    else store[f.k] = n;
+    else { store[f.k] = n; delete store[MINUTES_PAIR[f.k]]; }
     div.classList.toggle("changed", Math.abs(n - base) > 1e-9);
     onChange();
   };
@@ -3133,6 +3226,20 @@ function scoringEdit(player, buffer) {
   return edit;
 }
 
+/* Why p_start is what it is. The model blends a long-run start rate with a
+   recency-weighted one, weighted by how far ahead the horizon looks, and the
+   blend is the single number the slider opens on -- so when the two halves
+   disagree, saying so is the difference between "the model has him at 0.41" and
+   "the model has him at 0.41 because he sat out August, and he has started
+   every match since". Only shown when they actually disagree; a settled starter
+   whose two numbers match does not need a sentence about it. */
+function startFormHint(player) {
+  const long = player.start_long_run, recent = player.start_recent;
+  if (long === null || long === undefined || recent === null || recent === undefined) return "";
+  if (Math.abs(recent - long) < 0.05) return "";
+  return `season-long ${long.toFixed(2)}, lately ${recent.toFixed(2)}`;
+}
+
 function editableFields(player) {
   const out = [];
   for (const f of EDIT_FIELDS) {
@@ -3147,12 +3254,13 @@ function editableFields(player) {
     // own figure kept beside it -- the slider is the live value, and the note
     // says where it came from.
     const prevSeason = player.raw_inputs?.[f.k];
+    const form = f.k === "p_start" ? startFormHint(player) : "";
     if (f.k === REBALANCED_FIELD && player.adjusted) {
-      out.push({ f, base: player[f.k],
-                 hint: `rebalanced from ${base.toFixed(f.dp)}` });
+      const hint = [`rebalanced from ${base.toFixed(f.dp)}`, form].filter(Boolean).join(" · ");
+      out.push({ f, base: player[f.k], hint });
       continue;
     }
-    out.push({ f, base, prevSeason });
+    out.push({ f, base, prevSeason, hint: form || undefined });
   }
   return out;
 }
@@ -3235,8 +3343,11 @@ function renderMatches() {
         const n = +e.target.value;
         out.textContent = n.toFixed(2);
         if (Math.abs(n - base) < 1e-9) delete store.p_start;
-        else store.p_start = n;
+        else { store.p_start = n; delete store.exp_minutes; }
         commit();
+        // exp_minutes lives in the collapsible extra fields, not this inline
+        // row -- if it was showing "changed" it just went stale, so refresh it.
+        if (expandedMatches.has(key)) fill();
       });
     }
 
@@ -3298,9 +3409,15 @@ function previewEdit() {
       r = editPlayer(S.snapshot, editingId, scoringEdit(p, editBuffer),
         { horizon: +$("#horizon").value, halfLife: halfLife() });
     } catch (error) {
+      // An illegal buffer is shown, not committed. Committing it would send it
+      // straight to recomputeEdited, which drops rejected edits and alerts --
+      // so half-typed nonsense would fire a dialog at you mid-drag.
+      clearTimeout(commitTimer);
       $("#edPts").innerHTML = `<span class="down">${error.message}</span>`;
       return;
     }
+    // Legal, so it is a real edit: schedule the commit that used to be Apply.
+    scheduleCommit();
     const d = r.xpts_plan - before;
     $("#edPts").innerHTML = `<b>${r.xpts_plan.toFixed(1)}</b> projected points`
       + (Math.abs(d) > 0.05
@@ -3335,14 +3452,44 @@ function tidy(buffer) {
   return out;
 }
 
-async function applyEdit() {
-  if (editingId === null) return closeEditor();
+/* Commit the drawer's buffer into S.edits, which persists it and rebuilds the
+   pool. Debounced separately from previewEdit and more slowly on purpose: the
+   preview is a few numbers inside the drawer and is worth redrawing the instant
+   a slider settles, while a commit repaints the whole board and re-runs the
+   MILP, and doing that mid-drag is how a phone starts to feel like treacle. */
+function scheduleCommit() {
+  clearTimeout(commitTimer);
+  commitTimer = setTimeout(() => commitEdit(), 550);
+}
+
+async function commitEdit({ immediate = false } = {}) {
+  clearTimeout(commitTimer);
+  if (editingId === null) return;
   const id = editingId;
   const tidied = tidy(editBuffer);
+  // Nothing changed — skip the rebuild rather than repaint the board because a
+  // drawer was opened and closed.
+  if (JSON.stringify(S.edits[id] ?? null) === JSON.stringify(
+      Object.keys(tidied).length ? tidied : null)) return;
   if (Object.keys(tidied).length) S.edits[id] = tidied;
   else delete S.edits[id];
-  closeEditor();
-  await recomputeEdited([id]);
+  await recomputeEdited([id], { solveDelay: immediate ? 0 : 400 });
+  renderAll();
+}
+
+/* Undo is against the drawer's opening state, not against the model. It is the
+   button that makes live commit safe to have: you can drag a slider to see what
+   it does, decide it was wrong, and get back exactly what you had. */
+async function undoEdit() {
+  if (editingId === null) return;
+  const id = editingId;
+  clearTimeout(commitTimer);
+  editBuffer = editBaseline ? JSON.parse(JSON.stringify(editBaseline)) : {};
+  if (editBaseline) S.edits[id] = JSON.parse(JSON.stringify(editBaseline));
+  else delete S.edits[id];
+  expandedMatches.clear();
+  renderEditorFields(); renderMatches(); previewEdit();
+  await recomputeEdited([id], { solveDelay: 0 });
   renderAll();
 }
 
@@ -3350,7 +3497,7 @@ async function applyEdit() {
    that produced it in the first place. There is no second "recompute one
    player" route that could disagree with the first — which is exactly how the
    server version came to show one number and hand the optimiser another. */
-function recomputeEdited(ids) {
+function recomputeEdited(ids, { solveDelay = 0 } = {}) {
   const failed = [];
   for (const id of ids) {
     const fields = S.edits[id];
@@ -3373,7 +3520,7 @@ function recomputeEdited(ids) {
   // longer a fair comparison. Drop it and solve again.
   S.optimal = []; S.optimalPts = null; S.optimalCost = null; S.optimalBench = {};
   renderEditBanner();
-  scheduleSolve(0);
+  scheduleSolve(solveDelay);
 }
 
 function renderEditBanner() {
@@ -3384,19 +3531,235 @@ function renderEditBanner() {
     $("#editCount").innerHTML = `<span class="edited-dot">●</span> <b>${n}</b> edited `
       + `${n === 1 ? "player" : "players"}: ${names.join(", ")}`;
   }
+  // Says where the edits are, not whether you remembered to save them: they are
+  // always saved on this device, and this line is only about the CLI's copy.
+  $("#editSaved").textContent = n ? (csvState ? `· ${csvState}` : "") : "";
 }
 
-async function saveOverrides() {
-  const res = await api("/api/overrides", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ edits: S.edits }),
-  });
-  const r = await res.json();
-  alert(r.rows
-    ? `Saved ${r.rows} override${r.rows === 1 ? "" : "s"} to ${r.path}\n\n`
-      + `The CLI picks these up with:\n  python fpl.py plan --overrides ${r.path}`
-    : `No edits to save — ${r.path} removed.`);
+/* ------------------------------------------------------------ is anything
+   behind this page?
+
+   The board has two homes now. One is `fpl.py serve` on the laptop, which has
+   write endpoints: it mirrors drafts and overrides to disk, and it can re-run
+   the projection. The other is a static host, where the site is a directory of
+   files and there is no Python within a thousand miles.
+
+   Everything the board is *for* works in both, because the projection maths and
+   the optimiser run here. What differs is a handful of controls that ask the
+   laptop to do something, and a control that cannot work is worse than one that
+   is not there: it teaches you that the button is broken rather than that the
+   feature is elsewhere. So they are hidden rather than left to fail.
+
+   Probed rather than configured, because the same page is served from both and
+   a build-time flag would be a third thing to keep in sync. `/api/overrides` is
+   the probe because it is a plain GET that reads nothing expensive. */
+let serverPresent = null;
+
+async function detectServer() {
+  try {
+    const res = await api("/api/overrides");
+    serverPresent = res.ok;
+  } catch (_) {
+    serverPresent = false;
+  }
+  document.body.classList.toggle("noserver", !serverPresent);
+  return serverPresent;
 }
+
+/* --------------------------------------------------------- overrides.csv ---
+   There used to be a Save button here, and it was the wrong shape for what it
+   did: your edits were already saved -- to localStorage, the moment you made
+   them -- and the button only mirrored them to the file the CLI reads. So it
+   was a save that felt load-bearing and wasn't, and forgetting it meant the CLI
+   quietly planned off stale numbers.
+
+   Now it mirrors itself. Debounced, because a dragged slider commits several
+   times; silent, because the laptop being unreachable is the normal state on a
+   phone and is not a thing to interrupt anyone about; and retried when the
+   connection comes back, so the file catches up rather than staying behind. */
+let csvTimer = null, csvPending = false, csvState = "";
+
+function pushOverrides({ immediate = false } = {}) {
+  // A static host has no endpoint to write to, ever. That is different from the
+  // laptop being asleep, which is temporary and worth retrying -- so this drops
+  // the mirror entirely rather than queueing writes that can never land.
+  if (serverPresent === false) return;
+  csvPending = true;
+  clearTimeout(csvTimer);
+  csvTimer = setTimeout(flushOverrides, immediate ? 0 : 1200);
+}
+
+async function flushOverrides() {
+  clearTimeout(csvTimer);
+  if (!csvPending) return;
+  // Snapshot what is being sent. An edit made while the request is in flight has
+  // to leave the dirty flag set, or it is the one that never reaches disk.
+  const sending = JSON.stringify({ edits: S.edits });
+  csvPending = false;
+  try {
+    const res = await api("/api/overrides", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: sending,
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    const r = await res.json();
+    csvState = r.rows ? `saved to ${r.path}` : "";
+  } catch (_) {
+    // Offline, or no laptop behind this page at all. Neither is a failure worth
+    // a dialog: localStorage already has the edits, and this retries.
+    csvPending = true;
+    csvState = "not yet written to disk — laptop unreachable";
+  }
+  renderEditBanner();
+}
+
+// The phone comes back to a network far more often than it loses one, and this
+// is the moment the file can catch up without anyone asking it to.
+addEventListener("online", () => { if (csvPending) flushOverrides(); });
+
+/* pagehide, not beforeunload: on iOS the tab is not closed, it is evicted, and
+   beforeunload does not fire for that. This is the last chance a debounce still
+   sitting in a timer has to become a file. */
+addEventListener("pagehide", () => {
+  if (!csvPending) return;
+  clearTimeout(csvTimer);
+  try {
+    api("/api/overrides", {
+      method: "POST", keepalive: true,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ edits: S.edits }),
+    });
+  } catch (_) { /* leaving anyway; localStorage already has it */ }
+});
+
+/* ------------------------------------------------------- cross-device sync
+   overrides.csv answers "does the CLI see what I typed"; this answers "does my
+   phone see the squad and settings I changed on my laptop". Different problem,
+   different backend (Cloudflare KV via /api/sync rather than a file), same
+   shape of solution: local state is authoritative, a push follows every
+   change, and a failed push is not an error, just something to retry.
+
+   Drafts, edits and the squad travel as-is; the Settings panel travels through
+   syncableSettings()/applySyncedSettings() below, deliberately narrower than
+   the full local settings blob -- which tab is open, what the pool is sorted
+   by, which chart is showing is how you are currently looking at the board,
+   not a fact about the plan, and pulling that from a device that happened to
+   sync last would yank the screen around mid-session the same way an
+   unwanted theme change would.
+
+   Active only when TOKEN is set -- opened once from a link with ?t=, same as
+   the old --lan token. No prompt, no nag if it isn't: a board that has never
+   been given a token behaves exactly as it did before this existed.
+
+   Deliberately push-only after boot, not polling. A background pull that
+   silently replaced a squad you were mid-edit on would be worse than no sync
+   at all -- so the only time this device adopts someone else's state is the
+   one moment it has nothing of its own in flight: page load. */
+
+/** The Settings panel's model inputs (horizon, decay, budget, bench weights,
+    required/banned players) as one blob. */
+function syncableSettings() {
+  return {
+    controls: Object.fromEntries(SETTING_IDS.map((id) => [id, $("#" + id).value])),
+    bench: Object.fromEntries(BENCH_KEYS.map((k) => [k, $(`#bw_${k}`).value])),
+    benchTouched, include: [...S.include], exclude: [...S.exclude],
+  };
+}
+
+/** The counterpart to syncableSettings() -- same shape, applied back onto the
+    controls, S.include/S.exclude and localStorage, without touching which
+    tab, sort or chart mode is on screen. */
+function applySyncedSettings(saved) {
+  if (!saved || typeof saved !== "object") return;
+  for (const id of SETTING_IDS) {
+    const value = saved.controls?.[id];
+    if (value !== undefined && value !== null) $("#" + id).value = value;
+  }
+  if (saved.bench) {
+    benchTouched = !!saved.benchTouched;
+    for (const k of BENCH_KEYS) if (saved.bench[k] != null) $(`#bw_${k}`).value = saved.bench[k];
+  }
+  if (Array.isArray(saved.include)) S.include = saved.include.map(Number);
+  if (Array.isArray(saved.exclude)) S.exclude = saved.exclude.map(Number);
+  // Folds the pulled controls/bench/include/exclude into this device's own
+  // settings blob (tab, sort, views stay whatever they already were) --
+  // written straight to storage, not through saveSettings(), so adopting
+  // someone else's change does not turn around and re-push it as new.
+  saveLocal(STORE.settings, readSettings());
+  renderControlValues();
+  renderConstraints();
+}
+const SYNC_META_KEY = "fpl.sync.meta";
+let syncPending = false, syncTimer = null;
+
+const syncMeta = () => loadLocal(SYNC_META_KEY, { updated_at: 0 });
+const setSyncMeta = (m) => saveLocal(SYNC_META_KEY, m);
+
+/** Call after any change to drafts, edits, the squad, or the Settings panel. */
+function markSynced() {
+  if (!TOKEN) return;
+  setSyncMeta({ updated_at: Date.now() });
+  syncPending = true;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(pushSyncState, 1500);
+}
+
+async function pushSyncState() {
+  clearTimeout(syncTimer);
+  if (!TOKEN || !syncPending) return;
+  const sending = JSON.stringify({
+    updated_at: syncMeta().updated_at, drafts: S.drafts, edits: S.edits, squad: S.squad,
+    settings: syncableSettings(),
+  });
+  syncPending = false;
+  try {
+    const res = await api("/api/sync", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: sending,
+    });
+    if (!res.ok) throw new Error(String(res.status));
+  } catch (_) {
+    syncPending = true; // offline, or no token registered on the server side yet
+  }
+}
+
+/** Once, at boot. Adopts the other device's state only if it is strictly newer
+    than what this device already wrote -- so two devices opened at the same
+    moment with nothing pending simply agree, rather than one clobbering the
+    other over who asked first. */
+async function pullSyncState() {
+  if (!TOKEN) return;
+  try {
+    const res = await api("/api/sync");
+    if (!res.ok) return;
+    const remote = await res.json();
+    if (!remote.exists || remote.updated_at <= syncMeta().updated_at) return;
+    S.drafts = remote.drafts || [];
+    S.edits = remote.edits || {};
+    S.squad = remote.squad || [];
+    saveLocal(STORE.drafts, S.drafts);
+    saveLocal(STORE.edits, S.edits);
+    saveLocal(STORE.squad, S.squad);
+    if (remote.settings) applySyncedSettings(remote.settings);
+    setSyncMeta({ updated_at: remote.updated_at });
+    await recomputeEdited(Object.keys(S.edits).map(Number));
+    renderAll();
+  } catch (_) { /* offline, or the Worker's KV is empty on a fresh setup */ }
+}
+
+addEventListener("online", () => { if (syncPending) pushSyncState(); });
+addEventListener("pagehide", () => {
+  if (!syncPending || !TOKEN) return;
+  clearTimeout(syncTimer);
+  try {
+    api("/api/sync", {
+      method: "POST", keepalive: true, headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        updated_at: syncMeta().updated_at, drafts: S.drafts, edits: S.edits, squad: S.squad,
+        settings: syncableSettings(),
+      }),
+    });
+  } catch (_) { /* leaving anyway; localStorage already has it */ }
+});
 
 async function loadOverrides() {
   const res = await api("/api/overrides");
@@ -3543,7 +3906,6 @@ async function sync(refresh = false) {
     renderAll();
     scheduleSolve(0);
     await syncDrafts();
-    await pullState();
   } catch (error) {
     alert(`Could not sync — is the laptop running \`fpl.py serve\`?\n\n${error.message}`);
   } finally {
@@ -4131,7 +4493,7 @@ document.querySelectorAll(".toggle[data-view]").forEach((b) => b.addEventListene
   saveSettings();
 }));
 $("#clear").addEventListener("click", () => { S.squad = []; saveSquad(); renderAll(); });
-$("#edApply").addEventListener("click", applyEdit);
+$("#edUndo").addEventListener("click", undoEdit);
 $("#edReq").addEventListener("click", () => {
   if (editingId !== null) { toggleConstraint(editingId, "include"); renderEditorConstraints(); }
 });
@@ -4150,6 +4512,13 @@ $("#lineupBox").addEventListener("click", (e) => {
   const edit = e.target.closest("[data-edit]");
   if (edit) openEditor(+edit.dataset.edit);
 });
+$("#lineupBox").addEventListener("change", (e) => {
+  const input = e.target.closest("[data-mininput]");
+  if (input) inlineMinutesEdit(+input.dataset.mininput, input.dataset.field, input.value);
+});
+$("#lineupBox").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.closest("[data-mininput]")) e.target.blur();
+});
 $("#edExToggle").addEventListener("click", (e) => {
   explainOpen = !explainOpen;
   e.target.textContent = explainOpen ? "hide" : "show";
@@ -4163,6 +4532,14 @@ $("#askInput").addEventListener("keydown", (e) => {
 $("#askSuggest").addEventListener("click", (e) => {
   const button = e.target.closest("[data-ask]");
   if (button) sendAsk(button.dataset.ask);
+});
+$("#edPosTags").addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-postag]");
+  if (!chip || editingId === null) return;
+  togglePosTag(editingId, chip.dataset.postag);
+  renderPosTags(editingId);
+  renderPool();
+  renderLineup();
 });
 $("#edClose").addEventListener("click", closeEditor);
 $("#scrim").addEventListener("click", () => {
@@ -4251,6 +4628,8 @@ $("#swapBox").addEventListener("click", (e) => {
   if (edit) openEditor(+edit.dataset.edit);
 });
 $("#lineupPitch").addEventListener("click", (e) => {
+  const nudge = e.target.closest("[data-nudge]");
+  if (nudge) return nudgeLineupPlayer(+nudge.dataset.nudge, +nudge.dataset.dir);
   const vs = e.target.closest("[data-vs]");
   if (vs) return toggleVersus(+vs.dataset.vs);
   const edit = e.target.closest("[data-edit]");
@@ -4281,7 +4660,6 @@ $("#draftList").addEventListener("change", (e) => {
   const cmp = e.target.closest("[data-cmp]");
   if (cmp) toggleCompare(decodeURIComponent(cmp.dataset.cmp));
 });
-$("#saveOverrides").addEventListener("click", saveOverrides);
 $("#loadOverrides").addEventListener("click", loadOverrides);
 $("#clearEdits").addEventListener("click", async () => {
   const ids = Object.keys(S.edits).map(Number);
@@ -4367,10 +4745,8 @@ applySettings(loadLocal(STORE.settings, null));
 // that agrees with what is on screen.
 renderMetricBar(); renderChrome(); setTab(S.tab);
 loadPool();
-// Best-effort and unawaited: pullState() re-renders itself once the pool is
-// ready (see its S.snapshot guard), and a first load with no laptop in reach
-// should not wait on a request that can only time out.
-pullState();
+detectServer();
+pullSyncState();
 </script>
 </body>
 </html>

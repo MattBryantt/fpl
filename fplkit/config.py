@@ -81,6 +81,90 @@ XI_MAX_BY_POS = {"GKP": 1, "DEF": 5, "MID": 5, "FWD": 3}
 MAX_PER_CLUB = 3
 DEFAULT_BUDGET = 100.0
 
+# --- Transfer rules -----------------------------------------------------------
+# One free transfer a gameweek, banked up to five. The cap is `1 +
+# max_extra_free_transfers` in the API's game_settings block, and has been four
+# extra since 2024/25. Everything past the free allowance costs four points.
+FREE_TRANSFERS_PER_GW = 1
+MAX_FREE_TRANSFERS = 5
+HIT_COST = 4.0
+
+# Playing a wildcard or a free hit does not earn you that gameweek's free
+# transfer, but since 2024/25 it no longer burns the ones you had banked. Both
+# halves of that matter to the accounting, so they are named rather than folded
+# into a constant: the chip cancels the +1, and nothing else.
+CHIP_KEEPS_BANKED_TRANSFERS = True
+
+# 50% of any profit is taken back when you sell, rounded down to £0.1m
+# (`transfers_sell_on_fee`). Only bites on a player who has risen since you
+# bought him, which is why a plan built before a ball is kicked never sees it.
+SELL_ON_FEE = 0.5
+
+# --- What a transfer is worth -------------------------------------------------
+# A banked free transfer is worth points you have not scored yet, and a plan
+# that does not say so will always spend it: holding is free, so the solver
+# takes any gain above zero. These numbers put a price on the option.
+#
+# The shape is the community solver's, and the shape is the load-bearing part:
+# the first transfer you bank is worth most, the fifth barely anything, because
+# the cap at five means the fifth can only ever be used by a week in which you
+# also use the other four. Values in points.
+FT_VALUE = 1.5  # marginal value of a banked transfer, beyond the tabulated ones
+FT_VALUE_BY_STATE = {2: 2.0, 3: 1.6, 4: 1.3, 5: 1.1}
+
+# A flat charge on every transfer actually made, on top of the free-transfer
+# accounting. Without it the solver books a move whenever the projection edges
+# ahead by 0.01 points -- a difference well inside the model's own error, and
+# the mechanism behind the schedules that used to swap a player out and back in.
+# It buys nothing except a refusal to act on noise, which is the whole point.
+TRANSFER_FRICTION = 0.2
+
+# Points per £1m left in the bank. Cash is not scored, but it is the option to
+# take a price rise or to fix an injury without a hit, and a solver that values
+# it at zero will spend the squad down to the last £0.1m every time.
+BANK_VALUE = 0.08
+
+# Vice-captain, weighted by roughly how often the armband falls through.
+VICE_CAPTAIN_WEIGHT = 0.1
+
+# --- Chips --------------------------------------------------------------------
+# The API's own names, which is what `chips` in bootstrap-static uses and what
+# the windows come back keyed by.
+CHIPS = ("wildcard", "freehit", "bboost", "3xc")
+CHIP_LABELS = {"wildcard": "Wildcard", "freehit": "Free Hit",
+               "bboost": "Bench Boost", "3xc": "Triple Captain"}
+TRIPLE_CAPTAIN_MULTIPLIER = 3
+
+# One chip per gameweek, and each chip once per half-season. Both come from the
+# rules rather than from taste, so they are constraints, not preferences.
+MAX_CHIPS_PER_GW = 1
+
+# What a chip is worth if you hold it instead of playing it now.
+#
+# This is the single most important number in the chip model, because without
+# it a chip left unplayed at the end of the planning window is worth exactly
+# zero and the plan burns all four in the first four gameweeks. The window is
+# six gameweeks; the chip's window is nineteen.
+#
+# So each chip carries a reservation price: play it now only if this gameweek
+# beats what the chip is worth well-timed later. The numbers are the published
+# aggregates for a chip played on a double or a blank -- the gameweeks the
+# fixture list does not show until cup rounds are drawn and games are
+# postponed, which is the whole reason holding is worth anything.
+#
+#   bboost   a double-gameweek bench boost returns 15-25 against 8-12 in an
+#            ordinary week; 14 is the low end of the case for waiting.
+#   3xc      the third captain multiple, on a premium attacker with two games.
+#   freehit  fielding eleven players in a blank instead of the five or six you
+#            would otherwise have.
+#   wildcard a full restructure at the season's largest fixture swing, which is
+#            worth more than any single gameweek's points.
+#
+# They are estimates and they are knobs. Set them to zero to ask the narrower
+# question "when in this window is each chip best?", which is what the plan
+# answered before it could weigh holding.
+CHIP_HOLD_VALUE = {"bboost": 14.0, "3xc": 10.0, "freehit": 12.0, "wildcard": 15.0}
+
 # --- Model constants ----------------------------------------------------------
 # Share of a team's goals that come from penalties, league-wide.
 PENALTY_GOAL_SHARE = 0.09

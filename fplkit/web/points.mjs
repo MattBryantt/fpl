@@ -28,6 +28,19 @@ function recomputeMinutes(p, rules) {
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
+/* Inverts the forward minutes formula (see recomputeMinutes) to recover
+ * p_start from an explicit exp_minutes. The naive `exp_minutes /
+ * ASSUMED_START_MINUTES` shortcut ignores the player's own p_sub and
+ * saturates at 1.0 for anything above 78 minutes -- a real player's
+ * exp_minutes never reaches 78 unless p_start is already 1.0, so 90 read back
+ * through the shortcut always claimed certainty. Clipped to rules.MAX_P_START
+ * rather than 1.0 to match the ceiling every other minutes path uses. */
+function pStartFromExpMinutes(expMinutes, pSub, rules) {
+  const denom = rules.ASSUMED_START_MINUTES - pSub * rules.ASSUMED_SUB_MINUTES;
+  const pStart = (expMinutes - pSub * rules.ASSUMED_SUB_MINUTES) / denom;
+  return clamp(pStart, 0, rules.MAX_P_START);
+}
+
 /** A copy of `player` with the user's overrides applied, mirroring
  *  model.apply_overrides — including `<field>_mult` and the minutes coupling. */
 export function applyOverrides(player, overrides, rules) {
@@ -53,7 +66,7 @@ export function applyOverrides(player, overrides, rules) {
     // exp_minutes wins if both are given: it is the more specific claim.
     if (field === "p_start") minutesTouched = true;
     else if (field === "exp_minutes") {
-      p.p_start = clamp(p.exp_minutes / rules.ASSUMED_START_MINUTES, 0, 1);
+      p.p_start = pStartFromExpMinutes(p.exp_minutes, p.p_sub, rules);
       minutesTouched = explicitMinutes = true;
     }
   }
