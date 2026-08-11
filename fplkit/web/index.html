@@ -2540,6 +2540,10 @@ function renderComparison() {
 const EDIT_FIELDS = [
   { k: "p_start", label: "Start probability", min: 0, max: 1, step: 0.01, dp: 2,
     help: "The biggest lever in the model. Last season's starts cannot see a transfer or a new manager." },
+  { k: "exp_minutes", label: "Expected minutes", min: 0, max: 90, step: 1, dp: 0,
+    help: "A direct minutes figure, for when you trust a specific number more than a start probability — "
+        + "an update on a rotation plan, a return from injury eased in gradually. Setting this overrides "
+        + "start probability outright; setting start probability back clears this instead." },
   { k: "npxg_per90", label: "Non-penalty xG per 90", min: 0, max: 1.5, step: 0.01, dp: 3,
     help: "Penalties are modelled separately, so this is open play only." },
   { k: "xa_per90", label: "Expected assists per 90", min: 0, max: 1.2, step: 0.01, dp: 3 },
@@ -2992,6 +2996,13 @@ async function sendAsk(question) {
    in — the season-level buffer, or one gameweek's — so the same code renders
    both and they cannot drift in behaviour. `idPrefix` keeps element ids unique
    once the same field appears twelve times over. */
+/* p_start and exp_minutes are two views of one assumption -- the model derives
+   whichever you did not set from the one you did, and exp_minutes wins if both
+   are present. Leaving both stored would show two sliders as "changed" while
+   only one of them is actually shaping the score, so setting one here drops
+   the other from the same store. */
+const MINUTES_PAIR = { p_start: "exp_minutes", exp_minutes: "p_start" };
+
 function renderField(box, f, base, store, idPrefix, onChange, hint = "", prevSeason) {
   const value = store[f.k] !== undefined ? store[f.k] : base;
   const changed = store[f.k] !== undefined && Math.abs(store[f.k] - base) > 1e-9;
@@ -3021,7 +3032,7 @@ function renderField(box, f, base, store, idPrefix, onChange, hint = "", prevSea
     const n = Math.min(f.max, Math.max(f.min, +v));
     range.value = n; num.value = n.toFixed(f.dp);
     if (Math.abs(n - base) < 1e-9) delete store[f.k];
-    else store[f.k] = n;
+    else { store[f.k] = n; delete store[MINUTES_PAIR[f.k]]; }
     div.classList.toggle("changed", Math.abs(n - base) > 1e-9);
     onChange();
   };
@@ -3167,8 +3178,11 @@ function renderMatches() {
         const n = +e.target.value;
         out.textContent = n.toFixed(2);
         if (Math.abs(n - base) < 1e-9) delete store.p_start;
-        else store.p_start = n;
+        else { store.p_start = n; delete store.exp_minutes; }
         commit();
+        // exp_minutes lives in the collapsible extra fields, not this inline
+        // row -- if it was showing "changed" it just went stale, so refresh it.
+        if (expandedMatches.has(key)) fill();
       });
     }
 
