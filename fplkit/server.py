@@ -804,6 +804,7 @@ ASSETS: dict[str, str] = {
     "pitch.mjs": "text/javascript",
     "poisson.mjs": "text/javascript",
     "points.mjs": "text/javascript",
+    "position-tags.mjs": "text/javascript",
     "solver.js": "text/javascript",
     "solver-worker.js": "text/javascript",
     "vendor/highs.js": "text/javascript",

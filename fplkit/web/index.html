@@ -445,6 +445,20 @@ body.noserver .needs-server { display: none !important; }
   font-size: 10px; color: var(--muted); border: 1px solid var(--border);
   border-radius: 4px; padding: 0 4px;
 }
+/* Detailed position (LW, CB, ...) shown wherever the base FPL position is --
+   a small badge rather than a column, since most players do not have one. */
+.postagbadge {
+  font-size: 9.5px; font-weight: 600; color: var(--series-2);
+  border: 1px solid var(--series-2); border-radius: 4px; padding: 0 4px;
+  margin-left: 4px; white-space: nowrap;
+}
+.postags { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
+.postagchip {
+  font-size: 11px; font-weight: 600; color: var(--muted); cursor: pointer;
+  border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px;
+  background: transparent;
+}
+.postagchip.on { background: var(--series-2); color: #fff; border-color: var(--series-2); }
 .minbar { height: 4px; border-radius: 2px; background: var(--series-1); margin-top: 3px; }
 .minbar.sub { background: var(--axis); }
 .mininput {
@@ -1233,6 +1247,7 @@ Drag to 1.00× to count every fixture in the horizon equally.">Fixture decay
 <aside class="drawer" id="drawer" aria-label="Edit player stats">
   <h3 id="edName">—</h3>
   <div class="who" id="edWho"></div>
+  <div class="postags" id="edPosTags"></div>
   <div class="editpts" id="edPts"></div>
   <div class="why" id="edWhy"></div>
 
@@ -1297,6 +1312,7 @@ import { derivePool, editPlayer, explainPlayer, clubLineup, checkOverridable,
          age, POINT_SOURCES } from "/assets/board.mjs";
 import { pitchHTML, cardsHTML, squadLayout, wireShirts, shirtUrl,
          METRICS, METRIC_KEYS, MAX_METRICS, cleanMetrics } from "/assets/pitch.mjs";
+import { POSITION_TAGS, POSITION_TAG_LABELS, SEED_TAGS } from "/assets/position-tags.mjs";
 
 const $ = (s) => document.querySelector(s);
 
@@ -1339,7 +1355,7 @@ const SVGNS = "http://www.w3.org/2000/svg";
    out/overrides.csv are still written on sync, so the CLI keeps working from
    the same squads -- but this is the copy that is always there. */
 const STORE = { drafts: "fpl.drafts", edits: "fpl.edits", squad: "fpl.squad",
-                settings: "fpl.settings" };
+                settings: "fpl.settings", posTags: "fpl.postags" };
 
 function loadLocal(key, fallback) {
   try {
@@ -1364,6 +1380,11 @@ const S = {
   optimalState: "idle", optimalError: "",
   pos: "ALL", search: "", sort: "xpts_plan", dir: -1,
   edits: loadLocal(STORE.edits, {}), drafts: loadLocal(STORE.drafts, []),
+  // Detailed positions (LW, CB, and the rest) FPL itself does not carry --
+  // see position-tags.mjs. Keyed by id here, unlike the seed it starts from,
+  // because this is a browser preference rather than something meant to
+  // travel with the player across a season rollover.
+  posTags: loadLocal(STORE.posTags, {}),
   compare: [], draftsPath: "", include: [], exclude: [],
   views: { gw: "chart", exp: "chart", tl: "chart" },
   // How you have chosen to look at the board: which section, which numbers ride
@@ -1665,6 +1686,24 @@ const el = (tag, attrs = {}, parent = null) => {
   return node;
 };
 
+/* ------------------------------------------------------------ detailed positions
+   A player's own tags win over the seed; the seed wins over showing nothing.
+   Both are optional, so most players show only their base FPL position. */
+function playerTags(player) {
+  const own = S.posTags[player.id];
+  if (own) return own;
+  return SEED_TAGS[player.full_name] || [];
+}
+function savePosTags() { saveLocal(STORE.posTags, S.posTags); }
+function togglePosTag(id, tag) {
+  const current = new Set(S.posTags[id] ?? playerTags(S.byId.get(id)));
+  if (current.has(tag)) current.delete(tag); else current.add(tag);
+  S.posTags[id] = [...current];
+  savePosTags();
+}
+const posTagBadges = (tags) => tags.map((t) =>
+  `<span class="postagbadge" title="${POSITION_TAG_LABELS[t] || t}">${t}</span>`).join("");
+
 /* ---------------------------------------------------------------- squad maths
    Formation enumeration, mirroring the server's rules exactly so the browser
    and the optimiser never disagree about what a legal XI is. */
@@ -1835,7 +1874,7 @@ function renderPool() {
                 title="Compare this player head to head" aria-label="Compare ${p.name}">⇄</button>
         <span>${p.name}</span>${flags.join("")}
       </div></td>
-      <td>${p.pos}</td><td>${p.team_short}</td><td>${fmt(p.price, 1)}</td>
+      <td>${p.pos}${posTagBadges(playerTags(p))}</td><td>${p.team_short}</td><td>${fmt(p.price, 1)}</td>
       <td>${fmt(p.xpts_plan, 1)}</td>
       <td>${fmt(p.xppg, 2)}</td>
       <td class="${ppgClass(p)}" title="${ppgTitle(p)}">${p.ppg ? fmt(p.ppg, 1) : "—"}</td>
@@ -2598,6 +2637,7 @@ function openEditor(id) {
        adjustment and a heavier prior. If you think the model still has him wrong, say so here.`
     : `Rates are last season's, shrunk toward the positional average. An override replaces
        that number outright — the model uses exactly what you type.`;
+  renderPosTags(id);
   expandedMatches.clear();
   renderEditorFields();
   renderMatches();
@@ -2607,6 +2647,17 @@ function openEditor(id) {
   previewEdit();
   $("#drawer").classList.add("open");
   $("#scrim").classList.remove("hidden");
+}
+
+/* Detailed position, edited as a set of toggle chips rather than a slider --
+   it is not a number the model reads, just a tag the board shows back next to
+   the base FPL position wherever it lists him. */
+function renderPosTags(id) {
+  const p = S.byId.get(id);
+  const active = new Set(playerTags(p));
+  $("#edPosTags").innerHTML = POSITION_TAGS.map((t) =>
+    `<button type="button" class="postagchip${active.has(t) ? " on" : ""}"
+             data-postag="${t}" title="${POSITION_TAG_LABELS[t]}">${t}</button>`).join("");
 }
 
 function closeEditor() {
@@ -2810,7 +2861,7 @@ function renderLineup() {
     const starter = p.p_start >= 0.5;
     return `<tr class="${starter ? "" : "benchrow"}">
       <td>
-        <div class="who2">${p.name}<span class="posn">${p.pos}</span>${tag}</div>
+        <div class="who2">${p.name}<span class="posn">${p.pos}</span>${posTagBadges(playerTags(p))}${tag}</div>
         <div class="minbar${starter ? "" : " sub"}" style="width:${Math.max(2, (p.exp_minutes / 90) * 100)}%"></div>
       </td>
       <td><input class="mininput" type="number" inputmode="decimal"
@@ -4367,6 +4418,14 @@ $("#askInput").addEventListener("keydown", (e) => {
 $("#askSuggest").addEventListener("click", (e) => {
   const button = e.target.closest("[data-ask]");
   if (button) sendAsk(button.dataset.ask);
+});
+$("#edPosTags").addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-postag]");
+  if (!chip || editingId === null) return;
+  togglePosTag(editingId, chip.dataset.postag);
+  renderPosTags(editingId);
+  renderPool();
+  renderLineup();
 });
 $("#edClose").addEventListener("click", closeEditor);
 $("#scrim").addEventListener("click", () => {
