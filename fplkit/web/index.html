@@ -745,6 +745,17 @@ body.noserver .needs-server { display: none !important; }
 .ptag.in { background: #0ca30c; color: #fff; }
 .ptag.out { background: rgba(0,0,0,0.5); color: #fff; }
 
+/* Left/right nudge on the team-lineup pitch, so a row can be reordered to
+   look like how the club actually lines up rather than however the model's
+   own point-scoring happened to sort it. */
+.pnudge { display: flex; gap: 3px; margin-top: 3px; justify-content: center; }
+.pnudgebtn {
+  width: 18px; height: 16px; border-radius: 3px; border: 0; cursor: pointer;
+  line-height: 1; padding: 0; font-size: 11px; font-weight: 700;
+  background: rgba(0,0,0,0.45); color: #fff;
+}
+.pnudgebtn:hover { background: var(--series-2); }
+
 .benchband {
   border-radius: 0 0 12px 12px; padding: 11px 10px 13px;
   background: var(--surface-1); border: 1px solid var(--border); border-top: 0;
@@ -1153,7 +1164,9 @@ Drag to 1.00× to count every fixture in the horizon equally.">Fixture decay
       <h2 style="margin:0 0 3px">Team lineups</h2>
       <div class="sub">Who the model expects to start, and for how long. Minutes are a
         fixed pool — eleven players start — so overriding one man's start probability
-        takes the minutes off his team-mates rather than inventing a twelfth starter.</div>
+        takes the minutes off his team-mates rather than inventing a twelfth starter.
+        Each row is ordered left-to-right by tagged position where one is set; use
+        ‹ › on a shirt to correct it — the shape is remembered per club.</div>
     </div>
     <div class="lineupctl">
       <select id="lineupTeam" aria-label="Club"></select>
@@ -1355,7 +1368,8 @@ const SVGNS = "http://www.w3.org/2000/svg";
    out/overrides.csv are still written on sync, so the CLI keeps working from
    the same squads -- but this is the copy that is always there. */
 const STORE = { drafts: "fpl.drafts", edits: "fpl.edits", squad: "fpl.squad",
-                settings: "fpl.settings", posTags: "fpl.postags" };
+                settings: "fpl.settings", posTags: "fpl.postags",
+                lineupOrder: "fpl.lineuporder" };
 
 function loadLocal(key, fallback) {
   try {
@@ -1385,6 +1399,10 @@ const S = {
   // because this is a browser preference rather than something meant to
   // travel with the player across a season rollover.
   posTags: loadLocal(STORE.posTags, {}),
+  // Per-club, per-row left-to-right order on the team-lineup pitch: {team: {pos:
+  // [ids]}}. Only ever set by the ‹ › nudge buttons; everything else falls back
+  // to the tag-based lane order (see TAG_LANE, effectiveRowOrder).
+  lineupOrder: loadLocal(STORE.lineupOrder, {}),
   compare: [], draftsPath: "", include: [], exclude: [],
   views: { gw: "chart", exp: "chart", tl: "chart" },
   // How you have chosen to look at the board: which section, which numbers ride
@@ -2784,6 +2802,52 @@ function teamsInPool() {
   return [...new Set(S.players.map((p) => p.team))].sort();
 }
 
+/* ---------------------------------------------------------- lineup pitch shape
+   FPL's own row template is one line per GKP/DEF/MID/FWD, which says nothing
+   about whether a back four's flanks are full-backs or wing-backs, or whether
+   the front line is two wingers round a striker or a front two. Left-to-right
+   order within a row is the one thing that can say it without a redesign, so
+   a row sorts by lane -- left, centre, right, read off the detailed tags
+   (position-tags.mjs) -- rather than by points. A player without a tag has no
+   lane opinion and sits centre, same as before this existed.
+
+   That default is a guess, and the whole point of tagging positions yourself
+   is that a guess should be correctable: the ‹ › buttons on each shirt swap it
+   with its neighbour, and the result is remembered per club so it does not
+   reset the next time the fixtures refresh. */
+const TAG_LANE = { LB: 0, LM: 0, LW: 0, RB: 2, RM: 2, RW: 2 };
+function playerLane(player) {
+  const lanes = playerTags(player).map((t) => TAG_LANE[t]).filter((v) => v !== undefined);
+  return lanes.length ? lanes.reduce((a, b) => a + b, 0) / lanes.length : 1;
+}
+function defaultRowOrder(members) {
+  return members.slice().sort((a, b) =>
+    playerLane(a) - playerLane(b) || (b.xpts_plan || 0) - (a.xpts_plan || 0));
+}
+function effectiveRowOrder(team, pos, members) {
+  const custom = S.lineupOrder[team]?.[pos];
+  const ids = new Set(members.map((p) => p.id));
+  if (custom && custom.length === ids.size && custom.every((id) => ids.has(id))) {
+    return custom.map((id) => members.find((p) => p.id === id));
+  }
+  return defaultRowOrder(members);
+}
+function nudgeLineupPlayer(id, dir) {
+  if (!lineupPitchState) return;
+  const { team, layout } = lineupPitchState;
+  const row = layout.rows.find((r) => r.slots.some((s) => s.player?.id === id));
+  if (!row) return;
+  const order = row.slots.map((s) => s.player).filter(Boolean);
+  const i = order.findIndex((p) => p.id === id);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= order.length) return;
+  [order[i], order[j]] = [order[j], order[i]];
+  const byTeam = S.lineupOrder[team] || (S.lineupOrder[team] = {});
+  byTeam[row.pos] = order.map((p) => p.id);
+  saveLocal(STORE.lineupOrder, S.lineupOrder);
+  renderLineupPitch(clubLineup(S.players, team));
+}
+
 /* The club as a pitch: the eleven it is likeliest to field, in a legal shape,
    with the next four beneath. Same renderer as a squad, because it is the same
    question asked of a different fifteen -- and expected minutes is exactly the
@@ -2792,11 +2856,12 @@ function teamsInPool() {
    Ranked on start probability rather than points: this is who plays, not who
    scores. `bestXI` enumerates the same formations the optimiser is allowed, so
    the shape on screen is one a manager could actually field. */
+let lineupPitchState = null;
 function renderLineupPitch(line) {
   const host = $("#lineupPitch");
   const ids = line.players.map((p) => p.id);
   const xi = bestXI(ids, (p) => p.p_start || 0);
-  if (!xi.ids.length) { host.innerHTML = ""; return; }
+  if (!xi.ids.length) { host.innerHTML = ""; lineupPitchState = null; return; }
 
   const chosen = new Set(xi.ids);
   const next = line.players.filter((p) => !chosen.has(p.id))
@@ -2811,12 +2876,15 @@ function renderLineupPitch(line) {
   const layout = squadLayout({
     ids: [...xi.ids, ...bench.map((p) => p.id)], lookup: S.byId,
     need: S.meta.squad_by_pos, xiIds: xi.ids, benchOrder,
+    rowOrder: (pos, members) => effectiveRowOrder(line.team, pos, members),
   });
+  lineupPitchState = { team: line.team, layout };
   // Fixed, and not the squad's metrics: this section is about who plays and for
   // how long, so those lead whatever you happen to be reading a squad by.
   const metrics = ["start", "mins", "xppg"];
   host.innerHTML = pitchHTML({
     layout, teams: S.snapshot?.teams, metrics, versus: true, benchLabels: false,
+    reorder: true,
   });
   wireShirts(host);
   markVersus(host);
@@ -4514,6 +4582,8 @@ $("#swapBox").addEventListener("click", (e) => {
   if (edit) openEditor(+edit.dataset.edit);
 });
 $("#lineupPitch").addEventListener("click", (e) => {
+  const nudge = e.target.closest("[data-nudge]");
+  if (nudge) return nudgeLineupPlayer(+nudge.dataset.nudge, +nudge.dataset.dir);
   const vs = e.target.closest("[data-vs]");
   if (vs) return toggleVersus(+vs.dataset.vs);
   const edit = e.target.closest("[data-edit]");
