@@ -1616,10 +1616,24 @@ function readSettings() {
 /* Coalesced, because dragging a slider fires input on every pixel and this is a
    JSON stringify plus a synchronous localStorage write. */
 let settingsTimer = null;
+/** Snapshot of syncableSettings() as of the last save, so saveSettings() --
+    called from every settings-panel change, including ones that are purely
+    how this device is looking at the board (tab, sort, theme, which chart is
+    showing) -- only tells cross-device sync about it when the syncable
+    subset actually moved. Without this, switching tabs on a device that is
+    just sitting open re-pushes its current squad/edits/drafts under a fresh
+    timestamp, clobbering a genuine edit made on another device in the
+    meantime. Kept in sync with reality at boot and after every pull, both of
+    which set the syncable settings without going through saveSettings(). */
+let lastSyncableSettings = null;
 function saveSettings() {
   clearTimeout(settingsTimer);
   settingsTimer = setTimeout(() => saveLocal(STORE.settings, readSettings()), 250);
-  markSynced();
+  const syncable = JSON.stringify(syncableSettings());
+  if (syncable !== lastSyncableSettings) {
+    lastSyncableSettings = syncable;
+    markSynced();
+  }
 }
 
 /** Put a saved blob back on screen. Runs before the snapshot has loaded, so it
@@ -3699,6 +3713,11 @@ function applySyncedSettings(saved) {
   // written straight to storage, not through saveSettings(), so adopting
   // someone else's change does not turn around and re-push it as new.
   saveLocal(STORE.settings, readSettings());
+  // Re-baseline so the next unrelated UI tweak (switching tabs, sorting the
+  // pool) diffs against what was just adopted, not against whatever this
+  // device had before the pull -- otherwise that tweak would see the pulled
+  // values as "changed" and re-push them right back out.
+  lastSyncableSettings = JSON.stringify(syncableSettings());
   renderControlValues();
   renderConstraints();
 }
@@ -4753,6 +4772,7 @@ if ("serviceWorker" in navigator) {
 // straight off the controls, so restoring them afterwards would mean deriving
 // the whole pool twice on every load.
 applySettings(loadLocal(STORE.settings, null));
+lastSyncableSettings = JSON.stringify(syncableSettings());
 // The chrome is drawn whether or not there was anything saved: a first visit has
 // no settings blob and still needs a metric bar, a tab and a settings button
 // that agrees with what is on screen.
