@@ -1,38 +1,43 @@
 {
-  // The board, as a Worker that serves a directory of static files.
+  // The board, as a Worker that serves a directory of static files plus one
+  // small script for the one thing static files cannot do: hold state two
+  // devices both need to see.
   //
-  // Workers rather than Pages, though both would work and both are free.
-  // Cloudflare's own guidance since Workers gained native static-asset serving
-  // is to start new projects here -- Pages is supported but no longer where the
-  // work is going -- and two of the differences matter to this project
-  // specifically:
-  //
-  //   * `run_worker_first` below is where /api/ask goes when the "Ask why" box
-  //     is ported. On a static host the browser already computes the projection,
-  //     so all a server has to do is hold the model key and proxy the call.
-  //   * Cron Triggers live here too, which is an escape route if GitHub Actions
-  //     ever stops being the right place to build the snapshot.
-  //
-  // Static asset requests are not billed, so a board that is mostly a 3.3 MB
-  // WASM solver and a 650 KB JSON file costs nothing to serve.
+  // Workers rather than Pages, though both would work, both are free, and both
+  // can bind KV. Cloudflare's own guidance since Workers gained native
+  // static-asset serving is to start new projects here -- Pages is supported
+  // but no longer where the work is going.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "fpl-board",
   "compatibility_date": "2026-08-10",
-  // Not needed for static-asset serving alone, but harmless to set now and
-  // saves a surprise later: /api/ask will be a Worker script, and some of the
-  // libraries a proxy to an LLM endpoint pulls in expect Node builtins.
+  // Not needed by src/worker.js today, but saves a surprise later: /api/ask
+  // will be a Worker route too, and a proxy to an LLM endpoint tends to pull
+  // in something that expects Node builtins.
   "compatibility_flags": ["nodejs_compat"],
 
-  "assets": {
-    // Written by `python fpl.py build --out dist`. Everything in it is static;
-    // there is no Worker script in this deployment at all yet.
-    "directory": "dist"
+  "main": "src/worker.js",
 
-    // When /api/ask is ported, this becomes:
-    //   "binding": "ASSETS",
-    //   "run_worker_first": ["/api/*"]
-    // and a src/index.ts handles those paths before the assets are consulted.
+  "assets": {
+    // Written by `python fpl.py build --out dist`.
+    "directory": "dist",
+    // Only /api/* invokes src/worker.js at all -- everything else (the shell,
+    // the WASM solver, the snapshot, the shirts) is served straight from this
+    // binding without the script running, which is what keeps a board that is
+    // mostly static actually free to run. /api/ask lands in the same list
+    // when it is ported.
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
   },
+
+  // The one piece of state two devices both need: drafts, edits, squad. See
+  // src/worker.js. Free tier is 100k reads/day and 1k writes/day -- a
+  // personal board pushing on every edit does not come close.
+  "kv_namespaces": [
+    {
+      "binding": "FPL_STATE",
+      "id": "150fab35200a4cd7aa313b87cfd4fdf6"
+    }
+  ],
 
   // Cache-Control per path is in dist/_headers, written by fplkit/site.py --
   // it has to travel with the build rather than live here, because the rule

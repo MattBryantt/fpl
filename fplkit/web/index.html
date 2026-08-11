@@ -1288,20 +1288,27 @@ import { pitchHTML, cardsHTML, squadLayout, wireShirts, shirtUrl,
 const $ = (s) => document.querySelector(s);
 
 /* ---------------------------------------------------------------- auth token
-   When the board is reachable beyond this machine the server requires a shared
-   token. It arrives once in the URL (from the printed link or a QR code), then
-   moves into sessionStorage and rides on a header so it stops appearing in the
-   address bar, in history, and in any screenshot of the page. */
+   Two write-capable things need this, not one: the old `--lan` server, and now
+   /api/sync on the Workers deployment. Both check the same X-FPL-Token header,
+   so one token and one storage slot cover both without the client having to
+   know which kind of backend it is talking to.
+
+   It arrives once in the URL (from a printed link or a QR code), then moves out
+   of it so it stops appearing in the address bar, in history, and in any
+   screenshot of the page. localStorage rather than sessionStorage -- sync is
+   only worth having if reopening the app tomorrow does not mean typing the
+   token in again, and a token that never leaves this device in the first place
+   is not meaningfully less safe sitting in localStorage than in sessionStorage. */
 const TOKEN = (() => {
   const url = new URL(location.href);
   const fromUrl = url.searchParams.get("t");
   if (fromUrl) {
-    sessionStorage.setItem("fplToken", fromUrl);
+    localStorage.setItem("fplToken", fromUrl);
     url.searchParams.delete("t");
     history.replaceState(null, "", url.pathname + url.search + url.hash);
     return fromUrl;
   }
-  return sessionStorage.getItem("fplToken") || "";
+  return localStorage.getItem("fplToken") || "";
 })();
 
 const api = (path, init = {}) => fetch(path, {
@@ -1334,8 +1341,8 @@ function saveLocal(key, value) {
    copy that is always there, including on a phone on a train. out/overrides.csv
    is the copy the CLI reads, and it only exists when the laptop is reachable --
    so it is written on a debounce, silently, and its failure is not an error. */
-const saveEdits = () => { saveLocal(STORE.edits, S.edits); pushOverrides(); };
-const saveSquad = () => saveLocal(STORE.squad, S.squad);
+const saveEdits = () => { saveLocal(STORE.edits, S.edits); pushOverrides(); markSynced(); };
+const saveSquad = () => { saveLocal(STORE.squad, S.squad); markSynced(); };
 
 const S = {
   snapshot: null,
@@ -2341,7 +2348,7 @@ function draftMetrics(ids) {
    reads out/drafts.json, so the laptop's copy should not rot either. Merging by
    name and keeping the newer saved_at means editing the same draft on both
    sides converges instead of one silently winning. */
-const persistDrafts = () => saveLocal(STORE.drafts, S.drafts);
+const persistDrafts = () => { saveLocal(STORE.drafts, S.drafts); markSynced(); };
 
 /* Reconciling with the laptop happens on Sync, not on load. Doing it on load
    meant every offline open fired a request that could only fail — handled, but
@@ -3446,6 +3453,90 @@ addEventListener("pagehide", () => {
   } catch (_) { /* leaving anyway; localStorage already has it */ }
 });
 
+/* ------------------------------------------------------- cross-device sync
+   overrides.csv answers "does the CLI see what I typed"; this answers "does my
+   phone see the squad I built on my laptop". Different problem, different
+   backend (Cloudflare KV via /api/sync rather than a file), same shape of
+   solution: local state is authoritative, a push follows every change, and a
+   failed push is not an error, just something to retry.
+
+   Active only when TOKEN is set -- opened once from a link with ?t=, same as
+   the old --lan token. No prompt, no nag if it isn't: a board that has never
+   been given a token behaves exactly as it did before this existed.
+
+   Deliberately push-only after boot, not polling. A background pull that
+   silently replaced a squad you were mid-edit on would be worse than no sync
+   at all -- so the only time this device adopts someone else's state is the
+   one moment it has nothing of its own in flight: page load. */
+const SYNC_META_KEY = "fpl.sync.meta";
+let syncPending = false, syncTimer = null;
+
+const syncMeta = () => loadLocal(SYNC_META_KEY, { updated_at: 0 });
+const setSyncMeta = (m) => saveLocal(SYNC_META_KEY, m);
+
+/** Call after any change to drafts, edits or the squad. */
+function markSynced() {
+  if (!TOKEN) return;
+  setSyncMeta({ updated_at: Date.now() });
+  syncPending = true;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(pushSyncState, 1500);
+}
+
+async function pushSyncState() {
+  clearTimeout(syncTimer);
+  if (!TOKEN || !syncPending) return;
+  const sending = JSON.stringify({
+    updated_at: syncMeta().updated_at, drafts: S.drafts, edits: S.edits, squad: S.squad,
+  });
+  syncPending = false;
+  try {
+    const res = await api("/api/sync", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: sending,
+    });
+    if (!res.ok) throw new Error(String(res.status));
+  } catch (_) {
+    syncPending = true; // offline, or no token registered on the server side yet
+  }
+}
+
+/** Once, at boot. Adopts the other device's state only if it is strictly newer
+    than what this device already wrote -- so two devices opened at the same
+    moment with nothing pending simply agree, rather than one clobbering the
+    other over who asked first. */
+async function pullSyncState() {
+  if (!TOKEN) return;
+  try {
+    const res = await api("/api/sync");
+    if (!res.ok) return;
+    const remote = await res.json();
+    if (!remote.exists || remote.updated_at <= syncMeta().updated_at) return;
+    S.drafts = remote.drafts || [];
+    S.edits = remote.edits || {};
+    S.squad = remote.squad || [];
+    saveLocal(STORE.drafts, S.drafts);
+    saveLocal(STORE.edits, S.edits);
+    saveLocal(STORE.squad, S.squad);
+    setSyncMeta({ updated_at: remote.updated_at });
+    await recomputeEdited(Object.keys(S.edits).map(Number));
+    renderAll();
+  } catch (_) { /* offline, or the Worker's KV is empty on a fresh setup */ }
+}
+
+addEventListener("online", () => { if (syncPending) pushSyncState(); });
+addEventListener("pagehide", () => {
+  if (!syncPending || !TOKEN) return;
+  clearTimeout(syncTimer);
+  try {
+    api("/api/sync", {
+      method: "POST", keepalive: true, headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        updated_at: syncMeta().updated_at, drafts: S.drafts, edits: S.edits, squad: S.squad,
+      }),
+    });
+  } catch (_) { /* leaving anyway; localStorage already has it */ }
+});
+
 async function loadOverrides() {
   const res = await api("/api/overrides");
   const r = await res.json();
@@ -4414,6 +4505,7 @@ applySettings(loadLocal(STORE.settings, null));
 renderMetricBar(); renderChrome(); setTab(S.tab);
 loadPool();
 detectServer();
+pullSyncState();
 </script>
 </body>
 </html>

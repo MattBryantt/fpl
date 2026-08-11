@@ -348,20 +348,18 @@ or a key is missing, it says so here.</p>
 </div>
 <script>
 /* ---------------------------------------------------------------- auth token
-   When the board is reachable beyond this machine the server requires a shared
-   token. It arrives once in the URL (from the printed link or a QR code), then
-   moves into sessionStorage and rides on a header so it stops appearing in the
-   address bar, in history, and in any screenshot of the page. */
+   Same slot as index.html -- see the comment there. localStorage rather than
+   sessionStorage so it survives closing and reopening the app. */
 const TOKEN = (() => {
   const url = new URL(location.href);
   const fromUrl = url.searchParams.get("t");
   if (fromUrl) {
-    sessionStorage.setItem("fplToken", fromUrl);
+    localStorage.setItem("fplToken", fromUrl);
     url.searchParams.delete("t");
     history.replaceState(null, "", url.pathname + url.search + url.hash);
     return fromUrl;
   }
-  return sessionStorage.getItem("fplToken") || "";
+  return localStorage.getItem("fplToken") || "";
 })();
 
 const api = (path, init = {}) => fetch(path, {

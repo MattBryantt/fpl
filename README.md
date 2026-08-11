@@ -370,8 +370,44 @@ and not the data. The page probes for the endpoints on load and hides the three
 controls that need them (`Sync`, `Refresh sources`, `Load overrides.csv`), on
 the grounds that a control which cannot work is worse than one that is not
 there. **Not yet ported:** the `Ask why` box, which needs a server to hold the
-API key — it already hides itself when `/api/ai` is absent, and a Cloudflare
-Pages Function is the obvious home for it.
+API key — it already hides itself when `/api/ai` is absent, and the same
+`/api/*` route that carries sync (below) is the obvious home for it.
+
+### Syncing a squad between your phone and your laptop
+
+`localStorage` is per-device by definition, so with nothing else in the
+picture a squad picked on the phone stays on the phone. `src/worker.js` is the
+one small piece of server this project keeps: it runs on the same Worker as
+the static files, behind one route (`/api/sync`), backed by a free Cloudflare
+KV store holding exactly three things — drafts, edits, the in-progress squad.
+Not settings, not the theme: those stay per-device on purpose, the same as
+"the board opens where you left it" already does.
+
+It is push-based, not a live connection. Every change bumps a local clock and
+schedules a debounced push; the *only* time a device pulls someone else's state
+is once, on load — a background pull that silently replaced a squad you were
+mid-edit on would be worse than no sync at all. Two devices editing different
+things while both offline will converge on whichever pushed most recently once
+they are both back online, which is the honest limitation of last-write-wins:
+fine for one person on two devices, not a general multi-user sync.
+
+**Setup, once per device.** The Worker checks a shared secret
+(`X-FPL-Token`, the same header and `api()` helper the old `--lan` server
+already used), stored as a Wrangler secret so it never sits in `dist/` or the
+repo:
+
+```bash
+npx wrangler secret put FPL_TOKEN    # paste a random string; only you need it
+```
+
+Then open `https://<your-worker>.workers.dev/?t=<that-string>` once on each
+device — the token moves out of the URL into `localStorage` on first load, the
+same way the old `--lan` link worked, except this one persists across closing
+and reopening the app rather than clearing at the end of a browser session.
+After that, nothing further: the board syncs by itself.
+
+Without a token, sync is simply off — no prompt, no nag, the board behaves
+exactly as it did before this existed.
 
 ### Using it from a phone, with the laptop off
 
@@ -1358,6 +1394,8 @@ Other known limitations, roughly in order of how much they cost you:
 | [fplkit/server.py](fplkit/server.py) | squad-board API, static assets, club shirts, sync |
 | [fplkit/snapshot.py](fplkit/snapshot.py) | freezes a projection into the file the browser runs on |
 | [fplkit/site.py](fplkit/site.py) | writes the whole board to a directory a static host can serve |
+| [src/worker.js](src/worker.js) | the Worker route behind `/api/sync` — the one thing a static host cannot do alone |
+| [wrangler.jsonc](wrangler.jsonc) | Cloudflare Workers config: static assets, the sync route, the KV binding |
 | [fplkit/web/index.html](fplkit/web/index.html) | squad-board UI |
 | [fplkit/web/pitch.mjs](fplkit/web/pitch.mjs) | draws a squad as a pitch: shirts, formation, bench order, the in/out diff |
 | [fplkit/web/board.mjs](fplkit/web/board.mjs) | derives the player pool from the snapshot — what `/api/pool` was |
@@ -1379,7 +1417,6 @@ Other known limitations, roughly in order of how much they cost you:
 | [scripts/verify-transfer-rules.py](scripts/verify-transfer-rules.py) | checks the transfer plan against the transfer rules, on projections built to catch it |
 | [scripts/calibrate-shrinkage.py](scripts/calibrate-shrinkage.py) | fits the shrinkage priors from three seasons; re-run when one ends |
 | [scripts/calibrate-start-form.py](scripts/calibrate-start-form.py) | fits the pStart recency blend and its decay; re-run when a season ends |
-| [scripts/verify-lineup-port.mjs](scripts/verify-lineup-port.mjs) | checks the browser rebalances a club the way the model does |
 
 Scoring rules and model constants are all in [config.py](fplkit/config.py) — if
 FPL changes the rules, that is the only file to edit. That holds for the browser
