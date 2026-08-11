@@ -38,6 +38,9 @@ import pandas as pd
 
 from . import config
 from .config import (
+    CHIP_HOLD_VALUE,
+    CHIP_LABELS,
+    CHIPS,
     DEFAULT_BENCH_SLOT_WEIGHTS,
     DEFAULT_BUDGET,
     MAX_PER_CLUB,
@@ -53,6 +56,14 @@ from .model import ESTABLISHED_SHARE, OVERRIDABLE, project
 from .planning import (DEFAULT_HALF_LIFE, apply_plan_weighting, injury_hazard,
                        weighted_points)
 from .sources import fpl_api
+from .transfers import (
+    CAPTAIN_CANDIDATES,
+    FT_VALUE,
+    FT_VALUE_BY_STATE,
+    IDLE_MOVE_PENALTY,
+    POOL_BY_POS,
+    TRANSFER_HALF_LIFE,
+)
 
 SNAPSHOT_PATH = OUT_DIR / "snapshot.json"
 
@@ -124,6 +135,23 @@ def _rules() -> dict[str, Any]:
         "DEFAULT_BUDGET": DEFAULT_BUDGET,
         "DEFAULT_BENCH_SLOT_WEIGHTS": {str(k): v
                                        for k, v in DEFAULT_BENCH_SLOT_WEIGHTS.items()},
+        "CHIPS": list(CHIPS),
+        "CHIP_LABELS": dict(CHIP_LABELS),
+        "CHIP_HOLD_VALUE": dict(CHIP_HOLD_VALUE),
+        "TRANSFER_HALF_LIFE": TRANSFER_HALF_LIFE,
+        # The transfer-and-chip planner's own constants -- see transfers.py's
+        # module docstring for why each exists. Carried the same way as every
+        # other rule here: nothing hand-copied into transfers.js.
+        "POOL_BY_POS": dict(POOL_BY_POS),
+        "CAPTAIN_CANDIDATES": CAPTAIN_CANDIDATES,
+        "FT_VALUE": FT_VALUE,
+        "FT_VALUE_BY_STATE": {str(k): v for k, v in FT_VALUE_BY_STATE.items()},
+        "IDLE_MOVE_PENALTY": IDLE_MOVE_PENALTY,
+        "MAX_FREE_TRANSFERS": config.MAX_FREE_TRANSFERS,
+        "HIT_COST": config.HIT_COST,
+        "TRANSFER_FRICTION": config.TRANSFER_FRICTION,
+        "BANK_VALUE": config.BANK_VALUE,
+        "FREE_TRANSFERS_PER_GW": config.FREE_TRANSFERS_PER_GW,
     }
 
 
@@ -270,6 +298,13 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
               if bool(projection.fixtures.loc[projection.fixtures["gw"] == gw,
                                               "has_odds"].any())]
 
+    # The single half-season set that applies to this window -- not the union
+    # of both halves, which would erase the mid-season expiry that makes chip
+    # timing urgent. The wildcard's start_event of 2 is the load-bearing entry:
+    # it is what keeps a wildcard out of a gameweek-one plan.
+    chip_windows = {chip: list(window) for chip, window in
+                    fpl_api.chip_windows(gameweeks[0], force_refresh).items()}
+
     return {
         "version": 1,
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -295,6 +330,7 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
             "season_minutes": _num(basis.fpl_minutes if basis else None, None, dp=0),
             "preseason": bool(basis.preseason) if basis else None,
             "established_share": ESTABLISHED_SHARE,
+            "chip_windows": chip_windows,
         },
     }
 

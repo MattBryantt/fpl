@@ -807,12 +807,15 @@ def icon() -> FileResponse:
 # the browser, and the error it gives you does not say so.
 ASSETS: dict[str, str] = {
     "board.mjs": "text/javascript",
+    "chips.mjs": "text/javascript",
     "pitch.mjs": "text/javascript",
     "poisson.mjs": "text/javascript",
     "points.mjs": "text/javascript",
     "position-tags.mjs": "text/javascript",
     "solver.js": "text/javascript",
     "solver-worker.js": "text/javascript",
+    "transfers.js": "text/javascript",
+    "transfer-worker.js": "text/javascript",
     "vendor/highs.js": "text/javascript",
     "vendor/highs.wasm": "application/wasm",
 }

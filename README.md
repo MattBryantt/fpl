@@ -1395,6 +1395,9 @@ Other known limitations, roughly in order of how much they cost you:
 | [fplkit/web/poisson.mjs](fplkit/web/poisson.mjs) | browser port of the Poisson helpers |
 | [fplkit/web/solver.js](fplkit/web/solver.js) | browser port of the MILP, as CPLEX LP for HiGHS |
 | [fplkit/web/solver-worker.js](fplkit/web/solver-worker.js) | runs the solve off the main thread |
+| [fplkit/web/chips.mjs](fplkit/web/chips.mjs) | candidate pool, chip windows and the chip report — prep and presentation for the transfer-and-chip planner |
+| [fplkit/web/transfers.js](fplkit/web/transfers.js) | browser port of `plan_transfers`, as CPLEX LP for HiGHS |
+| [fplkit/web/transfer-worker.js](fplkit/web/transfer-worker.js) | runs the transfer-and-chip solve off the main thread |
 | [fplkit/web/sw.js](fplkit/web/sw.js) | service worker: caches the shell and the last snapshot |
 | [fplkit/web/data.html](fplkit/web/data.html) | data provenance page |
 | [fplkit/model.py](fplkit/model.py) | the three-layer projection |
@@ -1407,6 +1410,8 @@ Other known limitations, roughly in order of how much they cost you:
 | [fplkit/sources/](fplkit/sources/) | FPL API, Understat, The Odds API, history archive |
 | [scripts/verify-season-rollover.py](scripts/verify-season-rollover.py) | simulates a season rollover, which a live run cannot |
 | [scripts/verify-transfer-rules.py](scripts/verify-transfer-rules.py) | checks the transfer plan against the transfer rules, on projections built to catch it |
+| [scripts/make-transfer-cases.py](scripts/make-transfer-cases.py) | solves synthetic transfer-and-chip scenarios with CBC, for `transfers.js` to match |
+| [scripts/verify-transfer-port.mjs](scripts/verify-transfer-port.mjs) | re-solves those scenarios with the vendored WASM HiGHS and compares |
 | [scripts/calibrate-shrinkage.py](scripts/calibrate-shrinkage.py) | fits the shrinkage priors from three seasons; re-run when one ends |
 | [scripts/calibrate-start-form.py](scripts/calibrate-start-form.py) | fits the pStart recency blend and its decay; re-run when a season ends |
 
@@ -1425,6 +1430,7 @@ python scripts/make-solver-cases.py   && node scripts/verify-solver-port.mjs
 python scripts/make-lineup-cases.py   && node scripts/verify-lineup-port.mjs
 python scripts/verify-season-rollover.py
 python scripts/verify-transfer-rules.py
+python scripts/make-transfer-cases.py && node scripts/verify-transfer-port.mjs
 ```
 
 The first rescores every player in the pool and 700-odd override combinations —
@@ -1458,6 +1464,47 @@ One of those runs backwards on purpose. The alternating-premium scenario is
 solved a second time with the transfer pricing switched off, and it has to bring
 the swap-and-swap-back back — if it does not, the scenario was never testing the
 thing it claims to test.
+
+The fifth is the port check for all of the above: `make-transfer-cases.py`
+solves eight small synthetic scenarios — a hold, a hit worth taking and one
+just too small, a bench boost and a triple captain each worth playing, a free
+hit into a blank, a wildcard worth the rebuild, and all four chips available
+at once — and dumps the exact pool, points and settings `plan_transfers`
+solved, verbatim. `verify-transfer-port.mjs` re-solves each with the vendored
+WASM HiGHS and checks the objective agrees (the bar `verify-solver-port.mjs`
+uses, for the same reason: two fifteens can tie on value, and which one either
+solver returns is not a promise either makes) and, case by case, that the same
+chip gets played in the same gameweek.
+
+## Chips and transfers in the board
+
+`fpl.py transfers` solves the whole window and prints a ledger; the board's
+Chips tab runs the same model — `transfers.js`, the browser port of
+`plan_transfers` — against the fifteen currently on screen, capped to a
+six-gameweek horizon (`DEFAULT_TRANSFER_HORIZON`, independent of the board's
+own horizon slider) because the candidate pool here is the union of the
+top-points and top-value players per position, up to ~150–190 players before
+overlap, not the ~50 the squad optimiser ever sees. That pool times horizon is
+enough binaries that it is a button ("Plan transfers & chips"), not a
+debounced auto-solve — on the synthetic 90-player cases in
+`verify-transfer-port.mjs` the slowest single solve was already north of 15
+seconds, and a real pool is larger.
+
+Two ownership facts the board didn't otherwise need are new settings: free
+transfers available (0–5) and chips already used this half. Bank is not one of
+them — it is derived from the existing budget slider minus the squad's cost,
+the same number the summary tile already shows. Sell price is always the
+current listed price, the same default `plan_transfers` itself uses when none
+is given; this tool has never tracked what a player was bought for, so there
+is no way to price the 50% sell-on fee exactly, and pretending otherwise would
+be a false precision.
+
+Two things `fpl.py transfers` can do that the board deliberately does not:
+`value_of_acting` and `chip_values` each re-solve the whole MILP two to five
+times over, to isolate one number by taking something away and comparing. One
+solve is already the real cost here; a browser button that quietly triggers
+several is not something to add without a much stronger reason than "the CLI
+has it."
 
 ## Making the model add up
 

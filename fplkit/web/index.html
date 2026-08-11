@@ -206,6 +206,8 @@ td.muted-cell { color: var(--axis); }
 .bslot b { color: var(--text-secondary); font-variant-numeric: tabular-nums; font-weight: 500; }
 .bslot input[type=range] { width: 100%; accent-color: var(--series-1); }
 .bslot.master b { color: var(--text-primary); }
+.chipused { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-secondary); }
+.chipused label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
 
 .issues { margin-top: 12px; display: flex; flex-direction: column; gap: 5px; }
 .issue { font-size: 12.5px; display: flex; gap: 7px; align-items: flex-start; }
@@ -828,6 +830,22 @@ body.noserver .needs-server { display: none !important; }
 .swaptable .arrow { color: var(--muted); }
 .swaptable .gain { color: var(--good); }
 .swaptable .loss { color: var(--critical); }
+
+/* Chips tab */
+.chipbar { display: flex; align-items: center; gap: 12px; }
+.chiptable, .movetable { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 4px; }
+.chiptable th, .movetable th {
+  text-align: left; font-weight: 500; color: var(--muted); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.04em; padding: 6px 5px;
+  border-bottom: 1px solid var(--border);
+}
+.chiptable td, .movetable td { padding: 6px 5px; border-bottom: 1px solid var(--border); }
+.chiptable td:nth-child(2), .chiptable td:nth-child(3), .chiptable td:nth-child(4) {
+  text-align: right; font-variant-numeric: tabular-nums;
+}
+.movetable td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.movetable .gain { color: var(--good); }
+.movetable .loss { color: var(--critical); }
 .swaptable tfoot td { font-weight: 600; border-top: 1px solid var(--border); border-bottom: 0; }
 .dirtag {
   font-size: 9.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
@@ -957,6 +975,24 @@ Drag to 1.00× to count every fixture in the horizon equally.">Fixture decay
       <option>5-4-1</option><option>5-2-3</option>
     </select>
   </div>
+  <div class="ctl">
+    <label for="freetransfers" title="How many free transfers you have banked for the first
+gameweek of the transfer-and-chip plan.">Free transfers</label>
+    <select id="freetransfers">
+      <option value="0">0</option><option value="1" selected>1</option>
+      <option value="2">2</option><option value="3">3</option>
+      <option value="4">4</option><option value="5">5</option>
+    </select>
+  </div>
+  <div class="ctl" style="flex:1;min-width:230px">
+    <label>Chips already used this half</label>
+    <div class="chipused">
+      <label><input type="checkbox" data-chipused="wildcard"> Wildcard</label>
+      <label><input type="checkbox" data-chipused="freehit"> Free Hit</label>
+      <label><input type="checkbox" data-chipused="bboost"> Bench Boost</label>
+      <label><input type="checkbox" data-chipused="3xc"> Triple Captain</label>
+    </div>
+  </div>
   <div class="ctl needs-server">
     <label>&nbsp;</label>
     <button class="btn ghost" id="refreshData" title="Bypass the cache and refetch every source">Refresh sources</button>
@@ -1049,6 +1085,7 @@ Drag to 1.00× to count every fixture in the horizon equally.">Fixture decay
 <div class="tabs" role="tablist" aria-label="Board sections">
   <button class="tab" role="tab" data-tab="squad" aria-selected="true">Squad<span class="count" id="tabOptCount"></span></button>
   <button class="tab" role="tab" data-tab="analysis" aria-selected="false">Analysis</button>
+  <button class="tab" role="tab" data-tab="chips" aria-selected="false">Chips</button>
   <button class="tab" role="tab" data-tab="drafts" aria-selected="false">Drafts<span class="count" id="tabDraftCount"></span></button>
 </div>
 
@@ -1181,6 +1218,22 @@ Drag to 1.00× to count every fixture in the horizon equally.">Fixture decay
     <div class="pitchside"><div id="lineupPitch"></div></div>
     <div id="lineupBox"></div>
   </div>
+</div>
+</section>
+
+<section class="panel" id="panel-chips" role="tabpanel" aria-label="Chips" hidden>
+<div class="card">
+  <div class="cardhead">
+    <div>
+      <h2 style="margin:0 0 3px">Transfers &amp; chips</h2>
+      <div class="sub">Solves the transfer path and chip timing together, the same way
+        <code>fpl.py transfers</code> does — a bench boost is only worth playing if the
+        bench a transfer built weeks earlier is worth fielding, and a wildcard competes
+        directly against the transfers either side of it. Run against the fifteen you
+        currently hold, not a hypothetical rebuild.</div>
+    </div>
+  </div>
+  <div id="chipsBody"></div>
 </div>
 </section>
 
@@ -1326,6 +1379,8 @@ import { derivePool, editPlayer, explainPlayer, clubLineup, checkOverridable,
 import { pitchHTML, cardsHTML, squadLayout, wireShirts, shirtUrl,
          METRICS, METRIC_KEYS, MAX_METRICS, cleanMetrics } from "/assets/pitch.mjs";
 import { POSITION_TAGS, POSITION_TAG_LABELS, SEED_TAGS } from "/assets/position-tags.mjs";
+import { candidatePool, captainPool, freeTransferValue, chipSlots, fixtureVariation,
+         chipReport, pairMoves, survivalAdjusted } from "/assets/chips.mjs";
 
 const $ = (s) => document.querySelector(s);
 
@@ -1404,6 +1459,10 @@ const S = {
   // to the tag-based lane order (see TAG_LANE, effectiveRowOrder).
   lineupOrder: loadLocal(STORE.lineupOrder, {}),
   compare: [], draftsPath: "", include: [], exclude: [],
+  // Chips already played this half of the season, for the transfer-and-chip
+  // plan -- a fact about the plan like include/exclude, so it travels the
+  // same way (readSettings/syncableSettings), not through STORE directly.
+  chipsUsed: [],
   views: { gw: "chart", exp: "chart", tl: "chart" },
   // How you have chosen to look at the board: which section, which numbers ride
   // on a shirt, which squad the right-hand pitch holds, and any two players
@@ -1411,6 +1470,10 @@ const S = {
   // is the thing that makes a phone app feel like a web page.
   tab: "squad", metrics: ["xpts", "xppg", "price"],
   compareWith: "optimal", versus: [],
+  // The transfer-and-chip plan: not persisted or synced, same treatment as
+  // S.optimal* -- it is a re-solvable answer to the current squad and
+  // settings, not a fact worth remembering across a reload.
+  transferPlan: { state: "idle", result: null, error: "" },
 };
 S.squad = loadLocal(STORE.squad, []);
 
@@ -1435,9 +1498,9 @@ globalThis.board = S;
    Squads, drafts and edits are stored separately above and are never touched
    from here: "Restore defaults" resets knobs, not work. */
 const SETTING_IDS = ["horizon", "gwdecay", "budget", "ownw", "minstart",
-                     "maxclub", "formation", "recency"];
+                     "maxclub", "formation", "recency", "freetransfers"];
 const DEFAULT_SETTINGS = { horizon: "8", gwdecay: "0.79", budget: "100", ownw: "0",
-                           minstart: "0.3", maxclub: "3", formation: "" };
+                           minstart: "0.3", maxclub: "3", formation: "", freetransfers: "1" };
 const DEFAULT_BENCH = { GKP: 0.03, "1": 0.24, "2": 0.10, "3": 0.04 };
 const VIEW_PANES = { gw: ["#gwChart", "#gwTable"], exp: ["#expChart", "#expTable"],
                      tl: ["#tlChart", "#tlTable"] };
@@ -1520,7 +1583,7 @@ function renderChrome() {
   $("#moreBtn").textContent = moreOpen ? "Fewer options ▴" : "More options ▾";
 }
 
-const TABS = ["squad", "analysis", "drafts"];
+const TABS = ["squad", "analysis", "chips", "drafts"];
 
 function setTab(name) {
   if (!TABS.includes(name)) name = "squad";
@@ -1535,6 +1598,7 @@ function setTab(name) {
   // Guarded on the pool, because tabs are restored from settings before the
   // snapshot has landed and there is nothing to draw yet.
   if (name === "analysis" && S.meta) { renderGwChart(); renderExposure(); renderTimeline(); }
+  if (name === "chips" && S.meta) { renderChips(); }
 }
 
 /** Open the pool over the board. `pos` pre-filters it, which is what makes an
@@ -1610,7 +1674,16 @@ function readSettings() {
     tab: S.tab, metrics: [...S.metrics], compareWith: S.compareWith,
     pos: S.pos, sort: S.sort, dir: S.dir,
     include: [...S.include], exclude: [...S.exclude],
+    chipsUsed: [...S.chipsUsed],
   };
+}
+
+/** Reflects S.chipsUsed onto the four checkboxes -- the inverse of the
+ *  change listener that reads them back into S.chipsUsed. */
+function renderChipsUsed() {
+  document.querySelectorAll("[data-chipused]").forEach((cb) => {
+    cb.checked = S.chipsUsed.includes(cb.dataset.chipused);
+  });
 }
 
 /* Coalesced, because dragging a slider fires input on every pixel and this is a
@@ -1671,6 +1744,8 @@ function applySettings(saved) {
   markSortedHeader();
   S.include = Array.isArray(saved.include) ? saved.include.map(Number) : [];
   S.exclude = Array.isArray(saved.exclude) ? saved.exclude.map(Number) : [];
+  S.chipsUsed = Array.isArray(saved.chipsUsed) ? saved.chipsUsed.slice() : [];
+  renderChipsUsed();
   renderControlValues();
 }
 
@@ -1684,6 +1759,7 @@ function restoreDefaults() {
   for (const k of BENCH_KEYS) $(`#bw_${k}`).value = bench[k] ?? DEFAULT_BENCH[k];
   document.documentElement.removeAttribute("data-theme");
   S.include = []; S.exclude = [];
+  S.chipsUsed = []; renderChipsUsed();
   setPosFilter("ALL");
   S.search = ""; $("#search").value = "";
   S.sort = "xpts_plan"; S.dir = -1; markSortedHeader();
@@ -2321,6 +2397,107 @@ function renderLineupStrip(gws) {
     </table></div>`;
 }
 
+/* ------------------------------------------------------ transfers & chips
+   The Chips tab: a button-triggered solve (not a debounced auto-solve like
+   the squad optimiser -- this pool and horizon are both far bigger, so the
+   wait is real) that shows the same two things fpl.py transfers prints for
+   the first gameweek: what each chip is worth and whether its window is a
+   real choice, and what to actually do this week. */
+function renderChipVerdictsHTML(plan) {
+  const positions = new Map(S.players.map((p) => [p.id, p.pos]));
+  const squads = new Map(plan.weeks.map((w) => [w.gw, w.squad]));
+  const rows = chipReport({
+    chips: plan.opt.chips, chipByGw: plan.chipByGw, squads,
+    pointsByPlayer: plan.pointsByPlayer, gameweeks: plan.gameweeks, positions,
+    variation: plan.variation, skipped: plan.skipped, chipLabels: plan.chipLabels,
+  });
+  if (!rows.length) return `<div class="sub" style="margin-top:10px">No chips are legal in this window.</div>`;
+  return `<table class="chiptable" style="margin-top:10px"><thead><tr>
+      <th>Chip</th><th>GW</th><th>Worth</th><th>Edge</th><th>Read</th>
+    </tr></thead><tbody>${rows.map((r) => `<tr>
+      <td>${r.label}</td>
+      <td>${r.gw ?? "—"}</td>
+      <td>${r.worth == null ? "—" : fmt(r.worth, 1)}</td>
+      <td>${r.edge == null ? "—" : fmt(r.edge, 1)}</td>
+      <td>${r.verdict}</td>
+    </tr>`).join("")}</tbody></table>`;
+}
+
+function renderThisWeekHTML(plan) {
+  const week = plan.weeks[0];
+  const name = (id) => S.byId.get(id)?.name ?? "—";
+  const positions = new Map(S.players.map((p) => [p.id, p.pos]));
+  const pairs = pairMoves(week.soldIds, week.boughtIds, positions);
+  const gainOf = (id) => {
+    if (id == null) return 0;
+    const pts = plan.pointsByPlayer.get(id);
+    const from = plan.gameweeks.indexOf(week.gw);
+    return pts ? pts.slice(from).reduce((a, b) => a + b, 0) : 0;
+  };
+  const movesHTML = pairs.length
+    ? `<table class="movetable"><tbody>${pairs.map(([out, inn]) => {
+        const gain = gainOf(inn) - gainOf(out);
+        return `<tr>
+          <td>${out != null ? name(out) : "—"}</td><td>→</td><td>${inn != null ? name(inn) : "—"}</td>
+          <td class="${gain >= 0 ? "gain" : "loss"}">${gain >= 0 ? "+" : ""}${fmt(gain, 1)}</td>
+        </tr>`;
+      }).join("")}</tbody></table>`
+    : `<div class="sub">No transfers this gameweek — hold.</div>`;
+
+  const squadDiffers = week.squad.slice().sort().join() !== S.squad.slice().sort().join();
+
+  return `
+  <div class="card" style="margin-top:14px">
+    <div class="cardhead">
+      <div>
+        <h3 style="margin:0">GW${week.gw}${week.chip ? " — " + plan.chipLabels[week.chip] : ""}</h3>
+        <div class="sub">${week.hits ? `${week.hits} hit${week.hits > 1 ? "s" : ""} (−${week.hits * 4}) · ` : ""}${week.freeTransfers} FT banked · £${fmt(week.bank, 1)}m in the bank · ${fmt(week.xiPoints, 1)} xI points</div>
+      </div>
+    </div>
+    <div id="thisWeekPitch"></div>
+    <h4 style="margin:14px 0 6px">Transfers this week</h4>
+    ${movesHTML}
+    ${squadDiffers ? `<div class="sub" style="margin-top:8px">This differs from the squad on screen — the moves above are what would get you there.</div>` : ""}
+  </div>`;
+}
+
+function renderChips() {
+  const host = $("#chipsBody");
+  if (!host) return;
+  if (S.squad.length !== 15) {
+    host.innerHTML = `<div class="empty-note">Draft (or sync) a complete fifteen to plan transfers and chips against it.</div>`;
+    return;
+  }
+  const tp = S.transferPlan;
+  const statusText = tp.state === "solving"
+    ? "solving — the pool and horizon here are much bigger than the squad optimiser's, this can take a while…"
+    : tp.state === "error" ? tp.error : "";
+
+  host.innerHTML = `
+    <div class="chipbar">
+      <button class="btn" id="planBtn" ${tp.state === "solving" ? "disabled" : ""}>
+        ${tp.state === "ready" ? "Re-plan" : "Plan transfers & chips"}
+      </button>
+      <span class="optstatus ${tp.state === "error" ? "err" : ""}">${statusText}</span>
+    </div>
+    ${tp.state === "ready" && tp.result ? renderChipVerdictsHTML(tp.result) : ""}
+    ${tp.state === "ready" && tp.result ? renderThisWeekHTML(tp.result) : ""}`;
+
+  $("#planBtn").addEventListener("click", planTransfersAndChips);
+
+  if (tp.state === "ready" && tp.result) {
+    const week = tp.result.weeks[0];
+    const fielded = [...week.starters, ...week.bench.map((b) => b.id)];
+    const benchOrder = Object.fromEntries(week.bench.map((b) => [b.id, b.slot]));
+    const layout = squadLayout({ ids: fielded, lookup: S.byId, need: S.meta.squad_by_pos,
+                                 xiIds: week.starters, benchOrder });
+    const box = $("#thisWeekPitch");
+    box.innerHTML = pitchHTML({ layout, teams: S.snapshot?.teams, metrics: S.metrics,
+                               captain: week.captain, vice: week.vice });
+    wireShirts(box);
+  }
+}
+
 function renderAll() {
   // Order matters once: the squad pitch marks its own players against whatever
   // the comparison holds, so the picker has to be settled before it draws.
@@ -2333,6 +2510,7 @@ function renderAll() {
   // against a hidden container has no width to size against. setTab draws them
   // when the tab appears, so here they are drawn only if it already has.
   if (S.tab === "analysis") { renderGwChart(); renderExposure(); renderTimeline(); }
+  if (S.tab === "chips") { renderChips(); }
 }
 
 /* ------------------------------------------------------------- constraints
@@ -3702,6 +3880,7 @@ function syncableSettings() {
     controls: Object.fromEntries(SETTING_IDS.map((id) => [id, $("#" + id).value])),
     bench: Object.fromEntries(BENCH_KEYS.map((k) => [k, $(`#bw_${k}`).value])),
     benchTouched, include: [...S.include], exclude: [...S.exclude],
+    chipsUsed: [...S.chipsUsed],
   };
 }
 
@@ -3720,6 +3899,8 @@ function applySyncedSettings(saved) {
   }
   if (Array.isArray(saved.include)) S.include = saved.include.map(Number);
   if (Array.isArray(saved.exclude)) S.exclude = saved.exclude.map(Number);
+  if (Array.isArray(saved.chipsUsed)) S.chipsUsed = saved.chipsUsed.slice();
+  renderChipsUsed();
   // Folds the pulled controls/bench/include/exclude into this device's own
   // settings blob (tab, sort, views stay whatever they already were) --
   // written straight to storage, not through saveSettings(), so adopting
@@ -4057,6 +4238,118 @@ function solveInWorker(seq, options) {
     solveWaiters.set(seq, { resolve, reject });
     ensureWorker().postMessage({ seq, pool, options });
   });
+}
+
+/* ------------------------------------------------------ transfers & chips
+   A second, separate worker rather than a shared one: this MILP is a season's
+   worth of players times a multi-gameweek horizon, not one gameweek, and
+   mixing its "newest wins" sequence counter with the squad optimiser's would
+   let an ordinary settings tweak silently cancel a transfer-plan solve
+   in flight, or the reverse. Capped to DEFAULT_TRANSFER_HORIZON gameweeks
+   independent of the board's own horizon slider (which runs to 12) because
+   the pool here is the union of top-points and top-value players per
+   position (up to ~190 before overlap), not the ~50 the squad optimiser
+   sees -- see transfers.py's own DEFAULT_TRANSFER_HORIZON for why 6 is where
+   the CLI stops too: long enough to bank a transfer for a fixture swing,
+   short enough that the last gameweek is not pure fiction. */
+const TRANSFER_HORIZON_CAP = 6;
+
+let transferWorker = null;
+const transferWaiters = new Map();
+let transferSeq = 0;
+
+function ensureTransferWorker() {
+  if (transferWorker) return transferWorker;
+  transferWorker = new Worker("/assets/transfer-worker.js");
+  transferWorker.onmessage = (event) => {
+    const { seq, ok, result, error, ms } = event.data;
+    const waiter = transferWaiters.get(seq);
+    if (!waiter) return;
+    transferWaiters.delete(seq);
+    if (ok) waiter.resolve({ result, ms }); else waiter.reject(new Error(error));
+  };
+  transferWorker.onerror = (event) => {
+    for (const [, waiter] of transferWaiters) waiter.reject(new Error(event.message || "the planner failed to start"));
+    transferWaiters.clear();
+    transferWorker.terminate();
+    transferWorker = null;
+  };
+  return transferWorker;
+}
+
+/** Reduce the pool, build the ownership facts and the rule constants into
+ *  exactly what transfers.js needs — the same "prep vs solve" split as
+ *  chips.mjs's own docstring describes. Returns `null` (nothing to plan)
+ *  if the squad isn't complete. */
+function buildTransferPayload() {
+  if (S.squad.length !== 15 || !S.meta) return null;
+  const rules = S.snapshot.rules;
+  const gwCount = Math.min(S.gameweeks.length, TRANSFER_HORIZON_CAP);
+  const gameweeks = S.gameweeks.slice(0, gwCount);
+
+  const players = S.players.map((p) => ({
+    id: p.id, pos: p.pos, team: p.team, price: p.price, p_play: p.p_play,
+    hazard: p.hazard, gw: p.gw,
+  }));
+  const pointsByPlayer = new Map(players.map((p) => [p.id, survivalAdjusted(p, gwCount)]));
+
+  const keep = [...new Set([...S.squad, ...S.include])];
+  const pool = candidatePool(players, pointsByPlayer,
+    { keep, minMinutesProb: 0.3, exclude: S.exclude, caps: rules.POOL_BY_POS });
+  const cPool = captainPool(pool, pointsByPlayer, rules.CAPTAIN_CANDIDATES);
+
+  const variation = fixtureVariation(S.snapshot.fixtures, gameweeks);
+  const chips = chipSlots(S.meta.chip_windows || {}, gameweeks, S.chipsUsed, rules.CHIPS);
+  const skipped = {};
+  if (chips.freehit && !Object.keys(variation).length) {
+    delete chips.freehit;
+    skipped.freehit = "no blank or double to hit";
+  }
+
+  const ftWorth = freeTransferValue(rules.FT_VALUE, rules.FT_VALUE_BY_STATE, rules.MAX_FREE_TRANSFERS);
+  const budget = +$("#budget").value;
+  const bank = Math.max(0, budget - squadCost(S.squad));
+
+  const poolPayload = pool.map((p) => ({ id: p.id, pos: p.pos, team: p.team, price: p.price,
+                                         pts: pointsByPlayer.get(p.id) }));
+  const opt = {
+    gameweeks, budget, squad: [...S.squad], bank, freeTransfers: +$("#freetransfers").value,
+    chips, captainPool: cPool,
+    slotWeight: rules.DEFAULT_BENCH_SLOT_WEIGHTS,
+    squadByPos: rules.SQUAD_BY_POS, xiMinByPos: rules.XI_MIN_BY_POS, xiMaxByPos: rules.XI_MAX_BY_POS,
+    squadSize: rules.SQUAD_SIZE, xiSize: rules.XI_SIZE, maxPerClub: rules.MAX_PER_CLUB,
+    include: [...S.include], exclude: [...S.exclude],
+    halfLife: rules.TRANSFER_HALF_LIFE, holdValue: rules.CHIP_HOLD_VALUE,
+    friction: rules.TRANSFER_FRICTION, ftWorth, maxFreeTransfers: rules.MAX_FREE_TRANSFERS,
+    hitCost: rules.HIT_COST, bankValue: rules.BANK_VALUE, freeTransfersPerGw: rules.FREE_TRANSFERS_PER_GW,
+    idleMovePenalty: rules.IDLE_MOVE_PENALTY,
+  };
+  return { pool: poolPayload, opt, variation, skipped, pointsByPlayer, gameweeks, chipLabels: rules.CHIP_LABELS };
+}
+
+async function planTransfersAndChips() {
+  const payload = buildTransferPayload();
+  if (!payload) return;
+  const seq = ++transferSeq;
+  S.transferPlan = { state: "solving", result: null, error: "" };
+  renderChips();
+
+  let data;
+  try {
+    data = await new Promise((resolve, reject) => {
+      transferWaiters.set(seq, { resolve, reject });
+      ensureTransferWorker().postMessage({ seq, pool: payload.pool, opt: payload.opt });
+    });
+  } catch (error) {
+    if (seq !== transferSeq) return;
+    S.transferPlan = { state: "error", result: null, error: String(error.message || error) };
+    renderChips();
+    return;
+  }
+  if (seq !== transferSeq) return;
+
+  S.transferPlan = { state: "ready", result: { ...data.result, ...payload }, error: "" };
+  renderChips();
 }
 
 const optDiff = () => {
@@ -4639,6 +4932,11 @@ $("#benchReset").addEventListener("click", () => {
   saveSettings();
   scheduleSolve();
 });
+
+document.querySelectorAll("[data-chipused]").forEach((cb) => cb.addEventListener("change", () => {
+  const chip = cb.dataset.chipused;
+  S.chipsUsed = cb.checked ? [...new Set([...S.chipsUsed, chip])] : S.chipsUsed.filter((c) => c !== chip);
+}));
 
 $("#maxclub").addEventListener("input", (e) => { $("#mcval").textContent = e.target.value; scheduleSolve(); });
 $("#formation").addEventListener("change", () => scheduleSolve(0));
