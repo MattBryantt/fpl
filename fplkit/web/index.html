@@ -1316,7 +1316,7 @@ const SVGNS = "http://www.w3.org/2000/svg";
    out/overrides.csv are still written on sync, so the CLI keeps working from
    the same squads -- but this is the copy that is always there. */
 const STORE = { drafts: "fpl.drafts", edits: "fpl.edits", squad: "fpl.squad",
-                settings: "fpl.settings" };
+                settings: "fpl.settings", stateSyncedAt: "fpl.stateSyncedAt" };
 
 function loadLocal(key, fallback) {
   try {
@@ -1327,8 +1327,11 @@ function loadLocal(key, fallback) {
 function saveLocal(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* private mode */ }
 }
-const saveEdits = () => saveLocal(STORE.edits, S.edits);
-const saveSquad = () => saveLocal(STORE.squad, S.squad);
+// Every local write also queues a push to the laptop -- see "cross-device
+// sync" below. That is what lets an edit made here show up on the phone with
+// nothing pressed.
+const saveEdits = () => { saveLocal(STORE.edits, S.edits); scheduleStatePush(); };
+const saveSquad = () => { saveLocal(STORE.squad, S.squad); scheduleStatePush(); };
 
 const S = {
   snapshot: null,
@@ -1553,6 +1556,7 @@ let settingsTimer = null;
 function saveSettings() {
   clearTimeout(settingsTimer);
   settingsTimer = setTimeout(() => saveLocal(STORE.settings, readSettings()), 250);
+  scheduleStatePush();
 }
 
 /** Put a saved blob back on screen. Runs before the snapshot has loaded, so it
@@ -2370,6 +2374,115 @@ async function syncDrafts() {
   }
   renderDrafts();
 }
+
+/* ------------------------------------------------------- cross-device sync
+   Squad, edits and the Settings panel show up on the other device with
+   nothing pressed: pushed (debounced) on every local change, pulled on load
+   and whenever the tab comes back to the foreground. Same last-write-wins
+   policy as drafts, but over one blob instead of a named list -- there is
+   nothing to merge field-by-field, so whichever device's `updated_at` is
+   newer simply wins.
+
+   Deliberately narrower than the full local settings blob: which tab is open,
+   what the pool is sorted by, which chart is showing -- that is how you are
+   currently looking at the board, not a fact about the plan, and yanking it
+   out from under you because the *other* device changed tabs would be a
+   worse bug than the one this exists to fix. Only the actual model inputs
+   travel: the Settings panel, bench weights, and the required/banned chips.
+
+   Best-effort throughout, like every other laptop round trip on this page:
+   localStorage stays the durable copy, and a phone with no route to the
+   laptop keeps working exactly as it did before this existed. */
+let statePushTimer = null;
+let statePulling = false;
+
+function syncableSettings() {
+  return {
+    controls: Object.fromEntries(SETTING_IDS.map((id) => [id, $("#" + id).value])),
+    bench: Object.fromEntries(BENCH_KEYS.map((k) => [k, $(`#bw_${k}`).value])),
+    benchTouched,
+  };
+}
+
+/** The syncable-settings counterpart to applySettings() -- same shape, but
+    stops at the model inputs and never touches which tab, sort or chart mode
+    is on screen. */
+function applySyncedSettings(saved) {
+  if (!saved || typeof saved !== "object") return;
+  for (const id of SETTING_IDS) {
+    const value = saved.controls?.[id];
+    if (value !== undefined && value !== null) $("#" + id).value = value;
+  }
+  if (saved.bench) {
+    benchTouched = !!saved.benchTouched;
+    for (const k of BENCH_KEYS) if (saved.bench[k] != null) $(`#bw_${k}`).value = saved.bench[k];
+  }
+  renderControlValues();
+}
+
+function scheduleStatePush() {
+  clearTimeout(statePushTimer);
+  statePushTimer = setTimeout(pushState, 900);
+}
+
+async function pushState() {
+  clearTimeout(statePushTimer);
+  const updated_at = new Date().toISOString();
+  try {
+    const res = await api("/api/state", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ squad: S.squad, edits: S.edits,
+                             include: S.include, exclude: S.exclude,
+                             settings: syncableSettings(), updated_at }),
+    });
+    if (res.ok) saveLocal(STORE.stateSyncedAt, updated_at);
+  } catch (_) { /* laptop unreachable; localStorage is still right */ }
+}
+
+/** Pull whatever the laptop last saw and adopt it if it is newer than what
+    this device already knows about -- so a phone that made its own edits
+    offline does not have them silently overwritten by something stale. If
+    nothing has ever been pushed but this device already holds a squad worth
+    sharing, seed the laptop with it instead of waiting for the next edit. */
+async function pullState() {
+  if (statePulling) return;
+  statePulling = true;
+  try {
+    const res = await api("/api/state");
+    if (!res.ok) return;
+    const remote = await res.json();
+    const known = loadLocal(STORE.stateSyncedAt, "");
+    if (remote.updated_at && remote.updated_at > known) {
+      if (Array.isArray(remote.squad)) { S.squad = remote.squad; saveLocal(STORE.squad, S.squad); }
+      if (remote.edits && typeof remote.edits === "object") {
+        S.edits = remote.edits; saveLocal(STORE.edits, S.edits);
+      }
+      if (Array.isArray(remote.include)) S.include = remote.include.map(Number);
+      if (Array.isArray(remote.exclude)) S.exclude = remote.exclude.map(Number);
+      if (remote.settings) applySyncedSettings(remote.settings);
+      // Folds the pulled controls/bench/include/exclude into this device's own
+      // settings blob (tab, sort, views stay whatever they already were) --
+      // written straight to storage, not through saveSettings(), so adopting
+      // someone else's change does not turn around and re-push it as new.
+      saveLocal(STORE.settings, readSettings());
+      saveLocal(STORE.stateSyncedAt, remote.updated_at);
+      renderConstraints();
+      if (S.snapshot) { rebuildPool(); renderAll(); scheduleSolve(0); }
+    } else if (!remote.updated_at && (S.squad.length || Object.keys(S.edits).length)) {
+      pushState();
+    }
+  } catch (_) { /* offline; local state stands */ } finally {
+    statePulling = false;
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") pullState();
+  else pushState();   // flush anything pending before the tab is backgrounded
+});
+// Catches a change on the laptop while the phone is already open and awake --
+// cheap enough on a local network to poll rather than needing a live channel.
+setInterval(() => { if (document.visibilityState === "visible") pullState(); }, 20000);
 
 function saveDraft() {
   const name = $("#draftName").value.trim();
@@ -3430,6 +3543,7 @@ async function sync(refresh = false) {
     renderAll();
     scheduleSolve(0);
     await syncDrafts();
+    await pullState();
   } catch (error) {
     alert(`Could not sync — is the laptop running \`fpl.py serve\`?\n\n${error.message}`);
   } finally {
@@ -4253,6 +4367,10 @@ applySettings(loadLocal(STORE.settings, null));
 // that agrees with what is on screen.
 renderMetricBar(); renderChrome(); setTab(S.tab);
 loadPool();
+// Best-effort and unawaited: pullState() re-renders itself once the pool is
+// ready (see its S.snapshot guard), and a first load with no laptop in reach
+// should not wait on a request that can only time out.
+pullState();
 </script>
 </body>
 </html>

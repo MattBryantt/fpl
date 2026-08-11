@@ -120,6 +120,12 @@ mangled it, the token is the part after <code>?t=</code> — paste just that abo
 WEB_DIR = ROOT / "fplkit" / "web"
 OVERRIDES_PATH = OUT_DIR / "overrides.csv"
 DRAFTS_PATH = OUT_DIR / "drafts.json"
+# The live working state -- current squad, stat edits, and control settings --
+# as opposed to a named, deliberately-saved draft. This is what makes a change
+# on one device show up on another with nothing pressed: every device pushes it
+# here on every edit and pulls it on load, keyed on `updated_at` so whichever
+# side changed most recently wins.
+STATE_PATH = OUT_DIR / "state.json"
 
 # Projections are expensive (a couple of seconds) and pure, so they are cached
 # for the life of the process. The UI changes horizon and half-life freely.
@@ -357,6 +363,18 @@ class DraftRequest(BaseModel):
     notes: str = ""
     context: dict[str, Any] = {}
     saved_at: str | None = None
+
+
+class StateRequest(BaseModel):
+    squad: list[int] = []
+    edits: dict[int, dict[str, Any]] = {}
+    include: list[int] = []
+    exclude: list[int] = []
+    # Opaque to the server -- the model-input controls and bench weights only,
+    # not view state like which tab is open. A new control does not need a
+    # matching server-side change.
+    settings: dict[str, Any] = {}
+    updated_at: str | None = None
 
 
 @app.get("/")
@@ -1062,6 +1080,39 @@ def delete_draft(name: str) -> dict:
         raise HTTPException(404, f"no draft named {name!r}")
     _write_drafts(remaining)
     return {"drafts": remaining, "deleted": name}
+
+
+# --------------------------------------------------------------------------- #
+# Live state -- the squad, edits and settings on screen right now, synced
+# across devices automatically rather than on a named save. See STATE_PATH.
+# --------------------------------------------------------------------------- #
+
+@app.get("/api/state")
+def get_state() -> dict:
+    if not STATE_PATH.exists():
+        return {}
+    try:
+        return json.loads(STATE_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+@app.post("/api/state")
+def save_state(request: StateRequest) -> dict:
+    """Overwrite the live state with whichever device pushed last.
+
+    There is no merge here, unlike drafts: a squad and its edits are one
+    thing, not a list of named things to reconcile item by item, so "newer
+    wins" is the whole policy. The client already pulls before it pushes, so
+    this only ever loses a device's changes if two devices edited within the
+    same round trip of each other -- rare, and no worse than two people
+    editing the same spreadsheet cell at once.
+    """
+    payload = request.model_dump()
+    payload["updated_at"] = request.updated_at or datetime.now().isoformat(timespec="seconds")
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STATE_PATH.write_text(json.dumps(payload, indent=2))
+    return {"ok": True, "updated_at": payload["updated_at"]}
 
 
 @app.post("/api/optimise")
