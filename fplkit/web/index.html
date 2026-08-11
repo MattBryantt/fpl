@@ -447,6 +447,13 @@ body.noserver .needs-server { display: none !important; }
 }
 .minbar { height: 4px; border-radius: 2px; background: var(--series-1); margin-top: 3px; }
 .minbar.sub { background: var(--axis); }
+.mininput {
+  width: 46px; padding: 2px 4px; font: inherit; font-size: 12.5px; text-align: right;
+  border: 1px solid var(--border); border-radius: 5px; background: var(--surface-1);
+  color: var(--text-primary); font-variant-numeric: tabular-nums;
+}
+.mininput:focus { border-color: var(--series-2); outline: none; }
+.mininput::-webkit-inner-spin-button, .mininput::-webkit-outer-spin-button { opacity: 0.4; }
 .tag {
   font-size: 10px; border-radius: 4px; padding: 0 5px; font-weight: 600; white-space: nowrap;
 }
@@ -760,6 +767,12 @@ body.noserver .needs-server { display: none !important; }
 .pitchpair.solo { grid-template-columns: minmax(0, 1fr); max-width: 760px; }
 @media (max-width: 1080px) { .pitchpair { grid-template-columns: minmax(0, 1fr); } }
 .pitchside { min-width: 0; display: flex; flex-direction: column; }
+
+/* Pitch on the left, the editable list of who's on it on the right -- the
+   two are one picture of the same lineup, so they read left-to-right rather
+   than stacked. */
+.lineuplayout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 420px); gap: 16px; align-items: start; }
+@media (max-width: 900px) { .lineuplayout { grid-template-columns: minmax(0, 1fr); } }
 .sidehead {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;
   min-height: 32px;
@@ -1135,12 +1148,12 @@ Drag to 1.00× to count every fixture in the horizon equally.">Fixture decay
   </div>
   <!-- The same pitch, drawn from expected minutes rather than from a draft:
        the eleven this club is likeliest to field, the four next in line
-       beneath them. The table under it keeps every number and the whole
-       squad; this is the shape of the rotation at a glance. -->
-  <div class="pitchpair solo" style="margin-bottom:14px">
+       beneath them. The table beside it keeps every number and the whole
+       squad, editable inline; this is the shape of the rotation at a glance. -->
+  <div class="lineuplayout">
     <div class="pitchside"><div id="lineupPitch"></div></div>
+    <div id="lineupBox"></div>
   </div>
-  <div id="lineupBox"></div>
 </div>
 </section>
 
@@ -2800,8 +2813,14 @@ function renderLineup() {
         <div class="who2">${p.name}<span class="posn">${p.pos}</span>${tag}</div>
         <div class="minbar${starter ? "" : " sub"}" style="width:${Math.max(2, (p.exp_minutes / 90) * 100)}%"></div>
       </td>
-      <td>${p.p_start.toFixed(2)}</td>
-      <td>${p.exp_minutes.toFixed(0)}</td>
+      <td><input class="mininput" type="number" inputmode="decimal"
+          data-mininput="${p.id}" data-field="p_start"
+          min="0" max="1" step="0.01" value="${p.p_start.toFixed(2)}"
+          aria-label="Start probability for ${p.name}"></td>
+      <td><input class="mininput" type="number" inputmode="numeric"
+          data-mininput="${p.id}" data-field="exp_minutes"
+          min="0" max="90" step="1" value="${p.exp_minutes.toFixed(0)}"
+          aria-label="Expected minutes for ${p.name}"></td>
       <td>${fmt(p.xppg, 2)}</td>
       <td><button class="editbtn" data-edit="${p.id}" title="Edit ${p.name}">✎</button></td>
     </tr>`;
@@ -2823,6 +2842,32 @@ function renderLineup() {
           + "to bring it back."
         : "Fewer than eleven start, so this club is under-projected. Raise whoever you "
           + "expect to fill the gap."}</p>`;
+}
+
+/* Editing Start or Mins straight from the lineup table, without opening the
+   drawer for a one-number change. Writes to S.edits exactly as the drawer's
+   commitEdit does, so a number typed here and a slider dragged there are the
+   same override -- neither shadows the other, and the drawer (if open on this
+   same player) is kept in step rather than going stale. */
+async function inlineMinutesEdit(id, field, raw) {
+  const p = S.byId.get(id);
+  const f = EDIT_FIELDS.find((x) => x.k === field);
+  if (!p || !f || raw === "" || Number.isNaN(+raw)) { renderLineup(); return; }
+  const n = Math.min(f.max, Math.max(f.min, +raw));
+  const entry = editableFields(p).find((x) => x.f.k === field);
+  const base = entry ? entry.base : p.inputs?.[field];
+  const store = tidy(S.edits[id] ? JSON.parse(JSON.stringify(S.edits[id])) : {});
+  if (Math.abs(n - base) < 1e-9) delete store[field];
+  else { store[field] = n; delete store[MINUTES_PAIR[field]]; }
+  const tidied = tidy(store);
+  if (Object.keys(tidied).length) S.edits[id] = tidied;
+  else delete S.edits[id];
+  await recomputeEdited([id], { solveDelay: 400 });
+  renderAll();
+  if (editingId === id) {
+    editBuffer = S.edits[id] ? JSON.parse(JSON.stringify(S.edits[id])) : {};
+    renderEditorFields(); renderMatches(); previewEdit();
+  }
 }
 
 /* The same rebalance, previewed live while the slider is still moving. It costs
@@ -4301,6 +4346,13 @@ $("#lineupEdited").addEventListener("click", () => {
 $("#lineupBox").addEventListener("click", (e) => {
   const edit = e.target.closest("[data-edit]");
   if (edit) openEditor(+edit.dataset.edit);
+});
+$("#lineupBox").addEventListener("change", (e) => {
+  const input = e.target.closest("[data-mininput]");
+  if (input) inlineMinutesEdit(+input.dataset.mininput, input.dataset.field, input.value);
+});
+$("#lineupBox").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.closest("[data-mininput]")) e.target.blur();
 });
 $("#edExToggle").addEventListener("click", (e) => {
   explainOpen = !explainOpen;

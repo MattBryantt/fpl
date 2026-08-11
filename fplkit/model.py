@@ -872,6 +872,23 @@ OVERRIDABLE = {
 }
 
 
+def _p_start_from_exp_minutes(exp_minutes: float, p_sub: float) -> float:
+    """Invert the forward minutes formula to recover p_start from exp_minutes.
+
+    exp_minutes = p_start*ASSUMED_START_MINUTES + (1-p_start)*p_sub*ASSUMED_SUB_MINUTES
+    solved for p_start. The naive shortcut (p_start = exp_minutes /
+    ASSUMED_START_MINUTES) ignores the player's own sub-appearance rate and
+    saturates at 1.0 for anything above 78 minutes, both of which fight the
+    forward formula: a real player's exp_minutes never even reaches 78 unless
+    p_start is already 1.0, so 90 read back through the shortcut always claimed
+    certainty. Clipped to MAX_P_START rather than 1.0 to match the ceiling
+    every other minutes path in this file uses -- nobody is nailed on beyond it.
+    """
+    denom = ASSUMED_START_MINUTES - p_sub * ASSUMED_SUB_MINUTES
+    p_start = (exp_minutes - p_sub * ASSUMED_SUB_MINUTES) / denom
+    return float(np.clip(p_start, 0.0, MAX_P_START))
+
+
 def _recompute_minutes(df: pd.DataFrame, mask) -> None:
     """Keep the minutes family consistent after p_start or exp_minutes moves.
 
@@ -926,7 +943,7 @@ def apply_fields(player: Mapping[str, Any], fields: Mapping[str, Any]) -> dict:
         if field == "p_start":
             minutes_touched = True
         elif field == "exp_minutes":
-            out["p_start"] = float(np.clip(out["exp_minutes"] / ASSUMED_START_MINUTES, 0.0, 1.0))
+            out["p_start"] = _p_start_from_exp_minutes(out["exp_minutes"], float(out["p_sub"]))
             minutes_touched = explicit_minutes = True
 
     if minutes_touched:
@@ -1047,8 +1064,8 @@ def apply_overrides(df: pd.DataFrame, overrides: pd.DataFrame) -> pd.DataFrame:
             if field == "p_start":
                 minutes_touched = True
             elif field == "exp_minutes":
-                implied = float(np.clip(df.loc[mask, "exp_minutes"].iloc[0]
-                                        / ASSUMED_START_MINUTES, 0.0, 1.0))
+                implied = _p_start_from_exp_minutes(df.loc[mask, "exp_minutes"].iloc[0],
+                                                    float(df.loc[mask, "p_sub"].iloc[0]))
                 df.loc[mask, "p_start"] = implied
                 minutes_touched = explicit_minutes = True
 
