@@ -1128,7 +1128,35 @@ def _calibrate_bonus_prior(df: pd.DataFrame, raw: pd.Series, prior: pd.Series,
     return prior * multiplier
 
 
-def renormalise_minutes(players: pd.DataFrame) -> pd.DataFrame:
+def _bisect_scale(values: np.ndarray, target: float) -> np.ndarray:
+    """One bounded multiplier that brings `values` to `target`, each clipped at
+    MAX_P_START. Shared by every tier of `renormalise_minutes`: the same shape
+    solves "bring this group to eleven" and "bring this position's free players
+    back to what they would have had," just with a different `values`/`target`.
+    """
+    if not len(values) or values.sum() <= 0:
+        return values.copy()
+
+    def fielded(lam: float) -> float:
+        return float(np.minimum(MAX_P_START, values * lam).sum())
+
+    cap = fielded(MAX_MINUTES_SCALE)
+    if cap <= target:
+        lam = MAX_MINUTES_SCALE
+    else:
+        lo, hi = 0.0, MAX_MINUTES_SCALE
+        for _ in range(60):
+            mid = (lo + hi) / 2
+            if fielded(mid) < target:
+                lo = mid
+            else:
+                hi = mid
+        lam = (lo + hi) / 2
+    return np.minimum(MAX_P_START, values * lam)
+
+
+def renormalise_minutes(players: pd.DataFrame,
+                        baseline_p_start: pd.Series | None = None) -> pd.DataFrame:
     """Put each club back to eleven starters after an override moved somebody.
 
     Minutes are a fixed pool. Eleven players start, and asserting that one of
@@ -1139,11 +1167,23 @@ def renormalise_minutes(players: pd.DataFrame) -> pd.DataFrame:
     the odds said they would, with the extra goals conjured out of nothing rather
     than taken from a team-mate.
 
-    So the assertion is kept and the rest of the club absorbs it. Overridden
-    players are pinned -- the whole point of an override is that the model does
-    not get a vote -- and everyone else is scaled by one bounded multiplier per
-    club, the same shape `_normalise_to` uses, so the pecking order the data
-    supports survives the adjustment.
+    So the assertion is kept and the rest of the club absorbs it -- and absorbs
+    it unevenly. A promoted winger competes for a shirt with the other wingers,
+    not with the centre-backs, so whoever shares a position with the player who
+    moved feels most of the consequence: their free peers at the same position
+    are rescaled first, by one bounded multiplier, to soak up exactly what that
+    position gained or lost. Only what they cannot absorb -- because they are
+    already at nought, or already as nailed as it gets -- spills into the rest
+    of the club, scaled the same way `_normalise_to` does it, so the pecking
+    order the data supports survives the adjustment either way. Goalkeepers
+    have no such split: a club fields one, so there is no "same position" to
+    prefer among the rest.
+
+    `baseline_p_start` is each player's p_start before *any* override touched
+    the pool -- `minutes_model`'s own answer -- which is what "what this
+    position gained or lost" is measured against. Falls back to the current
+    column if not given, which loses the position split for pinned players
+    whose own value has already moved, but still balances the club.
 
     If the pinned players alone already exceed eleven, that stands: the user has
     said so, and quietly scaling their numbers back to fit would be the model
@@ -1155,36 +1195,48 @@ def renormalise_minutes(players: pd.DataFrame) -> pd.DataFrame:
 
     df = players.copy()
     pinned = df["minutes_pinned"].fillna(False).astype(bool)
+    baseline = baseline_p_start if baseline_p_start is not None else df["p_start"]
 
-    for is_keeper, target in ((True, 1.0), (False, float(XI_OUTFIELD))):
-        group = df["is_keeper"] == is_keeper
-        for team in df.loc[group, "team"].dropna().unique():
-            club = group & (df["team"] == team)
-            free = club & ~pinned
-            if not free.any():
+    for team in df.loc[df["is_keeper"], "team"].dropna().unique():
+        club = (df["is_keeper"]) & (df["team"] == team)
+        free = club & ~pinned
+        if not free.any():
+            continue
+        spoken_for = float(df.loc[club & pinned, "p_start"].sum())
+        remaining = max(1.0 - spoken_for, 0.0)
+        values = df.loc[free, "p_start"].to_numpy(dtype=float)
+        df.loc[free, "p_start"] = _bisect_scale(values, remaining)
+
+    for team in df.loc[~df["is_keeper"], "team"].dropna().unique():
+        club = (~df["is_keeper"]) & (df["team"] == team)
+        free = club & ~pinned
+        if not free.any():
+            continue
+
+        spoken_for = float(df.loc[club & pinned, "p_start"].sum())
+        remaining = max(float(XI_OUTFIELD) - spoken_for, 0.0)
+
+        claimed = 0.0
+        settled = pd.Series(False, index=df.index)
+        for pos in df.loc[club & pinned, "pos"].unique():
+            pos_free = free & (df["pos"] == pos)
+            if not pos_free.any():
                 continue
+            pinned_pos = club & pinned & (df["pos"] == pos)
+            delta = (float(df.loc[pinned_pos, "p_start"].sum())
+                     - float(baseline.loc[pinned_pos].sum()))
+            values = df.loc[pos_free, "p_start"].to_numpy(dtype=float)
+            cap = float(pos_free.sum()) * MAX_P_START
+            want = float(np.clip(values.sum() - delta, 0.0, cap))
+            df.loc[pos_free, "p_start"] = _bisect_scale(values, want)
+            claimed += want
+            settled |= pos_free
 
-            spoken_for = float(df.loc[club & pinned, "p_start"].sum())
-            remaining = max(target - spoken_for, 0.0)
-            values = df.loc[free, "p_start"].to_numpy(dtype=float)
-            if values.sum() <= 0:
-                continue
-
-            def fielded(lam: float) -> float:
-                return float(np.minimum(MAX_P_START, values * lam).sum())
-
-            if fielded(MAX_MINUTES_SCALE) <= remaining:
-                lam = MAX_MINUTES_SCALE
-            else:
-                lo, hi = 0.0, MAX_MINUTES_SCALE
-                for _ in range(60):
-                    mid = (lo + hi) / 2
-                    if fielded(mid) < remaining:
-                        lo = mid
-                    else:
-                        hi = mid
-                lam = (lo + hi) / 2
-            df.loc[free, "p_start"] = np.minimum(MAX_P_START, values * lam)
+        other_free = free & ~settled
+        if other_free.any():
+            remaining_other = max(remaining - claimed, 0.0)
+            values = df.loc[other_free, "p_start"].to_numpy(dtype=float)
+            df.loc[other_free, "p_start"] = _bisect_scale(values, remaining_other)
 
     # Everyone who moved needs the rest of the minutes family re-derived from
     # the new p_start; the pinned players already had that done for them.
@@ -1583,6 +1635,11 @@ def project(horizon: int = 5, start_gw: int | None = None,
     # imply, so it needs them in hand.
     players = minutes_model(players, basis=basis, horizon=horizon)
     players = attach_rates(players, strength, us_attack_rating, basis)
+    # renormalise_minutes prefers the same position as whoever an override
+    # moved, which means it needs to know what that position had *before* the
+    # override -- captured here, since apply_overrides is about to overwrite
+    # the very column it would otherwise have to read that from.
+    minutes_baseline = players["p_start"].copy()
     # Applied after every rate has been derived and shrunk, so that an asserted
     # number is the one the model actually uses.
     players = apply_overrides(players, overrides)
@@ -1595,7 +1652,7 @@ def project(horizon: int = 5, start_gw: int | None = None,
     # Neither step can touch what was asserted: renormalise_minutes pins the
     # overridden players, and conserve_team_output sees an asserted rate as
     # fully evidenced and takes its correction from the modelled ones instead.
-    players = renormalise_minutes(players)
+    players = renormalise_minutes(players, minutes_baseline)
     players = conserve_team_output(players, strength)
     per_gameweek = gameweek_overrides(overrides, players)
 
