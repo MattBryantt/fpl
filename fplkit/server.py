@@ -356,6 +356,7 @@ class DraftRequest(BaseModel):
     squad: list[int] = []
     notes: str = ""
     context: dict[str, Any] = {}
+    saved_at: str | None = None
 
 
 @app.get("/")
@@ -1026,6 +1027,15 @@ def save_draft(request: DraftRequest) -> dict:
     if every draft is scored under the same assumptions, so they are always
     recomputed against the current horizon, half-life and edits rather than
     frozen at whatever was on screen when you hit save.
+
+    `saved_at` comes from the client when it has one -- the browser's merge
+    logic picks whichever side has the newer `saved_at`, and re-pushes every
+    local draft on each sync (not just the ones that changed) to make sure the
+    laptop has everything. Stamping the server's own clock here instead would
+    bump an untouched draft's timestamp on every sync and make it look
+    freshly-edited, which is exactly what breaks the "newer wins" merge across
+    devices. Only a save with no `saved_at` at all (the CLI, or a very old
+    client) gets one made up for it.
     """
     name = request.name.strip()
     if not name:
@@ -1036,7 +1046,7 @@ def save_draft(request: DraftRequest) -> dict:
         "name": name,
         "squad": request.squad,
         "notes": request.notes,
-        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "saved_at": request.saved_at or datetime.now().isoformat(timespec="seconds"),
         "context": request.context,
     })
     drafts.sort(key=lambda d: d["name"].lower())
