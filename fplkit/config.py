@@ -71,7 +71,15 @@ DEF_CONTRIB_THRESHOLD = {"GKP": None, "DEF": 10, "MID": 12, "FWD": 12}
 # (measured over 8,631 player-gameweeks). Widening the count distribution to
 # Var = 2.25 x mean reproduces that total. See poisson.prob_at_least for why
 # this is larger than the 1.34 dispersion the raw counts show.
+#
+# That gap is the tell: 2.25 is correcting for shrinkage compression as much as
+# for real game-to-game variance, and a player whose dc_per90 is barely shrunk
+# does not need the shrinkage half of the correction. DC_DISPERSION is now the
+# ceiling used at zero evidence (a fresh mover, a thin sample); DC_DISPERSION_FLOOR
+# is the 1.34 raw counts actually show, used once a player's own record has
+# taken over the rate. See poisson.dc_dispersion for the interpolation between them.
 DC_DISPERSION = 2.25
+DC_DISPERSION_FLOOR = 1.34
 
 # --- Squad rules --------------------------------------------------------------
 SQUAD_SIZE = 15

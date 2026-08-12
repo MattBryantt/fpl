@@ -77,3 +77,11 @@ export function probAtLeast(threshold, mean, dispersion = 1) {
   // Clamp: the complement of a sum of positives can land a hair below zero.
   return Math.min(1, Math.max(0, 1 - below));
 }
+
+/** Per-player dispersion for probAtLeast. Port of poisson.dc_dispersion --
+ *  see there for why it interpolates between floor and ceiling rather than
+ *  using one constant for every player. */
+export function dcDispersion(evidenceWeight, floor, ceiling) {
+  const w = Math.min(1, Math.max(0, evidenceWeight));
+  return ceiling - (ceiling - floor) * w;
+}

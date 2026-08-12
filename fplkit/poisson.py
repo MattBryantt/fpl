@@ -136,6 +136,21 @@ def prob_at_least(threshold: int, mean: float, dispersion: float = 1.0) -> float
     return float(min(1.0, max(0.0, 1.0 - below)))
 
 
+def dc_dispersion(evidence_weight: float, floor: float, ceiling: float) -> float:
+    """Per-player dispersion for `prob_at_least`, tightening as dc_per90 is trusted more.
+
+    `ceiling` corrects for shrinkage compression as much as for real variance
+    (see `prob_at_least`), and a player whose rate is mostly his own record --
+    high `evidence_weight`, the same minutes-vs-prior weight shrinkage used to
+    produce dc_per90 -- does not need the shrinkage half of that correction. A
+    fresh mover or a thin sample, whose rate is mostly the positional prior,
+    keeps the full `ceiling`; a nailed-on starter with a full season behind him
+    moves toward `floor`, the dispersion raw counts actually show.
+    """
+    evidence_weight = min(1.0, max(0.0, evidence_weight))
+    return ceiling - (ceiling - floor) * evidence_weight
+
+
 def ratings_from_xg(
     attack_for: float,
     defence_against: float,

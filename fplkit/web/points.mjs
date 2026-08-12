@@ -11,8 +11,8 @@
  * scripts/verify-js-port.mjs.
  */
 
-import { cleanSheetProb, expectedConcessionPenalty, expectedSavePoints,
-         probAtLeast } from "./poisson.mjs";
+import { cleanSheetProb, dcDispersion, expectedConcessionPenalty,
+         expectedSavePoints, probAtLeast } from "./poisson.mjs";
 
 /* ------------------------------------------------------------------ minutes
    p_start, mins_if_start, p_sub, p_play, p60 and exp_minutes are six views of
@@ -191,8 +191,11 @@ export function playerFixturePoints(player, lamFor, lamAgainst, teamNpxg, teamXg
     }
     if (threshold) {
       const expDc = player.dc_per90 * share;
+      const dispersion = dcDispersion(player.fpl_evidence_weight ?? 0,
+                                       rules.DC_DISPERSION_FLOOR ?? rules.DC_DISPERSION ?? 1,
+                                       rules.DC_DISPERSION ?? 1);
       dcPts += probability * rules.DEF_CONTRIB_POINTS
-             * probAtLeast(threshold, expDc, rules.DC_DISPERSION ?? 1);
+             * probAtLeast(threshold, expDc, dispersion);
     }
   }
 

@@ -36,6 +36,7 @@ from .config import (
     CLEAN_SHEET_POINTS,
     DEF_CONTRIB_POINTS,
     DC_DISPERSION,
+    DC_DISPERSION_FLOOR,
     DEF_CONTRIB_THRESHOLD,
     GOAL_POINTS,
     HOME_ADVANTAGE,
@@ -1681,8 +1682,10 @@ def _player_fixture_points(player: pd.Series, lam_for: float, lam_against: float
             saves_pts += probability * SAVE_POINTS * ps.expected_save_points(exp_saves)
         if threshold:
             exp_dc = float(player["dc_per90"]) * share
+            dispersion = ps.dc_dispersion(float(player.get("fpl_evidence_weight", 0.0)),
+                                          DC_DISPERSION_FLOOR, DC_DISPERSION)
             dc_pts += (probability * DEF_CONTRIB_POINTS
-                       * ps.prob_at_least(threshold, exp_dc, DC_DISPERSION))
+                       * ps.prob_at_least(threshold, exp_dc, dispersion))
 
     total = (appearance + goals_pts + assists_pts + clean_sheet_pts + concede_pts
              + saves_pts + dc_pts + bonus_pts + cards_pts + pen_miss_pts)

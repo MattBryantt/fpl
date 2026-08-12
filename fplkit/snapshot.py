@@ -78,7 +78,7 @@ SNAPSHOT_HORIZON = 12
 SCORING_FIELDS = [
     "p_start", "mins_if_start", "p_sub", "p_play", "p60", "exp_minutes",
     "npxg_per90", "xa_per90", "dc_per90", "bonus_per90", "saves_per90",
-    "yellow_per90", "penalties_order", "price",
+    "yellow_per90", "penalties_order", "price", "fpl_evidence_weight",
 ]
 
 # The unshrunk rate each of these started from -- last season's actual per-90
@@ -109,6 +109,7 @@ def _rules() -> dict[str, Any]:
         "DEF_CONTRIB_POINTS": config.DEF_CONTRIB_POINTS,
         "DEF_CONTRIB_THRESHOLD": config.DEF_CONTRIB_THRESHOLD,
         "DC_DISPERSION": config.DC_DISPERSION,
+        "DC_DISPERSION_FLOOR": config.DC_DISPERSION_FLOOR,
         "PENALTY_GOAL_SHARE": config.PENALTY_GOAL_SHARE,
         "PENALTY_CONVERSION": config.PENALTY_CONVERSION,
         "ASSUMED_START_MINUTES": config.ASSUMED_START_MINUTES,
