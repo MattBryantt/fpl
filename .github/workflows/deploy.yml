@@ -35,6 +35,7 @@ on:
     # build.
     paths:
       - "fplkit/**"
+      - "src/**"
       - "requirements.txt"
       - ".github/workflows/deploy.yml"
 

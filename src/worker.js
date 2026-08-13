@@ -98,6 +98,10 @@ async function handleSync(request, env) {
       updated_at: body.updated_at,
       drafts: Array.isArray(body.drafts) ? body.drafts : [],
       edits: (body.edits && typeof body.edits === "object") ? body.edits : {},
+      // Per-id last-touched times, used client-side to merge edits from two
+      // devices instead of one device's whole set replacing the other's.
+      // Opaque here for the same reason settings is: the Worker just carries it.
+      editsAt: (body.editsAt && typeof body.editsAt === "object") ? body.editsAt : {},
       squad: Array.isArray(body.squad) ? body.squad : [],
       // Opaque to the Worker -- the Settings panel's controls and bench
       // weights, in whatever shape the client's syncableSettings() produces.

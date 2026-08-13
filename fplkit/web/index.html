@@ -1052,6 +1052,7 @@ gameweek of the transfer-and-chip plan.">Free transfers</label>
   <span id="editCount"></span>
   <span class="sub" id="editSaved" style="text-transform:none;letter-spacing:0"></span>
   <span style="flex:1"></span>
+  <button class="btn ghost" id="editHistory" title="Restore a previous set of overrides saved on this device">History</button>
   <button class="btn ghost" id="clearEdits">Discard all edits</button>
 </div>
 
@@ -1422,7 +1423,8 @@ const SVGNS = "http://www.w3.org/2000/svg";
    because you closed a tab is not acceptable. The laptop's out/drafts.json and
    out/overrides.csv are still written on sync, so the CLI keeps working from
    the same squads -- but this is the copy that is always there. */
-const STORE = { drafts: "fpl.drafts", edits: "fpl.edits", squad: "fpl.squad",
+const STORE = { drafts: "fpl.drafts", edits: "fpl.edits", editsAt: "fpl.editsAt",
+                editsHistory: "fpl.edits.history", squad: "fpl.squad",
                 settings: "fpl.settings", posTags: "fpl.postags",
                 lineupOrder: "fpl.lineuporder" };
 
@@ -1435,11 +1437,49 @@ function loadLocal(key, fallback) {
 function saveLocal(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* private mode */ }
 }
+
+/* A rolling local backup of S.edits, independent of sync entirely -- sync only
+   protects against one device clobbering another; it does nothing for "the
+   merge logic itself has a bug" or "I want yesterday's numbers back". Capped
+   so it cannot grow without bound, and pruned by age for the same reason. */
+const EDITS_HISTORY_MAX = 20, EDITS_HISTORY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+function snapshotEditsHistory() {
+  if (!Object.keys(S.edits).length) return; // nothing to protect against losing
+  const cutoff = Date.now() - EDITS_HISTORY_MAX_AGE_MS;
+  const history = loadLocal(STORE.editsHistory, []).filter((s) => s.at > cutoff);
+  const last = history[history.length - 1];
+  const snapshot = JSON.stringify(S.edits);
+  if (last && last.snapshot === snapshot) return; // unchanged since last save
+  history.push({ at: Date.now(), snapshot });
+  saveLocal(STORE.editsHistory, history.slice(-EDITS_HISTORY_MAX));
+}
+function restoreFromHistory() {
+  const history = loadLocal(STORE.editsHistory, []);
+  if (!history.length) { alert("No history saved on this device yet."); return; }
+  const lines = history.slice().reverse().map((s, i) =>
+    `${i}: ${new Date(s.at).toLocaleString()} (${Object.keys(JSON.parse(s.snapshot)).length} overrides)`);
+  const pick = prompt("Restore which snapshot? Enter a number, or cancel:\n\n" + lines.join("\n"));
+  if (pick === null) return;
+  const entry = history.slice().reverse()[+pick];
+  if (!entry) { alert("Not a valid number."); return; }
+  const restored = JSON.parse(entry.snapshot);
+  // Union of before and after ids -- an id dropped by the restore needs the
+  // same touch-and-delete stamp as any other edit removal, or a later merge
+  // could resurrect it from a device that still has the pre-restore value.
+  const ids = new Set([...Object.keys(S.edits), ...Object.keys(restored)].map(Number));
+  S.edits = restored;
+  recomputeEdited([...ids], { solveDelay: 0 });
+  renderAll();
+}
+
 /* Edits are saved twice, to two stores with different jobs. localStorage is the
    copy that is always there, including on a phone on a train. out/overrides.csv
    is the copy the CLI reads, and it only exists when the laptop is reachable --
    so it is written on a debounce, silently, and its failure is not an error. */
-const saveEdits = () => { saveLocal(STORE.edits, S.edits); pushOverrides(); markSynced(); };
+const saveEdits = () => {
+  saveLocal(STORE.edits, S.edits); saveLocal(STORE.editsAt, S.editsAt);
+  snapshotEditsHistory(); pushOverrides(); markSynced();
+};
 const saveSquad = () => { saveLocal(STORE.squad, S.squad); markSynced(); };
 
 const S = {
@@ -1448,7 +1488,8 @@ const S = {
   squad: [], optimal: [], optimalPts: null, optimalCost: null, optimalBench: {},
   optimalState: "idle", optimalError: "",
   pos: "ALL", search: "", sort: "xpts_plan", dir: -1,
-  edits: loadLocal(STORE.edits, {}), drafts: loadLocal(STORE.drafts, []),
+  edits: loadLocal(STORE.edits, {}), editsAt: loadLocal(STORE.editsAt, {}),
+  drafts: loadLocal(STORE.drafts, []),
   // Detailed positions (LW, CB, and the rest) FPL itself does not carry --
   // see position-tags.mjs. Keyed by id here, unlike the seed it starts from,
   // because this is a browser preference rather than something meant to
@@ -3709,15 +3750,24 @@ async function undoEdit() {
 function recomputeEdited(ids, { solveDelay = 0, sync = true } = {}) {
   const failed = [];
   for (const id of ids) {
+    // A local edit (sync !== false) touches this id right now, whether it
+    // ended up set or cleared -- that timestamp is what lets a future pull's
+    // merge tell "this device's state for this id is newer" from "it just
+    // never heard about the other device's change". Edits adopted from a pull
+    // already carry the merge's own timestamp and must not be re-stamped
+    // here, or every pull would look locally-authored on the next merge.
+    if (sync) S.editsAt[id] = Date.now();
     const fields = S.edits[id];
     if (!fields) continue;
     try {
       checkOverridable(fields, S.snapshot);
     } catch (error) {
       // A rejected edit is not an edit. Dropping it keeps the board and the
-      // solver looking at the same numbers.
+      // solver looking at the same numbers -- and it counts as a touch too,
+      // so the merge doesn't resurrect it from an older remote copy.
       failed.push(`${S.byId.get(id)?.name || id}: ${error.message}`);
       delete S.edits[id];
+      S.editsAt[id] = Date.now();
     }
   }
   // sync: false is for edits just adopted from a pullSyncState() pull -- they
@@ -3728,7 +3778,10 @@ function recomputeEdited(ids, { solveDelay = 0, sync = true } = {}) {
   // above dropped one on a stale/mismatched local snapshot -- would broadcast
   // that smaller set as authoritative and erase the edit for everyone.
   if (sync) saveEdits();
-  else { saveLocal(STORE.edits, S.edits); pushOverrides(); }
+  else {
+    saveLocal(STORE.edits, S.edits); saveLocal(STORE.editsAt, S.editsAt);
+    snapshotEditsHistory(); pushOverrides();
+  }
   rebuildPool();
   if (failed.length) {
     alert("These edits were rejected and have been dropped:\n\n" + failed.join("\n"));
@@ -3933,8 +3986,8 @@ async function pushSyncState() {
   clearTimeout(syncTimer);
   if (!TOKEN || !syncPending) return;
   const sending = JSON.stringify({
-    updated_at: syncMeta().updated_at, drafts: S.drafts, edits: S.edits, squad: S.squad,
-    settings: syncableSettings(),
+    updated_at: syncMeta().updated_at, drafts: S.drafts, edits: S.edits, editsAt: S.editsAt,
+    squad: S.squad, settings: syncableSettings(),
   });
   syncPending = false;
   try {
@@ -3945,6 +3998,38 @@ async function pushSyncState() {
   } catch (_) {
     syncPending = true; // offline, or no token registered on the server side yet
   }
+}
+
+/* Edits merge per player rather than replace wholesale. The rest of the synced
+   state (drafts, squad, settings) still replaces outright on whichever side
+   pushed last -- those are edited as a whole by one device at a time, so
+   last-write-wins on the whole blob is fine for them. Edits are different:
+   they accumulate from both a laptop doing team-news sweeps and a phone doing
+   one-off tweaks between the same two syncs, and a wholesale replace treats
+   "the other device hasn't heard about my edit yet" the same as "the other
+   device deliberately has fewer edits than me" -- which is exactly how a
+   laptop opened with a stale/empty local copy, touching just one player,
+   ended up overwriting every override on every device including the phone
+   that actually had them all. Per-id timestamps (S.editsAt) let each id keep
+   whichever side touched it more recently, instead of the whole set being
+   decided by whoever's blob has the newer wall-clock stamp. */
+function mergeEdits(localEdits, localAt, remoteEdits, remoteAt) {
+  const ids = new Set([
+    ...Object.keys(localEdits), ...Object.keys(remoteEdits),
+    ...Object.keys(localAt), ...Object.keys(remoteAt),
+  ].map(Number));
+  const edits = {}, at = {};
+  for (const id of ids) {
+    const lt = localAt[id] || 0, rt = remoteAt[id] || 0;
+    if (lt >= rt) {
+      if (localEdits[id]) edits[id] = localEdits[id];
+      at[id] = lt;
+    } else {
+      if (remoteEdits[id]) edits[id] = remoteEdits[id];
+      at[id] = rt;
+    }
+  }
+  return { edits, at };
 }
 
 /** Once, at boot. Adopts the other device's state only if it is strictly newer
@@ -3959,10 +4044,13 @@ async function pullSyncState() {
     const remote = await res.json();
     if (!remote.exists || remote.updated_at <= syncMeta().updated_at) return;
     S.drafts = remote.drafts || [];
-    S.edits = remote.edits || {};
+    const merged = mergeEdits(S.edits, S.editsAt, remote.edits || {}, remote.editsAt || {});
+    S.edits = merged.edits;
+    S.editsAt = merged.at;
     S.squad = remote.squad || [];
     saveLocal(STORE.drafts, S.drafts);
     saveLocal(STORE.edits, S.edits);
+    saveLocal(STORE.editsAt, S.editsAt);
     saveLocal(STORE.squad, S.squad);
     if (remote.settings) applySyncedSettings(remote.settings);
     setSyncMeta({ updated_at: remote.updated_at });
@@ -3979,8 +4067,8 @@ addEventListener("pagehide", () => {
     api("/api/sync", {
       method: "POST", keepalive: true, headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        updated_at: syncMeta().updated_at, drafts: S.drafts, edits: S.edits, squad: S.squad,
-        settings: syncableSettings(),
+        updated_at: syncMeta().updated_at, drafts: S.drafts, edits: S.edits, editsAt: S.editsAt,
+        squad: S.squad, settings: syncableSettings(),
       }),
     });
   } catch (_) { /* leaving anyway; localStorage already has it */ }
@@ -5009,6 +5097,7 @@ $("#clearEdits").addEventListener("click", async () => {
   await recomputeEdited(ids);
   renderAll();
 });
+$("#editHistory").addEventListener("click", restoreFromHistory);
 addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   // Innermost first: the editor opens over the pool, so Escape should peel one
