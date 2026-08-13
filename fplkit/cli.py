@@ -49,6 +49,7 @@ HEADERS = {
     "exp_price_change": "Δ£ fcast", "xi_xpts": "XI xPts", "decay": "weight",
     "odds_priced": "priced", "changed_vs_prev": "churn",
     "shared_with_plan": "∩ plan", "frontloaded": "front",
+    "mins_if_start": "mins/start", "recent_mins_std": "std", "mins_flags": "flags",
     "chip": "chip", "transfers": "TRs", "free": "FT", "hits": "hits",
     "out": "out", "in": "in", "out_price": "£ out", "in_price": "£ in",
     "in_team": "to", "gain": "gain", "worth": "worth", "edge": "edge",
@@ -642,7 +643,7 @@ def cmd_movers(args) -> None:
 
     _render(movers, "Changed club since those numbers were recorded",
             ["web_name", "pos", "team_short", "previous_club", "price", "minutes",
-             "team_context", "npxg_per90", "xpts", "confidence"])
+             "mins_if_start", "team_context", "npxg_per90", "xpts", "confidence"])
     console.print(
         "[dim]team_context is the multiplier applied to his attacking rates for "
         "the move: above 1 means he joined a better attack than the one his "
@@ -652,6 +653,31 @@ def cmd_movers(args) -> None:
         "average than their raw history suggests.[/dim]"
     )
     _save(movers, args.csv)
+
+
+def cmd_flags(args) -> None:
+    """Players whose minutes assumption is worth a second look before trusting it.
+
+    Distinct from `blindspots`: those players have no evidence at all. These
+    have evidence, but something about it -- an inconsistent shift length, a
+    club move, a fitness doubt -- makes the average a shakier summary than
+    usual. See model._minutes_flags.
+    """
+    projection = _run_projection(args)
+    df = projection.players
+    flagged = df[df["mins_flags"] != ""].copy()
+    flagged = flagged.sort_values("price", ascending=False).head(args.limit)
+
+    _render(flagged, "Minutes worth a manual look",
+            ["web_name", "pos", "team_short", "price", "p_start", "mins_if_start",
+             "recent_mins_std", "mins_flags"])
+    console.print(
+        "[dim]mins_flags: volatile minutes = his own recent shift length swings "
+        "wide enough that the average may not describe any single week; changed "
+        "club = his history may be from a different role; status = the API's "
+        "own fitness/squad status, not 'a' (available).[/dim]"
+    )
+    _save(flagged, args.csv)
 
 
 def cmd_blindspots(args) -> None:
@@ -1033,6 +1059,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(blind)
     blind.add_argument("--limit", type=int, default=40)
     blind.set_defaults(func=cmd_blindspots)
+
+    flags = subparsers.add_parser(
+        "flags", help="players whose minutes assumption is worth a manual look "
+                      "(volatile shift length, club move, fitness status)")
+    add_common(flags)
+    flags.add_argument("--limit", type=int, default=40)
+    flags.set_defaults(func=cmd_flags)
 
     ov = subparsers.add_parser(
         "overrides", help="list what you can override, and write a template")

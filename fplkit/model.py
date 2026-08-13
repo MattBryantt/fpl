@@ -185,6 +185,27 @@ MAX_START_FORM_WEIGHT = 1.25
 # would rewrite a season.
 START_FORM_PRIOR_MATCHES = 3.0
 
+# Shift length is a steadier trait than start probability -- a manager's team
+# selection swings week to week, but whether a player is the type hooked at the
+# hour or the type who plays every minute does not -- so it earns belief faster
+# than the start rate above, and (unlike start_form_weight) is not shrunk
+# further as the horizon lengthens: how long he plays when he starts is not a
+# question next month answers differently from next week.
+MINUTES_FORM_PRIOR_MATCHES = 2.0
+
+# Above this coefficient of variation, "his average shift is 70 minutes" is
+# hiding two different players -- one hooked at the hour every week, one who
+# plays 90 half the time and doesn't feature the other half -- and the mean
+# alone is a worse answer than the same mean with a warning on it. Not fed back
+# into mins_if_start itself: nothing downstream of it models a *distribution*,
+# so widening the point estimate would just move the uncertainty somewhere it
+# is not accounted for. Flagged instead -- see MINS_FLAG_MIN_MATCHES.
+MINS_VOLATILE_CV = 0.35
+# Below this much recency-weighted start evidence, a volatile-looking average is
+# more likely to be two or three data points than a real pattern, so the flag
+# stays off until there is enough behind it to trust.
+MINS_FLAG_MIN_MATCHES = MINUTES_FORM_PRIOR_MATCHES
+
 # Ceiling on the per-club correction. A squad the data barely knows would
 # otherwise have its two familiar players multiplied into superstars -- a worse
 # error than the under-fielding being corrected.
@@ -687,15 +708,66 @@ def minutes_model(players: pd.DataFrame,
                            (blended_sub * df["team"].map(scale)).clip(0.0, 1.0))
 
     # How long he plays *when he starts*, which is a different question from how
-    # often he starts and until now had no way of being asked. The model has no
-    # per-player evidence for it -- season minutes divided by starts cannot
-    # separate "hooked on the hour" from "started two thirds of the time" -- so
-    # everyone opens on the league average and the user says otherwise where he
-    # knows better. See OVERRIDABLE and _p60_given_start.
-    df["mins_if_start"] = float(ASSUMED_START_MINUTES)
+    # often he starts. Season minutes divided by starts cannot answer it --
+    # mixing in substitute cameos undercounts a genuine 90-minute regular the
+    # moment he has come off the bench even once -- but the per-gameweek archive
+    # can: a row where he started reports minutes from that start alone. Absent
+    # that archive, or absent enough of it for a given player, he opens on the
+    # league average and the user says otherwise where he knows better. See
+    # OVERRIDABLE and _p60_given_start.
+    if "recent_mins_if_start" not in df:
+        df["mins_if_start"] = float(ASSUMED_START_MINUTES)
+    else:
+        recent_mins = pd.to_numeric(df["recent_mins_if_start"], errors="coerce")
+        recent_starts = pd.to_numeric(
+            df.get("recent_start_matches", pd.Series(0.0, index=df.index)),
+            errors="coerce").fillna(0.0).clip(lower=0.0)
+        believed = recent_starts / (recent_starts + MINUTES_FORM_PRIOR_MATCHES)
+        df["mins_if_start"] = (float(ASSUMED_START_MINUTES)
+                               + believed.fillna(0.0) * (recent_mins.fillna(ASSUMED_START_MINUTES)
+                                                          - ASSUMED_START_MINUTES)
+                               ).clip(0.0, MAX_MINS_IF_START)
 
+    df["mins_flags"] = _minutes_flags(df)
     _derive_minutes(df)
     return df
+
+
+def _minutes_flags(df: pd.DataFrame) -> pd.Series:
+    """Reasons the minutes assumption above is worth a manual look, not a fact.
+
+    Three things the model either cannot see or can only half-correct for:
+    a shift length so inconsistent that its own average is a poor summary
+    (see MINS_VOLATILE_CV), a club move that may have changed his role (his
+    current-season minutes archive already reflects the new club once he has
+    played there, but a mid-season mover's rows mix both clubs with no way to
+    tell them apart), and a fitness/squad status the API itself is unsure
+    about. Comma-joined so a CLI table can show it in one column; empty string
+    means nothing stood out.
+    """
+    columns = {}
+
+    if "recent_mins_std" in df and "recent_mins_if_start" in df:
+        matches = pd.to_numeric(
+            df.get("recent_start_matches", pd.Series(0.0, index=df.index)),
+            errors="coerce").fillna(0.0)
+        mean = pd.to_numeric(df["recent_mins_if_start"], errors="coerce")
+        std = pd.to_numeric(df["recent_mins_std"], errors="coerce")
+        cv = (std / mean.replace(0.0, pd.NA)).astype(float)
+        volatile = ((matches >= MINS_FLAG_MIN_MATCHES) & (cv > MINS_VOLATILE_CV)).fillna(False)
+        columns["volatile"] = np.where(volatile, "volatile minutes", "")
+
+    if "moved_club" in df:
+        columns["moved"] = np.where(df["moved_club"].fillna(False), "changed club", "")
+
+    if "status" in df:
+        unavailable = df["status"].fillna("a") != "a"
+        columns["status"] = np.where(unavailable, "status: " + df["status"].astype(str), "")
+
+    if not columns:
+        return pd.Series("", index=df.index)
+    reasons = pd.DataFrame(columns, index=df.index)
+    return reasons.apply(lambda row: ", ".join(value for value in row if value), axis=1)
 
 
 def _p60_given_start(mins_if_start):
@@ -1749,6 +1821,12 @@ def project(horizon: int = 5, start_gw: int | None = None,
     form = history.start_form(gw_history, START_FORM_HALF_LIFE)
     if len(form):
         players = players.merge(form, on="code", how="left")
+
+    # Same archive, same recency weighting, a different question: not how often
+    # he starts but how long the shift is once he does. See MINUTES_FORM_PRIOR_MATCHES.
+    mins_form = history.minutes_form(gw_history, START_FORM_HALF_LIFE)
+    if len(mins_form):
+        players = players.merge(mins_form, on="code", how="left")
 
     # Team strength has to be known before player rates, because adjusting a
     # transferred player's output needs the ratings of both clubs involved.

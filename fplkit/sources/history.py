@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import io
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -126,6 +127,55 @@ def start_form(history: pd.DataFrame, half_life_matches: float = 4.0) -> pd.Data
         "recent_matches": weight.values,
     })
     return out.dropna(subset=["recent_start_rate"]).reset_index(drop=True)
+
+
+def minutes_form(history: pd.DataFrame, half_life_matches: float = 4.0) -> pd.DataFrame:
+    """A recency-weighted shift length, and how many starts stand behind it.
+
+    Season-to-date `minutes / starts` off the FPL API cannot isolate this: total
+    minutes mixes starts with substitute cameos, so the ratio undercounts a
+    genuine 90-minute regular the moment he has come off the bench even once
+    (see the comment above `mins_if_start` in minutes_model()). Per-gameweek
+    rows do not have that problem -- a row where `starts > 0` reports minutes
+    from that start alone -- so this is evidence the season aggregate cannot
+    give the model at all, not just a recency-weighted version of it.
+
+    Weighted the same way as `start_form`, over started rows only. Also carries
+    the weighted standard deviation around that mean -- a nailed 90-minute
+    player and one rotated between a token cameo and a full shift can average
+    the same figure, and `model._minutes_flags` uses the spread to tell them
+    apart.
+    """
+    columns = ["code", "recent_mins_if_start", "recent_start_matches", "recent_mins_std"]
+    if history.empty or not half_life_matches:
+        return pd.DataFrame(columns=columns)
+
+    df = history.copy()
+    started = pd.to_numeric(df["starts"], errors="coerce").fillna(0.0) > 0
+    df = df[started]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    latest = df["gw"].max()
+    df["w"] = 0.5 ** ((latest - df["gw"]) / float(half_life_matches))
+
+    grouped = df.groupby("code")
+    weight = grouped["w"].sum()
+    mins = grouped.apply(lambda g: (g["minutes"] * g["w"]).sum(), include_groups=False)
+    mean = mins / weight.replace(0.0, pd.NA)
+    variance = grouped.apply(
+        lambda g: (g["w"] * (g["minutes"] - mean.loc[g.name]) ** 2).sum(),
+        include_groups=False) / weight.replace(0.0, pd.NA)
+    out = pd.DataFrame({
+        "code": weight.index.astype(int),
+        "recent_mins_if_start": mean.astype(float).values,
+        # In units of starts, like `start_form`'s `recent_matches` -- how much
+        # *recent* evidence stands behind the figure, not how many he has ever
+        # made.
+        "recent_start_matches": weight.values,
+        "recent_mins_std": np.sqrt(variance.astype(float)).values,
+    })
+    return out.dropna(subset=["recent_mins_if_start"]).reset_index(drop=True)
 
 
 def recency_multipliers(history: pd.DataFrame, half_life_matches: float,
