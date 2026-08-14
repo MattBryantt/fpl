@@ -143,6 +143,7 @@ class TransferPlan:
     ledger: pd.DataFrame  # per gameweek: transfers, free, hits, chip, bank, xpts
     lineups: pd.DataFrame  # per gameweek: XI, bench order, captain, chip
     chips: pd.DataFrame  # chip, gw, what it is worth, whether that is signal
+    chip_options: pd.DataFrame  # chip x gameweek: what it would pay in each week
     objective: float
     status: str
     horizon_points: float  # undiscounted XI points over the window, chips included
@@ -698,11 +699,12 @@ def plan_transfers(
     return _read_solution(
         pool=pool, points=points, gameweeks=gameweeks, index=index,
         in_squad=in_squad, in_xi=in_xi, in_slot=in_slot, slots=slots,
+        slot_weight=slot_weight,
         is_captain=is_captain, captain_pool=captain_pool, triple=triple,
         bought=bought, sold=sold, free_hit_squad=free_hit_squad,
         ft=ft, spent=spent, paid=paid, in_bank=in_bank, chips=chips, use=use,
         price=price, sell=sell, decay=decay, variation=variation,
-        skipped=skipped, forced=forced,
+        skipped=skipped, forced=forced, hold_value=hold_value,
         objective=float(pulp.value(problem.objective)), status=label,
         preseason=preseason,
     )
@@ -713,10 +715,10 @@ def plan_transfers(
 # --------------------------------------------------------------------------- #
 
 def _read_solution(*, pool, points, gameweeks, index, in_squad, in_xi, in_slot,
-                   slots, is_captain, captain_pool, triple, bought, sold,
+                   slots, slot_weight, is_captain, captain_pool, triple, bought, sold,
                    free_hit_squad, ft, spent, paid, in_bank, chips, use,
-                   price, sell, decay, variation, skipped, forced, objective,
-                   status, preseason) -> TransferPlan:
+                   price, sell, decay, variation, skipped, forced, hold_value,
+                   objective, status, preseason) -> TransferPlan:
     """Turn solver variables into the tables a person reads."""
     name = {i: str(pool.at[i, "web_name"]) for i in index}
     team = {i: str(pool.at[i, "team_short"]) for i in index}
@@ -810,9 +812,10 @@ def _read_solution(*, pool, points, gameweeks, index, in_squad, in_xi, in_slot,
             "weight": round(decay[gw], 2),
         })
 
-    chip_rows = _chip_report(chips, chip_by_gw, squads, points, gameweeks,
-                             {fpl_id[i]: position[i] for i in index}, variation,
-                             skipped, forced)
+    chip_rows, chip_options = _chip_report(
+        chips, chip_by_gw, squads, points, gameweeks,
+        {fpl_id[i]: position[i] for i in index}, variation, skipped, forced,
+        hold_value, slot_weight)
 
     notes = []
     if forced:
@@ -841,6 +844,7 @@ def _read_solution(*, pool, points, gameweeks, index, in_squad, in_xi, in_slot,
         ledger=pd.DataFrame(ledger),
         lineups=pd.DataFrame(lineups),
         chips=chip_rows,
+        chip_options=chip_options,
         objective=objective,
         status=status,
         horizon_points=float(horizon_points),
@@ -865,22 +869,34 @@ def _pair_moves(out_players: list, in_players: list,
     return pairs
 
 
-def _chip_report(chips, chip_by_gw, squads, points, gameweeks, positions,
-                 variation, skipped, forced=()) -> pd.DataFrame:
-    """What each chip is worth, and whether the gameweek it wants is a real choice.
+def chip_payout_series(squads: dict[int, list[int]], points: pd.DataFrame,
+                       gameweeks: list[int], positions: dict[int, str],
+                       slot_weight: dict[object, float] | None = None,
+                       ) -> dict[str, dict[int, float]]:
+    """What a bench boost and a triple captain would pay in *every* gameweek.
 
-    The payout is measured against the squad the plan actually holds that
-    gameweek, and it is measured the same way in every gameweek: what the four
-    who would have been benched are worth, and what a third helping of the best
-    starter is worth. Reading it off the solved bench instead would break in
-    exactly the gameweek that matters, because a bench-boosted week has no
-    bench.
+    `{chip: {gw: points}}`, measured against the squad the plan holds that week.
+    This is the whole option set the solve ranked, not just the gameweek it
+    settled on -- "played in GW1" on its own is indistinguishable from a model
+    that only ever looked at GW1, and these numbers are what tell the two apart.
 
-    The second number is the honest one -- how much better the chosen gameweek
-    is than the median gameweek in the window. When that gap is small the chip
-    is being timed against noise, which is what happens all season until the cup
-    draws put doubles and blanks on the calendar.
+    It is measured the same way in every gameweek, off the squad rather than off
+    the solved bench, because a bench-boosted gameweek has no bench to read.
+
+    A bench boost is worth the bench *net of what the bench already earns*. The
+    objective scores a benched player at his slot's weight -- he is the one who
+    comes on when a starter does not play -- so the chip only buys the remaining
+    `1 - weight` of him. Counting the gross bench instead overstates it by a
+    point or so, which is exactly the margin these numbers get compared to the
+    reservation price on, and it made the plan look like it was contradicting
+    itself: a chip shown as worth 14.3 against a reserve of 14, and held.
+
+    Ported to `chips.mjs`'s `chipPayouts`.
     """
+    weights = dict(DEFAULT_BENCH_SLOT_WEIGHTS)
+    weights.update(slot_weight or {})
+    outfield = [s for s in weights if s != "GKP"]
+
     payouts: dict[str, dict[int, float]] = {"bboost": {}, "3xc": {}}
     for gw in gameweeks:
         held = [i for i in squads.get(gw, []) if i in points.index]
@@ -888,8 +904,40 @@ def _chip_report(chips, chip_by_gw, squads, points, gameweeks, positions,
                   for pos in ("GKP", "DEF", "MID", "FWD")}
         column = points[gw]
         starters, _ = _best_xi_ids(by_pos, column)
-        payouts["bboost"][gw] = float(column[held].sum() - column[starters].sum())
+
+        benched = [i for i in held if i not in set(starters)]
+        # Slot order is the one the objective would give them: reserve keeper in
+        # his own slot, the rest best-first, since that is who comes on first.
+        spare_gk = [i for i in benched if positions.get(i) == "GKP"]
+        rest = sorted((i for i in benched if positions.get(i) != "GKP"),
+                      key=lambda i: -float(column[i]))
+        earned = sum(weights["GKP"] * float(column[i]) for i in spare_gk)
+        earned += sum(weights[slot] * float(column[i])
+                      for slot, i in zip(outfield, rest))
+
+        payouts["bboost"][gw] = float(column[benched].sum()) - earned
         payouts["3xc"][gw] = float(column[starters].max()) if starters else 0.0
+    return payouts
+
+
+def _chip_report(chips, chip_by_gw, squads, points, gameweeks, positions,
+                 variation, skipped, forced=(), hold_value=None,
+                 slot_weight=None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """What each chip is worth, and whether the gameweek it wants is a real choice.
+
+    The payouts come from `chip_payout_series`, which prices every gameweek in
+    the window rather than only the one the solve chose.
+
+    The second number is the honest one -- how much better the chosen gameweek
+    is than the median gameweek in the window. When that gap is small the chip
+    is being timed against noise, which is what happens all season until the cup
+    draws put doubles and blanks on the calendar.
+
+    Returns two frames. The first is one row per chip: where it went and whether
+    that is signal. The second is that option set laid out gameweek by gameweek,
+    against the reserve each chip has to clear.
+    """
+    payouts = chip_payout_series(squads, points, gameweeks, positions, slot_weight)
 
     rows = [{"chip": CHIP_LABELS[chip], "gw": pd.NA, "worth": np.nan,
              "edge": np.nan, "verdict": why}
@@ -931,7 +979,28 @@ def _chip_report(chips, chip_by_gw, squads, points, gameweeks, positions,
         rows.append({"chip": CHIP_LABELS[chip], "gw": gw, "worth": worth,
                      "edge": edge, "verdict": f"{lead} — {timing}"})
 
-    return pd.DataFrame(rows, columns=["chip", "gw", "worth", "edge", "verdict"])
+    # The option set: every gameweek the chip could legally go in, priced. A
+    # gameweek outside the chip's window is blank rather than zero, because
+    # "cannot" and "would pay nothing" are different answers.
+    reserve = dict(CHIP_HOLD_VALUE)
+    reserve.update(hold_value or {})
+    options = []
+    for chip, allowed in chips.items():
+        series = payouts.get(chip)
+        if not series:
+            continue
+        row = {"chip": CHIP_LABELS[chip]}
+        row.update({f"GW{gw}": round(series[gw], 1) if gw in allowed else np.nan
+                    for gw in gameweeks})
+        row["reserve"] = 0.0 if chip in forced else round(reserve.get(chip, 0.0), 1)
+        row["played"] = next((f"GW{g}" for g, c in chip_by_gw.items() if c == chip),
+                             "—")
+        options.append(row)
+
+    return (pd.DataFrame(rows, columns=["chip", "gw", "worth", "edge", "verdict"]),
+            pd.DataFrame(options,
+                         columns=(["chip"] + [f"GW{gw}" for gw in gameweeks]
+                                  + ["reserve", "played"])))
 
 
 # --------------------------------------------------------------------------- #

@@ -34,7 +34,7 @@ from fplkit.config import (  # noqa: E402
 from fplkit.model import Projection  # noqa: E402
 from fplkit import transfers  # noqa: E402
 from fplkit.transfers import (  # noqa: E402
-    CAPTAIN_CANDIDATES, IDLE_MOVE_PENALTY, POOL_BY_POS, TRANSFER_HALF_LIFE,
+    CAPTAIN_CANDIDATES, IDLE_MOVE_PENALTY, TRANSFER_HALF_LIFE,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -151,12 +151,21 @@ def dump_case(name: str, projection: Projection, players: pd.DataFrame, **kwargs
         "idleMovePenalty": IDLE_MOVE_PENALTY,
     }
 
+    # Priced off the CBC squads rather than off whatever squad the port lands
+    # on, so this compares the payout maths and nothing else -- two
+    # economically-identical fifteens are a legitimate tie, and letting one
+    # through here would look like a drifting port.
+    positions = {int(row["fpl_id"]): str(row["pos"]) for _, row in pool.iterrows()}
+    payouts = transfers.chip_payout_series(plan.squads, points, gameweeks, positions)
+
     return {
         "name": name,
         "pool": js_pool,
         "opt": opt,
         "objective": round(plan.objective, 4),
         "squads": {str(gw): sorted(ids) for gw, ids in plan.squads.items()},
+        "chipPayouts": {chip: {str(gw): round(value, 6) for gw, value in series.items()}
+                        for chip, series in payouts.items()},
         "chipByGw": {str(int(row["gw"])): CHIP_LABELS_REVERSE[row["chip"]]
                     for _, row in plan.ledger.iterrows() if row["chip"]},
     }

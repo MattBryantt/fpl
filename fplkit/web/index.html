@@ -1386,7 +1386,7 @@ import { pitchHTML, cardsHTML, squadLayout, wireShirts, shirtUrl,
          METRICS, METRIC_KEYS, MAX_METRICS, cleanMetrics } from "/assets/pitch.mjs";
 import { POSITION_TAGS, POSITION_TAG_LABELS, SEED_TAGS } from "/assets/position-tags.mjs";
 import { candidatePool, captainPool, freeTransferValue, chipSlots, fixtureVariation,
-         chipReport, pairMoves, survivalAdjusted } from "/assets/chips.mjs";
+         chipReport, chipPayouts, pairMoves, survivalAdjusted } from "/assets/chips.mjs";
 
 const $ = (s) => document.querySelector(s);
 
@@ -2460,7 +2460,7 @@ function renderChipVerdictsHTML(plan) {
     chips: plan.opt.chips, chipByGw: plan.chipByGw, squads,
     pointsByPlayer: plan.pointsByPlayer, gameweeks: plan.gameweeks, positions,
     variation: plan.variation, skipped: plan.skipped, chipLabels: plan.chipLabels,
-    forced: plan.forceChips,
+    forced: plan.forceChips, slotWeight: S.snapshot.rules.DEFAULT_BENCH_SLOT_WEIGHTS,
   });
   if (!rows.length) return `<div class="sub" style="margin-top:10px">No chips are legal in this window.</div>`;
   return `<table class="chiptable" style="margin-top:10px"><thead><tr>
@@ -2471,7 +2471,48 @@ function renderChipVerdictsHTML(plan) {
       <td>${r.worth == null ? "—" : fmt(r.worth, 1)}</td>
       <td>${r.edge == null ? "—" : fmt(r.edge, 1)}</td>
       <td>${r.verdict}</td>
-    </tr>`).join("")}</tbody></table>`;
+    </tr>`).join("")}</tbody></table>
+    ${renderChipOptionsHTML(plan)}`;
+}
+
+/** Every gameweek each chip was weighed in, not just the one it landed on —
+ *  the answer to "is this really looking past GW1?". On a flat calendar the
+ *  columns barely differ and the earliest wins on the discount alone, which is
+ *  itself the signal that nothing in the fixture list is choosing for you. */
+function renderChipOptionsHTML(plan) {
+  const rules = S.snapshot.rules;
+  const payouts = chipPayouts({
+    squads: new Map(plan.weeks.map((w) => [w.gw, w.squad])),
+    pointsByPlayer: plan.pointsByPlayer, gameweeks: plan.gameweeks,
+    positions: new Map(S.players.map((p) => [p.id, p.pos])),
+    slotWeight: rules.DEFAULT_BENCH_SLOT_WEIGHTS,
+  });
+  const forced = new Set(plan.forceChips);
+  const chips = Object.keys(plan.opt.chips).filter((chip) => payouts[chip]);
+  if (!chips.length) return "";
+
+  return `
+  <h4 style="margin:18px 0 4px">Every gameweek each chip was weighed in</h4>
+  <table class="chiptable"><thead><tr>
+      <th>Chip</th>${plan.gameweeks.map((gw) => `<th>GW${gw}</th>`).join("")}
+      <th>Reserve</th><th>Played</th>
+    </tr></thead><tbody>${chips.map((chip) => {
+      const allowed = new Set(plan.opt.chips[chip]);
+      const playedGw = [...plan.chipByGw.entries()].find(([, c]) => c === chip)?.[0] ?? null;
+      return `<tr>
+        <td>${rules.CHIP_LABELS[chip]}</td>
+        ${plan.gameweeks.map((gw) => `<td>${allowed.has(gw) ? fmt(payouts[chip][gw], 1) : "—"}</td>`).join("")}
+        <td>${forced.has(chip) ? "0.0" : fmt(rules.CHIP_HOLD_VALUE[chip] ?? 0, 1)}</td>
+        <td>${playedGw === null ? "—" : "GW" + playedGw}</td>
+      </tr>`;
+    }).join("")}</tbody></table>
+  <div class="sub" style="margin-top:6px">What the chip would pay in each gameweek,
+    against the reserve it has to clear to be worth playing now rather than held. A
+    dash means it cannot be played that gameweek. The solver compares these
+    discounted, so a near-flat row is decided by the discount alone — which is itself
+    the sign that nothing in the fixture list is choosing for you. The free hit is
+    absent because it has no per-gameweek payout of its own; it pays through the squad
+    it buys for that one week.</div>`;
 }
 
 function renderThisWeekHTML(plan) {

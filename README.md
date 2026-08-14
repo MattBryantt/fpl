@@ -1129,11 +1129,35 @@ Bench Boost       -       -      -  hold — beaten by keeping it
 Triple Captain    -       -      -  hold — beaten by keeping it
 ```
 
+`worth` is the *marginal* payout, not the gross one. A bench boost is worth the
+bench net of what the bench already earns: a benched player is scored at his
+slot's weight anyway, because he is who comes on when a starter does not play,
+so the chip only buys the remaining `1 - weight` of him. That is about a point,
+and a point is the whole margin these numbers get compared to the reserve on —
+reporting the gross bench made the plan look self-contradictory, showing a chip
+"worth 14.3" against a reserve of 14 and then holding it.
+
+### Every gameweek, not just the next one
+
+Each chip carries one binary per gameweek in the window, and the plan ranks all
+of them at once. "Played in GW1" on its own looks the same as a model that only
+ever considered GW1, so the option set is printed too:
+
+```text
+chip             GW1   GW2   GW3   GW4   GW5   GW6   reserve  played
+Bench Boost     12.9  11.6  10.9  10.6  10.2  10.0     14.0       -
+Triple Captain   6.1   6.6   5.9   5.7   5.5   5.4     10.0       -
+```
+
+Those are compared *discounted*, so on a calendar this flat — where the columns
+barely differ — the earliest gameweek wins on the discount alone. That is the
+tell that nothing in the fixture list is choosing for you, and it is why every
+row still says hold.
+
 `--ignore-chip-hold` sets every reservation price to zero and asks the narrower
-question the heuristic was asking. It answers bench boost in GW1 worth 14.3, and
-triple captain in GW2 worth 6.6 — both with an `edge` of under 2 points over the
-median gameweek in the window, which is the number that says *this is noise*.
-An edge that small is not a reason to spend a chip you can hold for a double.
+question the heuristic was asking, which spends them into exactly those early
+gameweeks. An `edge` of a point or two over the median gameweek is not a reason
+to spend a chip you can hold for a double.
 
 The free hit has no payout of its own, because it pays through the squad it
 lets you buy for one week rather than through points on the day.
@@ -1503,7 +1527,9 @@ solved, verbatim. `verify-transfer-port.mjs` re-solves each with the vendored
 WASM HiGHS and checks the objective agrees (the bar `verify-solver-port.mjs`
 uses, for the same reason: two fifteens can tie on value, and which one either
 solver returns is not a promise either makes) and, case by case, that the same
-chip gets played in the same gameweek.
+chip gets played in the same gameweek. The per-gameweek chip payouts *do* gate
+a failure: both sides price them off the same CBC squads, so that comparison is
+a pure function of the same inputs and no tie can excuse a difference.
 
 ## Chips and transfers in the board
 

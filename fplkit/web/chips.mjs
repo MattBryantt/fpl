@@ -189,6 +189,47 @@ export function pairMoves(outIds, inIds, positions) {
   return pairs;
 }
 
+/** What a bench boost and a triple captain would pay in *every* gameweek of the
+ *  window, measured against the squad the solve holds that week —
+ *  `{chip: {gw: points}}`. The whole option set the solve ranked, not just the
+ *  gameweek it settled on: "played in GW1" on its own is indistinguishable
+ *  from a model that only ever looked at GW1, and these numbers are what tell
+ *  the two apart.
+ *
+ *  A bench boost is worth the bench *net of what the bench already earns*. A
+ *  benched player is already scored at his slot's weight — he is the one who
+ *  comes on when someone does not play — so the chip only buys the remaining
+ *  `1 - weight` of him. Port of the payout block in `transfers._chip_report`.
+ */
+export function chipPayouts({ squads, pointsByPlayer, gameweeks, positions, slotWeight }) {
+  const scoreAt = (id, gw) => {
+    const arr = pointsByPlayer.get(id);
+    return arr ? (arr[gameweeks.indexOf(gw)] || 0) : 0;
+  };
+  const outfield = Object.keys(slotWeight).filter((s) => s !== "GKP");
+
+  const payouts = { bboost: {}, "3xc": {} };
+  for (const gw of gameweeks) {
+    const held = (squads.get(gw) || []).filter((id) => pointsByPlayer.has(id));
+    const rows = held.map((id) => ({ id, pos: positions.get(id), score: scoreAt(id, gw) }));
+    const xi = bestXI(rows);
+    const xiSet = new Set(xi.ids);
+    const benched = rows.filter((r) => !xiSet.has(r.id));
+
+    // What the bench already earns from its slot weights: the chip only buys
+    // the remaining 1 - weight of each, and the slot order is the one the
+    // objective gives them — reserve keeper apart, then best-first.
+    const spareGk = benched.filter((r) => r.pos === "GKP");
+    const rest = benched.filter((r) => r.pos !== "GKP").sort((a, b) => b.score - a.score);
+    let earned = sum(spareGk.map((r) => (slotWeight.GKP || 0) * r.score));
+    rest.forEach((r, i) => { earned += (slotWeight[outfield[i]] || 0) * r.score; });
+
+    payouts.bboost[gw] = sum(benched.map((r) => r.score)) - earned;
+    payouts["3xc"][gw] = xi.ids.length ? Math.max(...xi.ids.map((id) => scoreAt(id, gw))) : 0;
+  }
+  return payouts;
+}
+
 /** What each chip is worth, and whether the gameweek it wants (if any) is a
  *  real choice — read off the *solved* path, not decided here. Port of
  *  `transfers._chip_report`.
@@ -206,26 +247,15 @@ export function pairMoves(outIds, inIds, positions) {
  *  `forced`: chips the solve was made to play, which changes what the verdict
  *  claims — a forced chip's gameweek is the best one for it, not evidence that
  *  playing it beat holding it.
+ *  `slotWeight`: `rules.DEFAULT_BENCH_SLOT_WEIGHTS`, for the netting above.
+ *  Required rather than defaulted: defaulting it to nothing would quietly
+ *  report gross bench points, which is the overstatement the netting exists to
+ *  remove, and the caller has the snapshot's rules to hand either way.
  */
 export function chipReport({ chips, chipByGw, squads, pointsByPlayer, gameweeks, positions,
-                            variation, skipped, chipLabels, forced = [] }) {
+                            variation, skipped, chipLabels, forced = [], slotWeight }) {
   const forcedSet = new Set(forced);
-  const scoreAt = (id, gw) => {
-    const arr = pointsByPlayer.get(id);
-    return arr ? (arr[gameweeks.indexOf(gw)] || 0) : 0;
-  };
-
-  const payouts = { bboost: {}, "3xc": {} };
-  for (const gw of gameweeks) {
-    const held = (squads.get(gw) || []).filter((id) => pointsByPlayer.has(id));
-    const rows = held.map((id) => ({ id, pos: positions.get(id), score: scoreAt(id, gw) }));
-    const xi = bestXI(rows);
-    const xiSet = new Set(xi.ids);
-    const heldTotal = sum(rows.map((r) => r.score));
-    const xiTotal = sum(rows.filter((r) => xiSet.has(r.id)).map((r) => r.score));
-    payouts.bboost[gw] = heldTotal - xiTotal;
-    payouts["3xc"][gw] = xi.ids.length ? Math.max(...xi.ids.map((id) => scoreAt(id, gw))) : 0;
-  }
+  const payouts = chipPayouts({ squads, pointsByPlayer, gameweeks, positions, slotWeight });
 
   const rows = [];
   for (const [chip, why] of Object.entries(skipped || {})) {

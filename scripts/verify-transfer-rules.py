@@ -16,15 +16,24 @@ behaviour is correct and the wrong behaviour is attractive:
     the same scenario solved without the transfer pricing has to bring the
     oscillation back or it was not testing anything;
   * an upgrade big enough to be worth four points, and one just too small;
-  * a bench that outscores the starters, which only a bench boost can field;
+  * a bench that outscores the starters in the *middle* of the window, which
+    only a bench boost can field and only in that gameweek;
+  * one player with one enormous gameweek, likewise not the first, which is a
+    triple captain;
   * a gameweek in which most of the squad has no fixture, which is a free hit;
   * a flat calendar, where every chip should be held;
   * the same flat calendar with two chips forced, where they should be played
     anyway and the reserve that was holding them should stop applying.
 
+Three of those put the gameweek a chip wants somewhere other than the first,
+which is the check that a chip is weighed in every gameweek of the horizon
+rather than only the one in front of it. The discount makes GW1 the cheapest
+week to play anything in, so a model that is not really looking ahead lands
+there and these scenarios catch it.
+
     python scripts/verify-transfer-rules.py
 
-Takes a couple of minutes: there are eighteen mixed-integer solves in here.
+Takes a couple of minutes: there are nineteen mixed-integer solves in here.
 """
 
 from __future__ import annotations
@@ -304,11 +313,23 @@ def scenario_hit() -> None:
               f"({bonus * len(HORIZON):.1f} over the window, against {HIT_COST:.0f} a hit)")
 
 
+BOOST_GW = 4
+STAR_GW = 5
+
+
 def scenario_bench_boost() -> None:
-    """A bench worth more than the bench weights say is only reachable with the chip."""
+    """A bench worth more than the bench weights say is only reachable with the chip.
+
+    The bump is in the middle of the window rather than the first gameweek, so
+    the gameweek it lands in is itself a check: every gameweek carries its own
+    `use_bboost` binary, and if only the first were really in play the plan
+    would take GW1 -- which the discount makes the cheapest week to play
+    anything in, and which is therefore where a chip model that is not looking
+    ahead ends up.
+    """
     def points(pid, pos, rank, gw):
         base = {"GKP": 3.0, "DEF": 3.5, "MID": 4.0, "FWD": 4.2}[pos] + rank * 0.6
-        return base + (9.0 if gw == 4 else 0.0)
+        return base + (9.0 if gw == BOOST_GW else 0.0)
 
     projection, players = league(points)
     plan = solve(projection, players, chip_windows={"bboost": (1, 19)},
@@ -318,6 +339,36 @@ def scenario_bench_boost() -> None:
     check("bench boost: fields all fifteen", len(played) == 1
           and len(played["starting_xi"].iloc[0].split(", ")) == SQUAD_SIZE,
           f"{len(played)} boosted gameweek(s)")
+    check("bench boost: waits for the gameweek worth boosting",
+          len(played) == 1 and int(played["gw"].iloc[0]) == BOOST_GW,
+          f"played in GW{int(played['gw'].iloc[0])}, the big bench week is "
+          f"GW{BOOST_GW}" if len(played) else "not played")
+
+
+def scenario_triple_captain() -> None:
+    """One player has one enormous gameweek, and it is not the first one.
+
+    Same argument as the bench boost above, on the other chip whose payout is a
+    single gameweek's points: the answer is only right if all six `use_3xc`
+    binaries are live and each is scored against that gameweek's own captain.
+    """
+    def points(pid, pos, rank, gw):
+        base = {"GKP": 3.0, "DEF": 3.5, "MID": 4.0, "FWD": 4.2}[pos] + rank * 0.6
+        return 30.0 if pid == 1 and gw == STAR_GW else base
+
+    projection, players = league(points)
+    plan = solve(projection, players, chip_windows={"3xc": (1, 19)},
+                 chip_hold={"3xc": 0.0})
+    check_legality(plan, players, "triple captain")
+    played = plan.ledger[plan.ledger["chip"] == "Triple Captain"]
+    check("triple captain: waits for the gameweek worth tripling",
+          len(played) == 1 and int(played["gw"].iloc[0]) == STAR_GW,
+          f"played in GW{int(played['gw'].iloc[0])}, the 30-point week is "
+          f"GW{STAR_GW}" if len(played) else "not played")
+    if len(played):
+        captain = plan.lineups.loc[plan.lineups["gw"] == STAR_GW, "captain"].iloc[0]
+        check("triple captain: the armband goes on the right player",
+              captain.endswith("(3x)"), f"captained {captain}")
 
 
 def scenario_free_hit() -> None:
@@ -440,8 +491,9 @@ def scenario_forced_chips() -> None:
 
 def main() -> int:
     for scenario in (scenario_settled, scenario_oscillation, scenario_hit,
-                     scenario_bench_boost, scenario_free_hit,
-                     scenario_chip_hold, scenario_forced_chips):
+                     scenario_bench_boost, scenario_triple_captain,
+                     scenario_free_hit, scenario_chip_hold,
+                     scenario_forced_chips):
         print(f"\n{scenario.__name__.replace('scenario_', '').replace('_', ' ')}")
         print("-" * 72)
         scenario()

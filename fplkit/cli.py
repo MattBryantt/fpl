@@ -85,7 +85,10 @@ def _columns(args) -> list[str]:
     return FULL_COLUMNS if getattr(args, "full", False) else COMPACT_COLUMNS
 
 
-def _render(df: pd.DataFrame, title: str, columns: list[str] | None = None) -> None:
+def _render(df: pd.DataFrame, title: str, columns: list[str] | None = None,
+            default_format: str = "{:.2f}") -> None:
+    """`default_format` covers columns FLOAT_FORMATS cannot name -- the chip
+    option table's one-per-gameweek columns are built from the horizon."""
     columns = [c for c in (columns or df.columns) if c in df.columns]
     table = Table(title=title, header_style="bold cyan", title_style="bold")
     for column in columns:
@@ -100,7 +103,7 @@ def _render(df: pd.DataFrame, title: str, columns: list[str] | None = None) -> N
             elif column in FLOAT_FORMATS:
                 cells.append(FLOAT_FORMATS[column].format(value))
             elif isinstance(value, float):
-                cells.append(f"{value:.2f}")
+                cells.append(default_format.format(value))
             else:
                 cells.append(str(value))
         table.add_row(*cells)
@@ -486,16 +489,32 @@ def _print_transfer_path(path, show_lineups: bool = False) -> None:
         console.print()
         _render(path.chips, "Chips", ["chip", "gw", "worth", "edge", "verdict"])
         console.print(
-            "[dim]worth is the chip's payout in the gameweek chosen; edge is how "
-            "much better that gameweek is than the median one in the window. A "
-            "chip is only played when it beats what it is worth held for a "
-            "well-timed gameweek later (see CHIP_HOLD_VALUE) — which is why a "
-            "flat fixture list produces a row of holds.[/dim]")
+            "[dim]worth is the chip's payout in the gameweek chosen — the bench "
+            "net of what it already earns from its slot weights, or the third "
+            "helping of the captain; edge is how much better that gameweek is "
+            "than the median one in the window. A chip is only played when it "
+            "beats what it is worth held for a well-timed gameweek later (see "
+            "CHIP_HOLD_VALUE) — which is why a flat fixture list produces a row "
+            "of holds.[/dim]")
         if path.chips["verdict"].str.startswith("forced").any():
             console.print(
                 "[dim]rows marked forced were played because --force-chip said "
                 "to, with their reservation price set aside; the gameweek is "
                 "still the best one in the window for them.[/dim]")
+
+    if len(path.chip_options):
+        console.print()
+        _render(path.chip_options, "Every gameweek each chip was weighed in",
+                list(path.chip_options.columns), default_format="{:.1f}")
+        console.print(
+            "[dim]the whole option set, not just the winner: what the chip would "
+            "pay in each gameweek, against the reserve it has to clear. A dash "
+            "means the chip cannot be played that gameweek. The solver compares "
+            "these discounted, so on a flat calendar — where the columns barely "
+            "differ — the earliest gameweek wins on the discount alone, which is "
+            "the sign that nothing in the fixture list is choosing for you. The "
+            "free hit is absent because it has no per-gameweek payout of its "
+            "own; --chip-value prices it.[/dim]")
 
     if show_lineups:
         console.print()
