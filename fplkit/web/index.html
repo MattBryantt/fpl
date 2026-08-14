@@ -1449,10 +1449,16 @@ function saveLocal(key, value) {
    so it cannot grow without bound, and pruned by age for the same reason. */
 const EDITS_HISTORY_MAX = 20, EDITS_HISTORY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 function snapshotEditsHistory() {
-  if (!Object.keys(S.edits).length) return; // nothing to protect against losing
   const cutoff = Date.now() - EDITS_HISTORY_MAX_AGE_MS;
   const history = loadLocal(STORE.editsHistory, []).filter((s) => s.at > cutoff);
   const last = history[history.length - 1];
+  // An empty set used to return early, on the grounds that there was nothing
+  // worth protecting. That skipped the one event most worth recording: going
+  // from a full set of overrides to none is what a bad merge looks like, and
+  // refusing to log it left the newest entry dated before the loss, with
+  // nothing to say the loss had happened at all. A device that has never had
+  // an override still records nothing, because there is no `last` to leave.
+  if (!Object.keys(S.edits).length && !last) return;
   const snapshot = JSON.stringify(S.edits);
   if (last && last.snapshot === snapshot) return; // unchanged since last save
   history.push({ at: Date.now(), snapshot });
@@ -3903,12 +3909,16 @@ function renderEditBanner() {
   // override set wiped by a bad merge left no edits, so the banner vanished,
   // so the one control that could restore it was unreachable. If this device
   // has a rolling backup, the banner stays up and says so.
-  const history = loadLocal(STORE.editsHistory, []);
-  $("#editBanner").classList.toggle("hidden", n === 0 && !history.length);
+  // Only sets with something in them are worth offering to restore -- history
+  // now records the moment a set went empty too, and "3 earlier sets" reading
+  // as an offer when one of them is the wipe itself would be a lie.
+  const restorable = loadLocal(STORE.editsHistory, [])
+    .filter((s) => s.snapshot && s.snapshot !== "{}").length;
+  $("#editBanner").classList.toggle("hidden", n === 0 && !restorable);
   $("#clearEdits").classList.toggle("hidden", n === 0);
   if (!n) {
     $("#editCount").innerHTML = `No overrides on this device — `
-      + `<b>${history.length}</b> earlier ${history.length === 1 ? "set is" : "sets are"} `
+      + `<b>${restorable}</b> earlier ${restorable === 1 ? "set is" : "sets are"} `
       + `saved here and can be restored.`;
     $("#editSaved").textContent = "";
     return;
@@ -4151,8 +4161,23 @@ function mergeEdits(localEdits, localAt, remoteEdits, remoteAt) {
     than what this device already wrote -- so two devices opened at the same
     moment with nothing pending simply agree, rather than one clobbering the
     other over who asked first. */
+/* `?nopull=1` opens the board without adopting anything from the other device.
+   The escape hatch for the one situation the merge cannot be trusted in: this
+   device holds overrides that may not have reached the other one, and the
+   shared copy may already have been overwritten by a smaller set. Pulling
+   first would settle that by timestamp and there is no undo, so this makes
+   "look before you merge" possible without editing code on a phone. Pushing
+   still works, which is what makes it a recovery path rather than just a
+   read-only mode: open with it, check the overrides are there, then change
+   anything and this device's copy becomes the shared one. */
+const SKIP_PULL = new URL(location.href).searchParams.get("nopull") === "1";
+
 async function pullSyncState() {
   if (!TOKEN) return;
+  if (SKIP_PULL) {
+    console.warn("nopull=1: keeping this device's own state, not syncing down");
+    return;
+  }
   try {
     const res = await api("/api/sync");
     if (!res.ok) return;
@@ -4281,7 +4306,10 @@ function renderFreshness() {
   const stale = age(m.generated_at);
   $("#freshness").innerHTML =
     `Snapshot <b>${stale}</b> · frozen at GW${m.start_gw}, ${m.snapshot_horizon} gameweeks`
-    + (m.recency ? ` · recency ${m.recency}gw` : "");
+    + (m.recency ? ` · recency ${m.recency}gw` : "")
+    // Silence here would be the trap: a device left on ?nopull=1 keeps looking
+    // normal while quietly ignoring every change made anywhere else.
+    + (SKIP_PULL ? ` · <b>not syncing down</b> (nopull=1)` : "");
   // The horizon can only ever be shortened: a snapshot taken at 12 has nothing
   // to say about 14, so offering it would be offering a wrong answer.
   for (const option of $("#horizon").options) {
