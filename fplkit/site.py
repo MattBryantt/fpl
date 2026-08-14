@@ -130,6 +130,38 @@ def _shell_version() -> str:
     return digest.hexdigest()[:12]
 
 
+def _check_shell_covers_assets() -> None:
+    """The service worker must precache every asset the page can import.
+
+    sw.js's SHELL list is hand-written and ASSETS is the server's; the comment
+    in sw.js has always said the two mirror each other, and for one asset they
+    quietly did not. The failure that produces is invisible in every test and on
+    every online device: a file missing from SHELL is still *served*, and
+    `cacheFirst` still caches it on demand, so the board works. It only breaks
+    when a deploy bumps SHELL_VERSION -- `activate` deletes the old cache, the
+    on-demand copy goes with it, the new shell never precaches it, and the next
+    offline load fails the import and blanks the page.
+
+    So the mirror is checked here, where a mismatch stops a deploy, rather than
+    left to a comment.
+    """
+    text = (WEB_DIR / "sw.js").read_text(encoding="utf-8")
+    block = re.search(r"const SHELL = \[(.*?)\];", text, re.S)
+    if not block:
+        raise RuntimeError("sw.js: could not find the SHELL list to check")
+    listed = {entry.removeprefix("/assets/")
+              for entry in re.findall(r'"([^"]+)"', block.group(1))
+              if entry.startswith("/assets/")}
+    missing = sorted(set(ASSETS) - listed)
+    unknown = sorted(listed - set(ASSETS))
+    if missing or unknown:
+        raise RuntimeError(
+            "sw.js SHELL and server.ASSETS disagree — an offline board would "
+            "fail to load. "
+            + (f"Missing from SHELL: {', '.join(missing)}. " if missing else "")
+            + (f"In SHELL but not an asset: {', '.join(unknown)}." if unknown else ""))
+
+
 def _write_service_worker(out: Path) -> str:
     """Stamp the computed shell version into sw.js on the way to `out`.
 
@@ -138,6 +170,7 @@ def _write_service_worker(out: Path) -> str:
     hash provides. Only the built copy, the one an installed phone actually
     runs, carries the real version.
     """
+    _check_shell_covers_assets()
     text = (WEB_DIR / "sw.js").read_text(encoding="utf-8")
     version = f"fpl-shell-{_shell_version()}"
     text, count = re.subn(r'const SHELL_VERSION = "[^"]*";',

@@ -28,8 +28,13 @@ const DATA_CACHE = "fpl-data-v1";
 const SHIRT_CACHE = "fpl-shirts-v1";
 
 // Everything the board needs to start with no network. Explicit, and mirrored
-// by ASSETS in server.py — if the two disagree the install fails loudly here
-// rather than the page half-working on a train.
+// by ASSETS in server.py — `site._check_shell_covers_assets` fails the build if
+// the two disagree, which they silently did once: position-tags.mjs was added
+// to ASSETS and imported by index.html but never listed here, so it was only
+// ever cached on demand. That survived until a deploy bumped SHELL_VERSION,
+// whose activate step deletes the old cache — taking the on-demand copy with
+// it and leaving an offline phone unable to import it, which fails the whole
+// module and shows a blank board. An asset the page imports has to be in here.
 const SHELL = [
   "/",
   "/icon.png",
@@ -39,6 +44,7 @@ const SHELL = [
   "/assets/pitch.mjs",
   "/assets/poisson.mjs",
   "/assets/points.mjs",
+  "/assets/position-tags.mjs",
   "/assets/solver.js",
   "/assets/solver-worker.js",
   "/assets/transfers.js",

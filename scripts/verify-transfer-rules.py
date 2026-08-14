@@ -18,6 +18,9 @@ behaviour is correct and the wrong behaviour is attractive:
   * an upgrade big enough to be worth four points, and one just too small;
   * a bench that outscores the starters in the *middle* of the window, which
     only a bench boost can field and only in that gameweek;
+  * a league where the cheap bench fodder scores nothing, so a bench boost is
+    only worth playing if the fifteen bought weeks earlier was bought with it
+    in mind -- the check that a chip is a squad decision and not a lineup one;
   * one player with one enormous gameweek, likewise not the first, which is a
     triple captain;
   * a gameweek in which most of the squad has no fixture, which is a free hit;
@@ -33,7 +36,7 @@ there and these scenarios catch it.
 
     python scripts/verify-transfer-rules.py
 
-Takes a couple of minutes: there are nineteen mixed-integer solves in here.
+Takes a couple of minutes: there are twenty-one mixed-integer solves in here.
 """
 
 from __future__ import annotations
@@ -345,6 +348,60 @@ def scenario_bench_boost() -> None:
           f"GW{BOOST_GW}" if len(played) else "not played")
 
 
+def scenario_bench_boost_reshapes_the_squad() -> None:
+    """The chip changes which fifteen you buy, not just who you field.
+
+    This is the load-bearing claim in transfers.py's docstring -- that a chip is
+    a squad decision taken weeks earlier -- and it is the one that separates
+    solving chips inside the transfer model from bolting a chip report onto the
+    side of it. Everything above would still pass if the chip only ever changed
+    a lineup.
+
+    The league is built so the two answers are visibly different. The cheapest
+    tier scores nothing at all: he is the £4.0m defender who never plays, and on
+    an ordinary bench he is close to free, because a benched player is only
+    scored at his slot's weight. Under a bench boost he is a hole in the eleven,
+    so the chip should pay £0.5m a man to replace him -- out of the budget the
+    starting eleven was going to use.
+
+    The boost is pinned to GW2, and the plan opens preseason with no banked
+    transfer, so it cannot buy its way to a better bench at GW2 without taking
+    hits. If the squad is really solved around the chip, the GW1 fifteen has to
+    differ. If it is not, GW1 is identical and only the GW2 lineup moves.
+    """
+    ladder_points = [0.0, 4.0, 6.0, 8.0, 10.0]
+    ladder_price = [4.0, 4.5, 5.5, 7.0, 9.0]
+    horizon, boost_gw = 3, 2
+    window = HORIZON[:horizon]
+
+    projection, players = league(lambda pid, pos, rank, gw: ladder_points[rank],
+                                 prices=lambda pos, rank: ladder_price[rank])
+    pts = transfers.expected_points(projection, window)
+    by_pos = {int(k): str(v) for k, v in players.set_index("fpl_id")["pos"].items()}
+
+    def bench_worth(plan):
+        series = transfers.chip_payout_series(plan.squads, pts, window, by_pos)
+        return series["bboost"][boost_gw]
+
+    plain = solve(projection, players, horizon=horizon, chip_windows={})
+    boosted = solve(projection, players, horizon=horizon,
+                    chip_windows={"bboost": (boost_gw, boost_gw)},
+                    force_chips=["bboost"])
+    check_legality(boosted, players, "bench boost squad")
+
+    before = len(set(boosted.squads[HORIZON[0]]) ^ set(plain.squads[HORIZON[0]])) // 2
+    check("bench boost squad: the fifteen is bought differently before the chip",
+          before > 0,
+          f"{before} of 15 differ in GW{HORIZON[0]} for a chip played in "
+          f"GW{boost_gw}")
+
+    plain_bench, boosted_bench = bench_worth(plain), bench_worth(boosted)
+    check("bench boost squad: and the bench it buys is worth fielding",
+          boosted_bench > plain_bench + 1.0,
+          f"bench worth {boosted_bench:.1f} in the boosted plan against "
+          f"{plain_bench:.1f} in the plan that never gets the chip")
+
+
 def scenario_triple_captain() -> None:
     """One player has one enormous gameweek, and it is not the first one.
 
@@ -491,9 +548,9 @@ def scenario_forced_chips() -> None:
 
 def main() -> int:
     for scenario in (scenario_settled, scenario_oscillation, scenario_hit,
-                     scenario_bench_boost, scenario_triple_captain,
-                     scenario_free_hit, scenario_chip_hold,
-                     scenario_forced_chips):
+                     scenario_bench_boost, scenario_bench_boost_reshapes_the_squad,
+                     scenario_triple_captain, scenario_free_hit,
+                     scenario_chip_hold, scenario_forced_chips):
         print(f"\n{scenario.__name__.replace('scenario_', '').replace('_', ' ')}")
         print("-" * 72)
         scenario()

@@ -1527,6 +1527,26 @@ const S = {
 };
 S.squad = loadLocal(STORE.squad, []);
 
+/* Overrides saved before per-id timestamps existed load with nothing in
+   editsAt, and mergeEdits reads a missing entry as 0 -- which loses every
+   comparison against a device that has touched anything since. Losing is not
+   the damaging part; the damaging part is what losing means here. The winning
+   side has no edit for that id, so the id is dropped rather than kept, and the
+   smaller set is then pushed as authoritative. One newer edit on one device is
+   enough to erase an older set everywhere, which is exactly the failure the
+   timestamps were added to prevent.
+   Stamping the untimestamped ones on first load is the migration that change
+   needed. It does not claim they are newer than a real edit made later -- only
+   that they are not older than the epoch. */
+(function backfillEditsAt() {
+  const now = Date.now();
+  let changed = false;
+  for (const id of Object.keys(S.edits)) {
+    if (!S.editsAt[id]) { S.editsAt[id] = now; changed = true; }
+  }
+  if (changed) saveLocal(STORE.editsAt, S.editsAt);
+})();
+
 /* Module scope means nothing here is reachable from the console any more, which
    is right for the page and wrong for debugging it — and for the browser tests,
    which otherwise have to infer state by reading rendered text. One named
@@ -3878,15 +3898,27 @@ function recomputeEdited(ids, { solveDelay = 0, sync = true } = {}) {
 
 function renderEditBanner() {
   const n = Object.keys(S.edits).length;
-  $("#editBanner").classList.toggle("hidden", n === 0);
-  if (n) {
-    const names = Object.keys(S.edits).map((id) => S.byId.get(+id)?.name).filter(Boolean);
-    $("#editCount").innerHTML = `<span class="edited-dot">●</span> <b>${n}</b> edited `
-      + `${n === 1 ? "player" : "players"}: ${names.join(", ")}`;
+  // The History button lives in this banner, and the banner used to be hidden
+  // whenever there were no edits -- which is precisely when you need it. An
+  // override set wiped by a bad merge left no edits, so the banner vanished,
+  // so the one control that could restore it was unreachable. If this device
+  // has a rolling backup, the banner stays up and says so.
+  const history = loadLocal(STORE.editsHistory, []);
+  $("#editBanner").classList.toggle("hidden", n === 0 && !history.length);
+  $("#clearEdits").classList.toggle("hidden", n === 0);
+  if (!n) {
+    $("#editCount").innerHTML = `No overrides on this device — `
+      + `<b>${history.length}</b> earlier ${history.length === 1 ? "set is" : "sets are"} `
+      + `saved here and can be restored.`;
+    $("#editSaved").textContent = "";
+    return;
   }
+  const names = Object.keys(S.edits).map((id) => S.byId.get(+id)?.name).filter(Boolean);
+  $("#editCount").innerHTML = `<span class="edited-dot">●</span> <b>${n}</b> edited `
+    + `${n === 1 ? "player" : "players"}: ${names.join(", ")}`;
   // Says where the edits are, not whether you remembered to save them: they are
   // always saved on this device, and this line is only about the CLI's copy.
-  $("#editSaved").textContent = n ? (csvState ? `· ${csvState}` : "") : "";
+  $("#editSaved").textContent = csvState ? `· ${csvState}` : "";
 }
 
 /* ------------------------------------------------------------ is anything

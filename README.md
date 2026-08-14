@@ -1145,11 +1145,14 @@ ever considered GW1, so the option set is printed too:
 
 ```text
 chip             GW1   GW2   GW3   GW4   GW5   GW6   reserve  played
-Bench Boost     12.9  11.6  10.9  10.6  10.2  10.0     14.0       -
-Triple Captain   6.1   6.6   5.9   5.7   5.5   5.4     10.0       -
+Bench Boost     12.2  11.4  11.6  10.9  10.2  10.1     14.0       -
+Triple Captain   6.7   6.6   5.3   5.2   4.8   5.1     10.0       -
 ```
 
-Those are compared *discounted*, so on a calendar this flat — where the columns
+Those rows are not monotone — GW3 beats GW2 for the boost, GW6 beats GW5 for the
+captain — which is the gameweeks being told apart rather than ranked by distance.
+
+They are compared *discounted*, so on a calendar this flat — where the columns
 barely differ — the earliest gameweek wins on the discount alone. That is the
 tell that nothing in the fixture list is choosing for you, and it is why every
 row still says hold.
@@ -1158,6 +1161,25 @@ row still says hold.
 question the heuristic was asking, which spends them into exactly those early
 gameweeks. An `edge` of a point or two over the median gameweek is not a reason
 to spend a chip you can hold for a double.
+
+### And the squad moves with the chip
+
+The squad, the transfers and the chip are one set of variables in one program,
+so *which* fifteen you own is solved against *which* chip goes in *which*
+gameweek — not chosen first and then decorated with a chip. Forcing a bench
+boost into GW5 on live data changes the fifteen bought in **GW1**, five
+gameweeks before the chip is played, and lifts what the bench is worth in the
+boosted week. Forcing the same chip into GW1 changes nothing, which is the
+expected answer rather than a contradiction: there is no time to prepare for it,
+so the best squad for a GW1 boost is the best squad anyway.
+
+`scenario_bench_boost_reshapes_the_squad` in `verify-transfer-rules.py` pins
+this down where the answer is known by construction: the cheapest tier of player
+scores literally nothing, which is nearly free on an ordinary bench (a benched
+player is only scored at his slot's weight) and a hole in the eleven under a
+boost. The plan opens preseason with no banked transfer, so it cannot buy a
+better bench at the boost gameweek without taking hits — if the squad is not
+genuinely solved around the chip, the opening fifteen comes out identical.
 
 The free hit has no payout of its own, because it pays through the squad it
 lets you buy for one week rather than through points on the day.
@@ -1508,10 +1530,17 @@ projections where the right answer is known by construction and the wrong answer
 is attractive: a squad with nothing to gain (roll), two alternating premiums the
 budget cannot both fit (hold one), an upgrade worth six points a week and one
 worth 0.2 (take the hit, refuse the hit), a bench that outscores the starters
-(bench boost), a blank gameweek (free hit), a flat calendar (hold everything),
-and that same flat calendar with two chips forced (play them anyway, and stop
-charging the reserve that was holding them). Sixty-odd checks over eighteen
-solves, including the free-transfer recursion gameweek by gameweek.
+mid-window (bench boost, in *that* gameweek), one enormous gameweek for one
+player (triple captain, likewise), worthless bench fodder (the boost has to
+change the fifteen bought weeks earlier), a blank gameweek (free hit), a flat
+calendar (hold everything), and that same flat calendar with two chips forced
+(play them anyway, and stop charging the reserve that was holding them).
+Seventy-odd checks over twenty-one solves, including the free-transfer recursion
+gameweek by gameweek.
+
+Three of those put the gameweek a chip wants somewhere other than the first,
+because the discount makes GW1 the cheapest week to play anything in and a model
+that is not really looking ahead lands there.
 
 One of those runs backwards on purpose. The alternating-premium scenario is
 solved a second time with the transfer pricing switched off, and it has to bring
