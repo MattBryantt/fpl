@@ -3919,15 +3919,32 @@ function recomputeEdited(ids, { solveDelay = 0, sync = true } = {}) {
     if (sync) S.editsAt[id] = Date.now();
     const fields = S.edits[id];
     if (!fields) continue;
+    // Without a snapshot there is nothing to validate against, and "cannot
+    // check" must never be answered the same way as "checked and rejected" --
+    // that conflation is what deleted a whole set of overrides.
+    if (!S.snapshot) continue;
     try {
       checkOverridable(fields, S.snapshot);
     } catch (error) {
-      // A rejected edit is not an edit. Dropping it keeps the board and the
-      // solver looking at the same numbers -- and it counts as a touch too,
-      // so the merge doesn't resurrect it from an older remote copy.
+      // A rejected edit is dropped so the board and the solver keep looking at
+      // the same numbers. What it must NOT do is stamp the drop as a deletion.
+      //
+      // "This device cannot validate that field" is a fact about this device's
+      // snapshot, not about the edit. An override naming a field a newer
+      // snapshot added -- mins_if_start, say -- fails here on any device still
+      // holding an older one, and stamping it made that local incompatibility
+      // outrank the edit itself: the id then read as a deliberate deletion,
+      // beat every older copy on every device, and the override was gone
+      // everywhere. That is not hypothetical; it is how thirty of them were
+      // lost twice over.
+      //
+      // Leaving the timestamp alone means the edit stays live wherever it
+      // still validates, and this device simply carries none for that id --
+      // "no opinion" rather than "removed". A real deletion is still stamped,
+      // because that goes through the sync branch above.
       failed.push(`${S.byId.get(id)?.name || id}: ${error.message}`);
       delete S.edits[id];
-      S.editsAt[id] = Date.now();
+      if (sync) S.editsAt[id] = Date.now();
     }
   }
   // sync: false is for edits just adopted from a pullSyncState() pull -- they
@@ -3942,10 +3959,14 @@ function recomputeEdited(ids, { solveDelay = 0, sync = true } = {}) {
     saveLocal(STORE.edits, S.edits); saveLocal(STORE.editsAt, S.editsAt);
     snapshotEditsHistory(); pushOverrides();
   }
-  rebuildPool();
+  // Reported before rebuilding, not after. rebuildPool() can throw, and when it
+  // did the alert never ran -- so the one message that would have named the
+  // dropped overrides was lost to the very failure that dropped them, and the
+  // loss looked silent from the outside.
   if (failed.length) {
     alert("These edits were rejected and have been dropped:\n\n" + failed.join("\n"));
   }
+  rebuildPool();
   // The solver's answer was computed against the old numbers, so it is no
   // longer a fair comparison. Drop it and solve again.
   S.optimal = []; S.optimalPts = null; S.optimalCost = null; S.optimalBench = {};
@@ -4223,12 +4244,23 @@ function mergeEdits(localEdits, localAt, remoteEdits, remoteAt) {
    anything and this device's copy becomes the shared one. */
 const SKIP_PULL = new URL(location.href).searchParams.get("nopull") === "1";
 
-async function pullSyncState() {
+async function pullSyncState(ready) {
   if (!TOKEN) return;
   if (SKIP_PULL) {
     console.warn("nopull=1: keeping this device's own state, not syncing down");
     return;
   }
+  // The snapshot has to be in before anything is merged. Both this and
+  // loadPool() are fired unawaited at boot, and this one wins nearly every
+  // time -- /api/sync is a few hundred bytes against a 700KB projection. That
+  // race quietly ate every incoming override: the merge adopted them, then
+  // `checkOverridable(fields, S.snapshot)` threw on a null snapshot, the catch
+  // below it read that as "rejected edit" and deleted each one, `rebuildPool()`
+  // threw on the same null before the alert could report any of it, and
+  // `catch (_) {}` here swallowed the lot. Drafts and squad are assigned before
+  // that point, which is exactly why they synced and edits never did.
+  try { await ready; } catch (_) { /* loadPool reports its own failure */ }
+  if (!S.snapshot) return;   // no projection, nothing to validate an edit against
   try {
     const res = await api("/api/sync");
     if (!res.ok) return;
@@ -5375,9 +5407,12 @@ lastSyncableSettings = JSON.stringify(syncableSettings());
 // no settings blob and still needs a metric bar, a tab and a settings button
 // that agrees with what is on screen.
 renderMetricBar(); renderChrome(); setTab(S.tab);
-loadPool();
+// The pull is handed loadPool's promise rather than racing it: a merge needs
+// the snapshot to validate incoming overrides against, and without this it
+// reliably lost every one of them. See pullSyncState.
+const projectionReady = loadPool();
 detectServer();
-pullSyncState();
+pullSyncState(projectionReady);
 </script>
 </body>
 </html>
