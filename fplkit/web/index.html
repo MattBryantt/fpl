@@ -912,6 +912,57 @@ body.noserver .needs-server { display: none !important; }
 </head>
 <body>
 <div class="loading" id="loading">Projecting…</div>
+<!-- A classic script, not a module, and deliberately first: it has to survive
+     the failure it exists to report. A module that fails to parse, or whose
+     import 404s, never runs a line of its own error handling, and the board
+     then sits on "Projecting…" forever with the reason visible only in a
+     console — which on a phone is a console you cannot open. This paints the
+     error onto the loading screen instead, so the device that hit the problem
+     is the one that tells you what it was. It also watchdogs the load: still
+     on the loading screen after fifteen seconds is itself a diagnosis, and
+     "waiting" and "died silently" look identical without it. -->
+<script>
+(function () {
+  var reported = false;
+  function report(title, detail) {
+    if (reported) return;
+    reported = true;
+    var box = document.getElementById("loading");
+    if (!box || box.classList.contains("hidden")) return;
+    box.innerHTML = '<div style="max-width:34rem;text-align:left;padding:20px;'
+      + 'font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace">'
+      + '<p style="font:600 15px system-ui"><b>' + title + '</b></p>'
+      + '<pre style="white-space:pre-wrap;word-break:break-word;margin:8px 0">'
+      + String(detail).replace(/[<&]/g, function (c) { return c === "<" ? "&lt;" : "&amp;"; })
+      + '</pre><p style="font:12px system-ui;opacity:.7">Reload to try again. If this '
+      + 'persists, this text is the thing worth reporting.</p></div>';
+  }
+  // Capturing, because a failed script/module fetch fires an error event that
+  // does not bubble — the phase is the whole reason this catches it at all.
+  addEventListener("error", function (event) {
+    if (event.target && event.target !== window && event.target.src) {
+      report("Failed to load a file the board needs", event.target.src);
+    } else {
+      report("The board hit an error while starting",
+             (event.message || "unknown error")
+             + (event.filename ? "\n" + event.filename + ":" + event.lineno : ""));
+    }
+  }, true);
+  addEventListener("unhandledrejection", function (event) {
+    var reason = event.reason;
+    report("The board failed while starting",
+           (reason && (reason.stack || reason.message)) || String(reason));
+  });
+  setTimeout(function () {
+    report("Still loading after 15 seconds",
+           "The page loaded but the projection never arrived, and nothing threw.\n"
+           + "That usually means a request is hanging rather than failing.\n\n"
+           + "online: " + navigator.onLine
+           + "\nservice worker: " + (navigator.serviceWorker
+               && navigator.serviceWorker.controller ? "controlling" : "not controlling"));
+  }, 15000);
+})();
+</script>
 <div class="wrap">
 
 <header>

@@ -56,7 +56,15 @@ const SHELL = [
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(SHELL_VERSION);
-    await cache.addAll(SHELL);
+    // `cache: "reload"` because addAll otherwise reads through the browser's
+    // own HTTP cache, and these filenames carry no content hash — a deploy
+    // reuses them. Without it a new shell version happily precaches the *old*
+    // bytes, which is worse than not caching at all: the page is revalidated
+    // and fresh while its modules are a year stale, and a module that imports
+    // a binding a stale sibling does not export yet fails at link time. That
+    // failure runs none of the page's own code, so it shows as a board frozen
+    // on its loading screen with nothing in it to say why.
+    await cache.addAll(SHELL.map((url) => new Request(url, { cache: "reload" })));
     // Take over straight away. The alternative is a first visit that installs a
     // worker which only starts controlling things on the *second* visit -- and
     // on a phone the second visit is often the one on the train with no signal.

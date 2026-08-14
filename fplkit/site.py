@@ -90,14 +90,26 @@ def _mirror_shirts(out: Path, codes: list[str]) -> int:
 def _headers_file(out: Path) -> None:
     """Cloudflare Pages `_headers`, which is how a static host says "don't cache".
 
-    Two rules, and both matter more than they look. The service worker must not
-    be cached by the CDN or a shell version bump would take hours to reach a
-    phone that is checking for one. And `snapshot.json` must not be cached
-    either, because it is the *only* thing on the site that changes without the
-    code changing -- caching it is caching last week's prices.
+    The service worker must not be cached by the CDN or a shell version bump
+    would take hours to reach a phone that is checking for one. And
+    `snapshot.json` must not be cached either, because it is the *only* thing on
+    the site that changes without the code changing -- caching it is caching
+    last week's prices.
 
-    Everything else is content-addressed by shell version in the worker, so the
-    long max-age on assets is safe and is what makes a cold load quick.
+    `/assets/*` used to carry a year, on the reasoning that they are "content-
+    addressed by shell version in the worker". They are not. The *cache* is
+    named for the shell version; the URLs are not, and the browser's HTTP cache
+    keys on the URL. A deploy reuses `chips.mjs`, so a year-old copy stayed
+    authoritative while `/` -- which does revalidate -- served a new page that
+    imported from it. A module whose sibling is a year stale fails at link time
+    the moment it imports a binding that sibling does not export yet, and a
+    link-time failure runs none of the page's own code: the board freezes on its
+    loading screen with nothing to say why.
+
+    Revalidating costs nothing worth having. Once the service worker is
+    installed it answers these from its own cache without a network request at
+    all, so the max-age was only ever buying the gap before install -- and
+    charging a stale-module outage for it.
     """
     (out / "_headers").write_text(
         "/sw.js\n"
@@ -107,7 +119,7 @@ def _headers_file(out: Path) -> None:
         "  Cache-Control: no-cache\n"
         "\n"
         "/assets/*\n"
-        "  Cache-Control: public, max-age=31536000\n"
+        "  Cache-Control: no-cache\n"
         "\n"
         "/shirts/*\n"
         "  Cache-Control: public, max-age=31536000\n", encoding="utf-8")
