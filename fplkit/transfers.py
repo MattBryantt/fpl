@@ -38,9 +38,15 @@ the test that the fix is the right one rather than a patch over the symptom.
 The chips belong in the same problem rather than in a report next to it. Every
 one of them is a statement about the squad: a bench boost is worth playing only
 if the bench is worth fielding, and whether the bench is worth fielding is a
-transfer decision made three gameweeks earlier. A wildcard is a week with
-fifteen free transfers, so it competes directly against the transfers either
-side of it. Solving them separately gets both wrong.
+transfer decision made three gameweeks earlier. A free hit is a squad you never
+own, bought out of what selling the one you do own would raise. Solving them
+separately gets both wrong. The wildcard is the exception and is not modelled at
+all -- see `config.CHIPS` for why.
+
+A chip the model declines to play is not the same as a chip it says nothing
+about, so `force_chips` makes the plan play one anyway and answers the other
+question a person actually asks: not "should I bench boost?" but "if I bench
+boost, what should the squad be?".
 
 What has *not* changed is the honesty about the horizon. The plan is re-decided
 every week with information this run does not have, so only the first
@@ -118,10 +124,10 @@ POOL_BY_POS = {"GKP": 12, "DEF": 45, "MID": 45, "FWD": 25}
 # enough that the constraint never binds on anything the model would pick.
 CAPTAIN_CANDIDATES = 40
 
-# A transfer that changes nothing is free under a wildcard, so the solver is
-# indifferent between rebuilding thirteen players and rebuilding two and will
-# return whichever it reached first. This is too small to outweigh any real
-# gain and large enough to break the tie toward leaving the squad alone.
+# Two players the projection cannot separate leave the solver indifferent
+# between holding one and buying the other, and it will return whichever branch
+# it reached first. This is too small to outweigh any real gain and large enough
+# to break the tie toward leaving the squad alone.
 IDLE_MOVE_PENALTY = 0.01
 
 SOLVER_SECONDS = 120
@@ -250,8 +256,9 @@ def chip_slots(windows: dict[str, tuple[int, int]], gameweeks: list[int],
     """Gameweeks in the horizon where each chip may legally be played.
 
     A chip with no legal gameweek is dropped entirely rather than carried as a
-    variable that can only take one value; the wildcard's `start_event` of 2 is
-    what removes it from a gameweek-one plan.
+    variable that can only take one value, and so is any chip the model does not
+    handle -- which is how the wildcard's window comes back from the API and
+    goes no further.
     """
     used = set(already_used or [])
     slots = {}
@@ -310,6 +317,7 @@ def plan_transfers(
     no_transfer_gws: list[int] | None = None,
     ban_first_gw_transfers: bool = False,
     forbid_chips: list[str] | None = None,
+    force_chips: list[str] | None = None,
     seconds: int = SOLVER_SECONDS,
     pool: pd.DataFrame | None = None,
     points: pd.DataFrame | None = None,
@@ -338,6 +346,13 @@ def plan_transfers(
             alternative to acting rather than to make a plan.
         forbid_chips: chips the solve may not use, for pricing what a chip is
             worth by taking it away.
+        force_chips: chips the solve must play somewhere in the window, which
+            answers "if I am playing this, what is the best squad and the best
+            gameweek for it?" rather than "should I play it?". A forced chip's
+            reservation price is dropped to zero: the reserve is a charge for
+            playing at all, and leaving it in would only push a chip you have
+            already decided to play into the last gameweek of the window, where
+            the discount makes the same charge cheapest.
 
     Returns a `TransferPlan`. `objective` is the discounted total the solver
     ranked on and is comparable only against another solve of the same window;
@@ -381,18 +396,30 @@ def plan_transfers(
     slot_weight.update(bench_weights or {})
     slots = list(slot_weight)
 
+    forced = list(dict.fromkeys(force_chips or []))
+    clash = sorted(set(forced) & set(forbid_chips or []))
+    if clash:
+        raise ValueError(f"chips cannot be both forced and forbidden: {clash}")
+
     chips = chip_slots(chip_windows or {}, gameweeks, chips_used)
     for chip in (forbid_chips or []):
         chips.pop(chip, None)
     # A free hit needs somewhere to hit. With no blanks or doubles on the
     # calendar it is a week of unlimited transfers you have to hand back, which
     # is worth approximately nothing and costs a full second squad's worth of
-    # binaries to discover.
+    # binaries to discover. Forcing it says to spend those binaries anyway.
     variation = fixture_variation(projection, gameweeks)
     skipped = {}
-    if "freehit" in chips and not variation:
+    if "freehit" in chips and not variation and "freehit" not in forced:
         chips.pop("freehit")
         skipped["freehit"] = "no blank or double to hit"
+
+    unplayable = [chip for chip in forced if chip not in chips]
+    if unplayable:
+        raise ValueError(
+            f"cannot force {sorted(unplayable)}: not playable in GW{gameweeks[0]}"
+            f"-GW{gameweeks[-1]}. Already used, outside the chip's window, or "
+            f"not a chip this tool models (known chips: {', '.join(CHIPS)})")
 
     problem = pulp.LpProblem("fpl_transfer_plan", pulp.LpMaximize)
     first, last = gameweeks[0], gameweeks[-1]
@@ -528,9 +555,9 @@ def plan_transfers(
             problem += in_squad[i][gw] == previous + bought[i][gw] - sold[i][gw]
             problem += bought[i][gw] <= 1 - hit
             problem += sold[i][gw] <= 1 - hit
-            # Selling a player and buying him straight back is a null move that
-            # costs nothing under a wildcard, so it has to be ruled out rather
-            # than priced out.
+            # Selling a player and buying him straight back is a null move, and
+            # the squad balance above cannot see it: it nets to zero. Ruling it
+            # out is what keeps `spent` an honest count of transfers made.
             problem += bought[i][gw] + sold[i][gw] <= 1
 
     banned = set(no_transfer_gws or [])
@@ -553,15 +580,11 @@ def plan_transfers(
             problem += in_bank[gw] == in_bank[gameweeks[step - 1]] + raised - outlay
 
     # --- the free-transfer state machine -----------------------------------
-    # `spent` is what comes out of the allowance. A wildcard is fifteen free
-    # transfers, so it takes nothing from the allowance and leaves the balance
-    # where it was.
+    # `spent` is what comes out of the allowance, and every transfer made comes
+    # out of it: a free-hit week makes none (`bought` is pinned to zero above),
+    # so it needs no exemption here.
     for gw in gameweeks:
-        moves = pulp.lpSum(bought[i][gw] for i in index)
-        card = played("wildcard", gw)
-        problem += spent[gw] >= moves - SQUAD_SIZE * card
-        problem += spent[gw] <= SQUAD_SIZE * (1 - card)
-        problem += spent[gw] <= moves
+        problem += spent[gw] == pulp.lpSum(bought[i][gw] for i in index)
         problem += paid[gw] >= spent[gw] - ft[gw]
 
     problem += ft[first] == (0 if preseason else int(free_transfers))
@@ -573,9 +596,9 @@ def plan_transfers(
     big_m = 2 * MAX_FREE_TRANSFERS + SQUAD_SIZE
     for step, gw in enumerate(gameweeks):
         nxt = gameweeks[step + 1] if step + 1 < len(gameweeks) else terminal
-        # Playing a wildcard or free hit costs you that gameweek's new free
-        # transfer, but since 2024/25 it no longer burns the ones you banked.
-        earned = FREE_TRANSFERS_PER_GW - played("wildcard", gw) - played("freehit", gw)
+        # Playing a free hit costs you that gameweek's new free transfer, but
+        # since 2024/25 it no longer burns the ones you banked.
+        earned = FREE_TRANSFERS_PER_GW - played("freehit", gw)
         raw = ft[gw] - spent[gw] + earned
 
         problem += raw >= (MAX_FREE_TRANSFERS + 1) - big_m * (1 - over[gw])
@@ -597,8 +620,11 @@ def plan_transfers(
                                         for s in range(MAX_FREE_TRANSFERS + 1))
 
     # --- chips -------------------------------------------------------------
+    # Once each, and a forced chip exactly once: the solver still picks the
+    # gameweek and still builds the squad around it, it just may not decline.
     for chip, allowed in chips.items():
-        problem += pulp.lpSum(use[chip][gw] for gw in allowed) <= 1
+        times = pulp.lpSum(use[chip][gw] for gw in allowed)
+        problem += (times == 1) if chip in forced else (times <= 1)
     for gw in gameweeks:
         # One chip a gameweek, from the rules.
         active = [played(chip, gw) for chip in chips]
@@ -610,6 +636,8 @@ def plan_transfers(
     # --- objective ---------------------------------------------------------
     hold_value = dict(CHIP_HOLD_VALUE)
     hold_value.update(chip_hold or {})
+    for chip in forced:
+        hold_value[chip] = 0.0
     # Both of these exist to be turned off. The claim this module makes is that
     # pricing the bank and charging for acting are what stop a transfer plan
     # oscillating, and a claim you cannot switch off is not a claim you have
@@ -674,7 +702,7 @@ def plan_transfers(
         bought=bought, sold=sold, free_hit_squad=free_hit_squad,
         ft=ft, spent=spent, paid=paid, in_bank=in_bank, chips=chips, use=use,
         price=price, sell=sell, decay=decay, variation=variation,
-        skipped=skipped,
+        skipped=skipped, forced=forced,
         objective=float(pulp.value(problem.objective)), status=label,
         preseason=preseason,
     )
@@ -687,8 +715,8 @@ def plan_transfers(
 def _read_solution(*, pool, points, gameweeks, index, in_squad, in_xi, in_slot,
                    slots, is_captain, captain_pool, triple, bought, sold,
                    free_hit_squad, ft, spent, paid, in_bank, chips, use,
-                   price, sell, decay, variation, skipped, objective, status,
-                   preseason) -> TransferPlan:
+                   price, sell, decay, variation, skipped, forced, objective,
+                   status, preseason) -> TransferPlan:
     """Turn solver variables into the tables a person reads."""
     name = {i: str(pool.at[i, "web_name"]) for i in index}
     team = {i: str(pool.at[i, "team_short"]) for i in index}
@@ -784,9 +812,14 @@ def _read_solution(*, pool, points, gameweeks, index, in_squad, in_xi, in_slot,
 
     chip_rows = _chip_report(chips, chip_by_gw, squads, points, gameweeks,
                              {fpl_id[i]: position[i] for i in index}, variation,
-                             skipped)
+                             skipped, forced)
 
     notes = []
+    if forced:
+        notes.append("forced: " + ", ".join(CHIP_LABELS[c] for c in forced)
+                     + " — this is the best plan that plays "
+                     + ("them" if len(forced) > 1 else "it")
+                     + ", not the best plan")
     if preseason:
         notes.append("preseason: the opening squad is a free choice, and the "
                      "first free transfer arrives for the second gameweek")
@@ -833,7 +866,7 @@ def _pair_moves(out_players: list, in_players: list,
 
 
 def _chip_report(chips, chip_by_gw, squads, points, gameweeks, positions,
-                 variation, skipped) -> pd.DataFrame:
+                 variation, skipped, forced=()) -> pd.DataFrame:
     """What each chip is worth, and whether the gameweek it wants is a real choice.
 
     The payout is measured against the squad the plan actually holds that
@@ -872,25 +905,31 @@ def _chip_report(chips, chip_by_gw, squads, points, gameweeks, positions,
                          "verdict": "hold — beaten by keeping it"})
             continue
 
+        # The verdict leads with what the plan did, because a row that names a
+        # gameweek and then reads "hold" is a contradiction a reader has to
+        # unpick -- which is what this said before whenever a chip was played
+        # into a flat calendar.
+        lead = "forced" if chip in forced else "play"
+
         if not series:
-            # A wildcard or free hit has no payout of its own -- it pays
-            # through the squad it lets you buy, which only shows up as the
+            # A free hit has no payout of its own -- it pays through the squad
+            # it lets you buy for one week, which only shows up as the
             # difference between two whole plans. `chip_values` measures it.
             rows.append({"chip": CHIP_LABELS[chip], "gw": gw, "worth": np.nan,
                          "edge": np.nan,
-                         "verdict": "structural — use --chip-value"})
+                         "verdict": f"{lead} — structural, use --chip-value"})
             continue
 
         worth = series.get(gw, np.nan)
         edge = worth - float(np.median(window)) if window else np.nan
         if not variation:
-            verdict = "hold — nothing to time against"
+            timing = "nothing to time against"
         elif np.isnan(edge) or edge < 1.0:
-            verdict = "weak — no better than any other week"
+            timing = "no better than any other week"
         else:
-            verdict = "timed against a double or blank"
+            timing = "timed on a double or blank"
         rows.append({"chip": CHIP_LABELS[chip], "gw": gw, "worth": worth,
-                     "edge": edge, "verdict": verdict})
+                     "edge": edge, "verdict": f"{lead} — {timing}"})
 
     return pd.DataFrame(rows, columns=["chip", "gw", "worth", "edge", "verdict"])
 
@@ -940,14 +979,21 @@ def chip_values(projection: Projection, players: pd.DataFrame,
     Expensive: one solve per chip plus a baseline.
     """
     kwargs.pop("forbid_chips", None)
-    full = plan_transfers(projection, players, chip_windows=chip_windows, **kwargs)
+    # A chip cannot be priced by taking it away while it is also being forced,
+    # so the one under the microscope drops off the forced list for its own
+    # solve. The rest stay forced, which keeps every comparison like for like.
+    forced = list(kwargs.pop("force_chips", None) or [])
+    full = plan_transfers(projection, players, chip_windows=chip_windows,
+                          force_chips=forced, **kwargs)
     available = list(chip_slots(chip_windows or {}, full.gameweeks,
                                 kwargs.get("chips_used")))
 
     rows = []
     for chip in available:
         without = plan_transfers(projection, players, chip_windows=chip_windows,
-                                 forbid_chips=[chip], **kwargs)
+                                 forbid_chips=[chip],
+                                 force_chips=[c for c in forced if c != chip],
+                                 **kwargs)
         played = full.chips.loc[full.chips["chip"] == CHIP_LABELS[chip], "gw"]
         rows.append({
             "chip": CHIP_LABELS[chip],
@@ -957,7 +1003,7 @@ def chip_values(projection: Projection, players: pd.DataFrame,
 
     if available:
         none = plan_transfers(projection, players, chip_windows=chip_windows,
-                              forbid_chips=available, **kwargs)
+                              forbid_chips=available, force_chips=[], **kwargs)
         rows.append({"chip": "all chips", "gw": pd.NA,
                      "worth": round(full.objective - none.objective, 2)})
     return pd.DataFrame(rows, columns=["chip", "gw", "worth"])

@@ -90,10 +90,10 @@ FREE_TRANSFERS_PER_GW = 1
 MAX_FREE_TRANSFERS = 5
 HIT_COST = 4.0
 
-# Playing a wildcard or a free hit does not earn you that gameweek's free
-# transfer, but since 2024/25 it no longer burns the ones you had banked. Both
-# halves of that matter to the accounting, so they are named rather than folded
-# into a constant: the chip cancels the +1, and nothing else.
+# Playing a free hit does not earn you that gameweek's free transfer, but since
+# 2024/25 it no longer burns the ones you had banked. Both halves of that matter
+# to the accounting, so they are named rather than folded into a constant: the
+# chip cancels the +1, and nothing else.
 CHIP_KEEPS_BANKED_TRANSFERS = True
 
 # 50% of any profit is taken back when you sell, rounded down to £0.1m
@@ -131,8 +131,16 @@ VICE_CAPTAIN_WEIGHT = 0.1
 # --- Chips --------------------------------------------------------------------
 # The API's own names, which is what `chips` in bootstrap-static uses and what
 # the windows come back keyed by.
-CHIPS = ("wildcard", "freehit", "bboost", "3xc")
-CHIP_LABELS = {"wildcard": "Wildcard", "freehit": "Free Hit",
+#
+# The wildcard is deliberately absent. The API still reports its window, and
+# `chip_slots` still drops it on the way in, because a wildcard is not a chip
+# this tool can time for you: it is a week of unlimited transfers, so every
+# solve that has one available answers "rebuild now" and the answer is only as
+# good as a six-gameweek projection of a fifteen-player restructure. Deciding
+# when to wildcard is a judgement about the season, made outside the model; once
+# you have decided, plan the rebuilt squad with `fpl.py plan` instead.
+CHIPS = ("freehit", "bboost", "3xc")
+CHIP_LABELS = {"freehit": "Free Hit",
                "bboost": "Bench Boost", "3xc": "Triple Captain"}
 TRIPLE_CAPTAIN_MULTIPLIER = 3
 
@@ -158,13 +166,12 @@ MAX_CHIPS_PER_GW = 1
 #   3xc      the third captain multiple, on a premium attacker with two games.
 #   freehit  fielding eleven players in a blank instead of the five or six you
 #            would otherwise have.
-#   wildcard a full restructure at the season's largest fixture swing, which is
-#            worth more than any single gameweek's points.
 #
 # They are estimates and they are knobs. Set them to zero to ask the narrower
 # question "when in this window is each chip best?", which is what the plan
-# answered before it could weigh holding.
-CHIP_HOLD_VALUE = {"bboost": 14.0, "3xc": 10.0, "freehit": 12.0, "wildcard": 15.0}
+# answered before it could weigh holding. Forcing a chip zeroes its reserve for
+# the same reason -- see `plan_transfers`'s `force_chips`.
+CHIP_HOLD_VALUE = {"bboost": 14.0, "3xc": 10.0, "freehit": 12.0}
 
 # --- Model constants ----------------------------------------------------------
 # Share of a team's goals that come from penalties, league-wide.

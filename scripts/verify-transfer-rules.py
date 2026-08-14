@@ -16,15 +16,15 @@ behaviour is correct and the wrong behaviour is attractive:
     the same scenario solved without the transfer pricing has to bring the
     oscillation back or it was not testing anything;
   * an upgrade big enough to be worth four points, and one just too small;
-  * half the league improving at once, which no run of free transfers can chase
-    and a wildcard can;
   * a bench that outscores the starters, which only a bench boost can field;
   * a gameweek in which most of the squad has no fixture, which is a free hit;
-  * a flat calendar, where every chip should be held.
+  * a flat calendar, where every chip should be held;
+  * the same flat calendar with two chips forced, where they should be played
+    anyway and the reserve that was holding them should stop applying.
 
     python scripts/verify-transfer-rules.py
 
-Takes about ninety seconds: there are seventeen mixed-integer solves in here.
+Takes a couple of minutes: there are eighteen mixed-integer solves in here.
 """
 
 from __future__ import annotations
@@ -160,8 +160,8 @@ def check_legality(plan: transfers.TransferPlan, players: pd.DataFrame,
 def check_ledger(plan: transfers.TransferPlan, opening: int, label: str) -> None:
     """The free-transfer balance follows the rule, gameweek by gameweek.
 
-    ft(w+1) = clamp(ft(w) - transfers + 1, 1, 5), and a wildcard or free hit
-    cancels the +1 while leaving what was banked alone.
+    ft(w+1) = clamp(ft(w) - transfers + 1, 1, 5), and a free hit cancels the +1
+    while leaving what was banked alone.
     """
     ledger = plan.ledger
     check(f"{label}: opening balance", int(ledger["free"].iloc[0]) == opening,
@@ -170,9 +170,8 @@ def check_ledger(plan: transfers.TransferPlan, opening: int, label: str) -> None
     ok, detail = True, []
     for step in range(len(ledger) - 1):
         row, nxt = ledger.iloc[step], ledger.iloc[step + 1]
-        chip = row["chip"] in ("Wildcard", "Free Hit")
-        spent = 0 if row["chip"] == "Wildcard" else int(row["transfers"])
-        raw = int(row["free"]) - spent + (0 if chip else 1)
+        raw = (int(row["free"]) - int(row["transfers"])
+               + (0 if row["chip"] == "Free Hit" else 1))
         expect = min(max(raw, 1), MAX_FREE_TRANSFERS)
         if int(nxt["free"]) != expect:
             ok = False
@@ -184,17 +183,15 @@ def check_ledger(plan: transfers.TransferPlan, opening: int, label: str) -> None
           f"peaks at {int(ledger['free'].max())} (cap {MAX_FREE_TRANSFERS})")
 
     hits_ok = all(
-        int(row["hits"]) == max(0, (0 if row["chip"] == "Wildcard"
-                                    else int(row["transfers"])) - int(row["free"]))
+        int(row["hits"]) == max(0, int(row["transfers"]) - int(row["free"]))
         for _, row in ledger.iterrows())
     check(f"{label}: hits charged", hits_ok,
           f"{int(ledger['hits'].sum())} hit(s), costing {HIT_COST * int(ledger['hits'].sum()):.0f}")
 
-    paid_for = all(row["chip"] == "Wildcard"
-                   or int(row["transfers"]) <= int(row["free"]) + int(row["hits"])
+    paid_for = all(int(row["transfers"]) <= int(row["free"]) + int(row["hits"])
                    for _, row in ledger.iterrows())
     check(f"{label}: every move is paid for", paid_for,
-          "each transfer comes out of a free one, a hit, or a wildcard")
+          "each transfer comes out of a free one or a hit")
 
 
 # --------------------------------------------------------------------------- #
@@ -307,37 +304,6 @@ def scenario_hit() -> None:
               f"({bonus * len(HORIZON):.1f} over the window, against {HIT_COST:.0f} a hit)")
 
 
-def scenario_wildcard() -> None:
-    """A wildcard is fifteen free transfers that leave the bank untouched."""
-    def points(pid, pos, rank, gw):
-        base = {"GKP": 3.0, "DEF": 3.5, "MID": 4.0, "FWD": 4.2}[pos] + rank * 0.6
-        # Half the league becomes far better from gameweek three onward, which
-        # is more than any sequence of free transfers can chase.
-        return base + (4.0 if pid % 2 == 0 and gw >= 3 else 0.0)
-
-    projection, players = league(points)
-    owned = _starting_fifteen(projection, players, only_odd=True)
-    plan = solve(projection, players, squad=owned, free_transfers=1, bank=10.0,
-                 chip_windows={"wildcard": (2, 19)},
-                 chip_hold={"wildcard": 0.0})
-    check_legality(plan, players, "wildcard")
-    check_ledger(plan, 1, "wildcard")
-
-    played = plan.ledger[plan.ledger["chip"] == "Wildcard"]
-    check("wildcard: played", len(played) == 1,
-          f"played in GW{int(played['gw'].iloc[0])}" if len(played) else "not played")
-    if len(played):
-        row = played.iloc[0]
-        check("wildcard: costs no hits", int(row["hits"]) == 0,
-              f"{int(row['transfers'])} transfers, {int(row['hits'])} hits")
-        step = list(plan.ledger["gw"]).index(row["gw"])
-        after = plan.ledger.iloc[step + 1] if step + 1 < len(plan.ledger) else None
-        if after is not None:
-            check("wildcard: banked transfers survive it",
-                  int(after["free"]) == int(row["free"]),
-                  f"held {int(row['free'])} before, {int(after['free'])} after")
-
-
 def scenario_bench_boost() -> None:
     """A bench worth more than the bench weights say is only reachable with the chip."""
     def points(pid, pos, rank, gw):
@@ -371,22 +337,24 @@ def scenario_free_hit() -> None:
           "the fifteen owned either side of the chip are the same fifteen")
 
 
+FLAT_WINDOWS = {"freehit": (2, 19), "bboost": (1, 19), "3xc": (1, 19)}
+
+
 def scenario_chip_hold() -> None:
-    """With nothing to time a chip against, the plan should hold all four.
+    """With nothing to time a chip against, the plan should hold every one.
 
     This is the behaviour the old heuristic hard-coded as a refusal. Here it
     falls out of an arithmetic comparison against what the chip is worth held,
     which means it also knows when to stop refusing.
     """
     projection, players = league(flat({"GKP": 3.0, "DEF": 3.5, "MID": 4.0, "FWD": 4.2}))
-    windows = {"wildcard": (2, 19), "freehit": (2, 19),
-               "bboost": (1, 19), "3xc": (1, 19)}
+    windows = FLAT_WINDOWS
 
     dear = solve(projection, players, chip_windows=windows,
                  chip_hold={chip: 100.0 for chip in windows})
     check("chip hold: a reserve nothing can clear holds every chip",
           (dear.ledger["chip"] == "").all(),
-          "all four held" if (dear.ledger["chip"] == "").all()
+          "all held" if (dear.ledger["chip"] == "").all()
           else f"played {sorted(set(dear.ledger['chip']) - {''})}")
 
     free = solve(projection, players, chip_windows=windows,
@@ -409,29 +377,71 @@ def scenario_chip_hold() -> None:
               if played else ""))
 
 
-def _starting_fifteen(projection, players, exclude=None, only_odd=False) -> list[int]:
-    """A legal fifteen to own going in, chosen without the transfer model."""
-    pool = players[~players["fpl_id"].isin(exclude or [])]
-    if only_odd:
-        pool = pool[pool["fpl_id"] % 2 == 1]
-    squad, per_club = [], {}
-    for pos, count in SQUAD_BY_POS.items():
-        taken = 0
-        for _, player in pool[pool["pos"] == pos].sort_values("price").iterrows():
-            if taken == count:
-                break
-            if per_club.get(player["team"], 0) >= MAX_PER_CLUB:
-                continue
-            squad.append(int(player["fpl_id"]))
-            per_club[player["team"]] = per_club.get(player["team"], 0) + 1
-            taken += 1
-    return squad
+def scenario_forced_chips() -> None:
+    """Forcing a chip overrules the reserve that was holding it, and only that.
+
+    Same flat calendar the scenario above holds every chip on, so anything
+    played here is played because it was forced. The gameweek is still the
+    solver's to pick, and the third check is what says the reserve is dropped
+    rather than merely out-earned: a reserve still in the objective would be
+    cheapest in the last gameweek of the window, because the discount shrinks
+    it, and a forced chip would drift there regardless of the points.
+    """
+    projection, players = league(flat({"GKP": 3.0, "DEF": 3.5, "MID": 4.0, "FWD": 4.2}))
+    forced = ["bboost", "3xc"]
+
+    plan = solve(projection, players, chip_windows=FLAT_WINDOWS, force_chips=forced)
+    check_legality(plan, players, "forced chips")
+    # Preseason, so the opening balance is zero: the first free transfer is
+    # earned for the second gameweek, not handed out before the first.
+    check_ledger(plan, 0, "forced chips")
+
+    played = sorted(set(plan.ledger["chip"]) - {""})
+    check("forced chips: both are played", played == ["Bench Boost", "Triple Captain"],
+          f"played {played or 'nothing'} on a calendar that holds everything by default")
+
+    boosted = plan.lineups[plan.lineups["chip"] == "Bench Boost"]
+    check("forced chips: the bench boost still fields fifteen",
+          len(boosted) == 1
+          and len(boosted["starting_xi"].iloc[0].split(", ")) == SQUAD_SIZE,
+          f"{len(boosted)} boosted gameweek(s)")
+
+    weeks = [int(row["gw"]) for _, row in plan.ledger.iterrows() if row["chip"]]
+    check("forced chips: not dumped in the last gameweek to dodge the reserve",
+          all(gw != HORIZON[-1] for gw in weeks) or len(set(weeks)) > 1,
+          f"played in GW{', GW'.join(str(gw) for gw in weeks)} of "
+          f"GW{HORIZON[0]}-GW{HORIZON[-1]}")
+
+    verdicts = plan.chips[plan.chips["gw"].notna()]["verdict"]
+    check("forced chips: the report says they were forced",
+          len(verdicts) and all(v.startswith("forced") for v in verdicts),
+          "; ".join(verdicts) if len(verdicts) else "no chip rows")
+
+    try:
+        solve(projection, players, chip_windows=FLAT_WINDOWS,
+              force_chips=["bboost"], forbid_chips=["bboost"])
+    except ValueError as error:
+        check("forced chips: forcing and forbidding the same chip is refused",
+              "forced and forbidden" in str(error), str(error))
+    else:
+        check("forced chips: forcing and forbidding the same chip is refused",
+              False, "the solve was attempted anyway")
+
+    try:
+        solve(projection, players, chip_windows=FLAT_WINDOWS, chips_used=["3xc"],
+              force_chips=["3xc"])
+    except ValueError as error:
+        check("forced chips: forcing a spent chip is refused",
+              "cannot force" in str(error), str(error))
+    else:
+        check("forced chips: forcing a spent chip is refused",
+              False, "the solve was attempted anyway")
 
 
 def main() -> int:
     for scenario in (scenario_settled, scenario_oscillation, scenario_hit,
-                     scenario_wildcard, scenario_bench_boost, scenario_free_hit,
-                     scenario_chip_hold):
+                     scenario_bench_boost, scenario_free_hit,
+                     scenario_chip_hold, scenario_forced_chips):
         print(f"\n{scenario.__name__.replace('scenario_', '').replace('_', ' ')}")
         print("-" * 72)
         scenario()

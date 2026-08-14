@@ -454,8 +454,8 @@ def cmd_plan(args) -> None:
     for note in plan.notes:
         console.print(f"[dim]· {note}[/dim]")
     console.print(
-        "[dim]· the wildcard cannot be played in GW1, so this squad only has to "
-        "be right for the first few gameweeks — it can be rebuilt from GW2.[/dim]"
+        "[dim]· a wildcard rebuilds the whole squad from GW2, so this fifteen "
+        "only has to be right for the first few gameweeks.[/dim]"
     )
     _save(plan.squad.players, args.csv)
 
@@ -466,9 +466,9 @@ def _print_transfer_path(path, show_lineups: bool = False) -> None:
             ["gw", "chip", "transfers", "free", "hits", "bank", "xi_xpts", "weight"])
     console.print(
         "[dim]free = free transfers available that gameweek, after banking. A "
-        "wildcard or free hit costs you that week's new transfer but no longer "
-        "burns the ones you saved. Points past the first gameweek are weighted "
-        "down; hits and banked transfers are weighted with them.[/dim]")
+        "free hit costs you that week's new transfer but no longer burns the "
+        "ones you saved. Points past the first gameweek are weighted down; hits "
+        "and banked transfers are weighted with them.[/dim]")
 
     if len(path.moves):
         console.print()
@@ -491,6 +491,11 @@ def _print_transfer_path(path, show_lineups: bool = False) -> None:
             "chip is only played when it beats what it is worth held for a "
             "well-timed gameweek later (see CHIP_HOLD_VALUE) — which is why a "
             "flat fixture list produces a row of holds.[/dim]")
+        if path.chips["verdict"].str.startswith("forced").any():
+            console.print(
+                "[dim]rows marked forced were played because --force-chip said "
+                "to, with their reservation price set aside; the gameweek is "
+                "still the best one in the window for them.[/dim]")
 
     if show_lineups:
         console.print()
@@ -538,6 +543,7 @@ def cmd_transfers(args) -> None:
         chip_windows=fpl_api.chip_windows(projection.horizon[0]),
         chips_used=args.chips_used or None,
         chip_hold=({chip: 0.0 for chip in CHIPS} if args.ignore_chip_hold else None),
+        force_chips=args.force_chip or None,
         half_life=args.transfer_half_life, include=include or None,
         exclude=exclude or None, hit_limit=args.hit_limit, seconds=args.seconds,
     )
@@ -1017,10 +1023,16 @@ def build_parser() -> argparse.ArgumentParser:
                          "because optionality is modelled here rather than assumed)")
     tr.add_argument("--chips-used", nargs="*", default=None, choices=list(CHIPS),
                     help="chips already played this half of the season")
+    tr.add_argument("--force-chip", nargs="*", default=None, choices=list(CHIPS),
+                    metavar="CHIP",
+                    help="chips the plan must play somewhere in the window, "
+                         "which asks 'if I play this, what is the best squad "
+                         "and the best gameweek for it?' rather than 'should "
+                         f"I play it?' (one of: {', '.join(CHIPS)})")
     tr.add_argument("--ignore-chip-hold", action="store_true",
                     help="set every chip's reservation price to zero, which asks "
                          "the narrower question 'when in this window is each chip "
-                         "best?' and will always spend all four")
+                         "best?' and will spend every one of them")
     tr.add_argument("--chip-value", action="store_true",
                     help="price each chip by re-solving without it (one extra "
                          "solve per chip)")

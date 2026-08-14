@@ -203,9 +203,13 @@ export function pairMoves(outIds, inIds, positions) {
  *  `skipped`: `{chip: reason}` for chips dropped before the solve (e.g. a
  *  free hit with no blank or double to hit).
  *  `chipLabels`: `rules.CHIP_LABELS`.
+ *  `forced`: chips the solve was made to play, which changes what the verdict
+ *  claims — a forced chip's gameweek is the best one for it, not evidence that
+ *  playing it beat holding it.
  */
 export function chipReport({ chips, chipByGw, squads, pointsByPlayer, gameweeks, positions,
-                            variation, skipped, chipLabels }) {
+                            variation, skipped, chipLabels, forced = [] }) {
+  const forcedSet = new Set(forced);
   const scoreAt = (id, gw) => {
     const arr = pointsByPlayer.get(id);
     return arr ? (arr[gameweeks.indexOf(gw)] || 0) : 0;
@@ -237,18 +241,21 @@ export function chipReport({ chips, chipByGw, squads, pointsByPlayer, gameweeks,
                  verdict: "hold — beaten by keeping it" });
       continue;
     }
+    // The verdict leads with what the plan did, because a row that names a
+    // gameweek and then reads "hold" is a contradiction a reader has to unpick.
+    const lead = forcedSet.has(chip) ? "forced" : "play";
     if (!Object.keys(series).length) {
       rows.push({ chip, label: chipLabels[chip], gw: playedGw, worth: null, edge: null,
-                 verdict: "structural — priced through the squad it lets you buy, not a per-gameweek payout" });
+                 verdict: `${lead} — structural, priced through the squad it buys for that one week` });
       continue;
     }
     const worth = series[playedGw];
     const edge = windowVals.length ? worth - median(windowVals) : null;
-    let verdict;
-    if (!variation || !Object.keys(variation).length) verdict = "hold — nothing to time against";
-    else if (edge === null || !Number.isFinite(edge) || edge < 1.0) verdict = "weak — no better than any other week";
-    else verdict = "timed against a double or blank";
-    rows.push({ chip, label: chipLabels[chip], gw: playedGw, worth, edge, verdict });
+    let timing;
+    if (!variation || !Object.keys(variation).length) timing = "nothing to time against";
+    else if (edge === null || !Number.isFinite(edge) || edge < 1.0) timing = "no better than any other week";
+    else timing = "timed on a double or blank";
+    rows.push({ chip, label: chipLabels[chip], gw: playedGw, worth, edge, verdict: `${lead} — ${timing}` });
   }
   return rows;
 }

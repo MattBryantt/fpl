@@ -300,8 +300,9 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
 
     # The single half-season set that applies to this window -- not the union
     # of both halves, which would erase the mid-season expiry that makes chip
-    # timing urgent. The wildcard's start_event of 2 is the load-bearing entry:
-    # it is what keeps a wildcard out of a gameweek-one plan.
+    # timing urgent. Every chip the API reports is carried, including ones the
+    # planner does not model; `chip_slots` is what decides which of them become
+    # variables, and it reads `CHIPS`, not this.
     chip_windows = {chip: list(window) for chip, window in
                     fpl_api.chip_windows(gameweeks[0], force_refresh).items()}
 

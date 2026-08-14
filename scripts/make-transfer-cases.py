@@ -94,24 +94,6 @@ def flat(base: dict[str, float]):
     return lambda pid, pos, rank, gw: base[pos] + rank * 0.6
 
 
-def starting_fifteen(players: pd.DataFrame) -> list[int]:
-    squad, per_club = [], {}
-    for pos, count in SQUAD_BY_POS.items():
-        taken = 0
-        for _, player in players[players["pos"] == pos].sort_values("price").iterrows():
-            if taken == count:
-                break
-            if per_club.get(player["team"], 0) >= MAX_PER_CLUB:
-                continue
-            squad.append(int(player["fpl_id"]))
-            per_club[player["team"]] = per_club.get(player["team"], 0) + 1
-            taken += 1
-    return squad
-
-
-CHIP_KEYS = ("wildcard", "freehit", "bboost", "3xc")
-
-
 def dump_case(name: str, projection: Projection, players: pd.DataFrame, **kwargs) -> dict:
     """Solve one scenario and capture exactly the pool/points/opt transfers.js needs."""
     gameweeks = list(projection.horizon)[:kwargs.get("horizon", len(HORIZON))]
@@ -124,10 +106,11 @@ def dump_case(name: str, projection: Projection, players: pd.DataFrame, **kwargs
 
     chip_windows = kwargs.get("chip_windows") or {}
     chips_used = kwargs.get("chips_used")
+    force_chips = list(kwargs.get("force_chips") or [])
     chips = transfers.chip_slots(chip_windows, gameweeks, chips_used)
     variation = transfers.fixture_variation(projection, gameweeks)
     skipped = {}
-    if "freehit" in chips and not variation:
+    if "freehit" in chips and not variation and "freehit" not in force_chips:
         chips.pop("freehit")
         skipped["freehit"] = "no blank or double to hit"
 
@@ -153,6 +136,7 @@ def dump_case(name: str, projection: Projection, players: pd.DataFrame, **kwargs
         "bank": kwargs.get("bank", 0.0),
         "freeTransfers": kwargs.get("free_transfers", 1),
         "chips": {k: list(v) for k, v in chips.items()},
+        "forceChips": force_chips,
         "captainPool": captain_ids,
         "slotWeight": {str(k): v for k, v in DEFAULT_BENCH_SLOT_WEIGHTS.items()},
         "squadByPos": dict(SQUAD_BY_POS),
@@ -252,25 +236,20 @@ def main() -> None:
                            squad=fh_owned, free_transfers=1, bank=0.0, horizon=3, seconds=30,
                            chip_windows={"freehit": (1, 19)}, chip_hold={"freehit": 0.0}))
 
-    # Wildcard: half the league jumps from gameweek two onward. The owned
-    # squad is deliberately hand-picked from the *other* half -- cheap, and
-    # walled off from the boost no run of free transfers can fully chase --
-    # which is the scenario, not a bug; it needs bank to have room to act at
-    # all, same as scripts/verify-transfer-rules.py's own wildcard scenario.
-    def wc_points(pid, pos, rank, gw):
-        return base(pid, pos, rank, gw) + (4.0 if pid % 2 == 0 and gw >= 2 else 0.0)
-    wc_proj, wc_players = league(wc_points)
-    wc_owned = starting_fifteen(wc_players[wc_players["fpl_id"] % 2 == 1])
-    cases.append(dump_case("wildcard worth it", wc_proj, wc_players,
-                           squad=wc_owned, free_transfers=1, bank=10.0, horizon=3, seconds=30,
-                           chip_windows={"wildcard": (2, 19)}, chip_hold={"wildcard": 0.0}))
-
-    # All four chips available at once, defaults -- exercises everything
-    # together without any one chip being an obviously forced choice.
-    all_windows = {"wildcard": (2, 19), "freehit": (2, 19), "bboost": (1, 19), "3xc": (1, 19)}
+    # Every chip available at once, defaults -- exercises everything together
+    # without any one chip being an obviously forced choice.
+    all_windows = {"freehit": (2, 19), "bboost": (1, 19), "3xc": (1, 19)}
     cases.append(dump_case("all chips, defaults", settled, players,
                            squad=owned, free_transfers=1, bank=3.0, horizon=3, seconds=30,
                            chip_windows=all_windows))
+
+    # Forced chips on a calendar with nothing to time them against, where the
+    # reserve prices would otherwise hold both. The `==` on the once-per-window
+    # constraint and the zeroed reserve are what this case is for; without
+    # either, the port silently reverts to holding.
+    cases.append(dump_case("forced chips on a flat calendar", settled, players,
+                           squad=owned, free_transfers=1, bank=3.0, horizon=3, seconds=30,
+                           chip_windows=all_windows, force_chips=["bboost", "3xc"]))
 
     CASES_OUT.write_text(json.dumps(cases, separators=(",", ":")))
     print(f"{CASES_OUT}  {len(cases)} cases")

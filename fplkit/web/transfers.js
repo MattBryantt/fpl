@@ -79,6 +79,7 @@
       halfLife, holdValue, friction, ftWorth, maxFreeTransfers,
       hitCost, bankValue, freeTransfersPerGw, idleMovePenalty,
       noTransferGws = [], banFirstGwTransfers = false, hitLimit = null,
+      forceChips = [],
     } = opt;
 
     const poolIds = new Set(pool.map((p) => p.id));
@@ -98,6 +99,11 @@
     const hasTriple = "3xc" in chips;
     const hasFreeHit = "freehit" in chips;
     const bigM = 2 * maxFreeTransfers + squadSize;
+
+    const forcedSet = new Set(forceChips);
+    for (const chip of forcedSet) {
+      if (!(chip in chips)) throw new Error(`cannot force ${chip}: it is not playable in this window`);
+    }
 
     const cons = [];
     const addCon = (name, terms, op, rhs) => cons.push({ name, terms, op, rhs });
@@ -280,14 +286,9 @@
     // --- the free-transfer state machine ------------------------------------
     for (const gw of gameweeks) {
       const moves = pool.map((p) => T(1, BU(p.id, gw)));
-      const card = playedVar("wildcard", gw);
-      // spent >= moves - squadSize*card
-      addCon(`spmin_${gw}`,
-        [T(1, SPENT(gw)), ...negTerms(moves), ...(card ? [T(squadSize, card)] : [])],
-        ">=", 0);
-      // spent <= squadSize*(1-card)  ->  spent + squadSize*card <= squadSize
-      addCon(`spmax_${gw}`, [T(1, SPENT(gw)), ...(card ? [T(squadSize, card)] : [])], "<=", squadSize);
-      addCon(`spmoves_${gw}`, [T(1, SPENT(gw)), ...negTerms(moves)], "<=", 0);
+      // spent = moves: every transfer made comes out of the allowance, and a
+      // free-hit week makes none (BU is pinned to zero above).
+      addCon(`spent_${gw}`, [T(1, SPENT(gw)), ...negTerms(moves)], "=", 0);
       // paid >= spent - ft
       addCon(`paidmin_${gw}`, [T(1, HITS(gw)), T(-1, SPENT(gw)), T(1, FT(gw))], ">=", 0);
       genBounds.set(SPENT(gw), [0, squadSize]);
@@ -299,9 +300,8 @@
 
     gameweeks.forEach((gw, step) => {
       const nxt = step + 1 < gameweeks.length ? gameweeks[step + 1] : terminal;
-      // raw = ft[gw] - spent[gw] + earned, earned = freeTransfersPerGw - wildcard? - freehit?
-      const rv = [T(1, FT(gw)), T(-1, SPENT(gw)),
-                 ...playedTerm("wildcard", gw, -1), ...playedTerm("freehit", gw, -1)];
+      // raw = ft[gw] - spent[gw] + earned, earned = freeTransfersPerGw - freehit?
+      const rv = [T(1, FT(gw)), T(-1, SPENT(gw)), ...playedTerm("freehit", gw, -1)];
       const rc = freeTransfersPerGw;
 
       // raw >= (max+1) - bigM*(1-over)  ->  rv - bigM*over >= (max+1) - bigM - rc
@@ -341,8 +341,11 @@
     }
 
     // --- chips ---------------------------------------------------------------
+    // Once each, and a forced chip exactly once: the solver still picks the
+    // gameweek and still builds the squad around it, it just may not decline.
     for (const [chip, allowed] of Object.entries(chips)) {
-      addCon(`chiponce_${chip}`, allowed.map((gw) => T(1, USE(chip, gw))), "<=", 1);
+      addCon(`chiponce_${chip}`, allowed.map((gw) => T(1, USE(chip, gw))),
+        forcedSet.has(chip) ? "=" : "<=", 1);
       for (const gw of allowed) bin.add(USE(chip, gw));
     }
     for (const gw of gameweeks) {
@@ -391,7 +394,10 @@
       for (const p of pool) addObj(BU(p.id, gw), dw * -idleMovePenalty);
       for (const chip of Object.keys(chips)) {
         const v = playedVar(chip, gw);
-        if (v) addObj(v, dw * -(holdValue[chip] || 0));
+        // A forced chip pays no reserve: the reserve is a charge for playing at
+        // all, and leaving it in would only push a chip already decided on into
+        // the last gameweek of the window, where the discount makes it cheapest.
+        if (v && !forcedSet.has(chip)) addObj(v, dw * -(holdValue[chip] || 0));
       }
       for (const t of bankedTerms(gw)) addObj(t.name, dw * t.coef);
       if (step) {

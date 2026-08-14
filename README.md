@@ -51,7 +51,8 @@ python fpl.py blindspots                                  # players the model ca
 Common flags: `--horizon N` (gameweeks), `--start-gw N`, `--full` (show the full
 points breakdown), `--csv name.csv` (write to `out/`), `--overrides file.csv`,
 `--refresh`. `plan` and `horizon` also take `--half-life N`; `transfers` takes
-`--squad`, `--free-transfers`, `--bank`, `--chips-used` and `--chip-value`.
+`--squad`, `--free-transfers`, `--bank`, `--chips-used`, `--force-chip` and
+`--chip-value`.
 
 ## The squad board
 
@@ -938,8 +939,8 @@ them mechanical rather than predictive:
    five, and everything past the allowance costs −4. That is an inventory
    problem with a hard cap, and it is why "hold this week, do two next week" is
    a move rather than a delay. The balance follows the real rule, including the
-   2024/25 change that a wildcard or free hit costs you that week's new transfer
-   but no longer burns the ones you banked.
+   2024/25 change that a free hit costs you that week's new transfer but no
+   longer burns the ones you banked.
 2. **A banked transfer is worth points you have not scored yet.** Holding is
    free to a solver that only counts points on the pitch, so it always spends.
    The bank is priced at 1.5 points with diminishing returns (the second one you
@@ -1097,19 +1098,25 @@ transfer model, for two reasons that are the same reason:
 
 - **A chip is a squad decision.** A bench boost is worth playing only if the
   bench is worth fielding, and the bench is a transfer decision taken weeks
-  earlier. A wildcard is a gameweek with fifteen free transfers, so it competes
-  directly against the transfers either side of it. Solved separately, both come
-  out wrong.
+  earlier. A free hit is a whole second squad bought out of what selling yours
+  would raise. Solved separately, both come out wrong.
 - **A chip has a reservation price.** This is the one that actually matters.
-  Left to itself over a six-gameweek window, a solver plays all four chips in
-  the first four gameweeks — not because those are good gameweeks, but because a
+  Left to itself over a six-gameweek window, a solver plays every chip in the
+  first few gameweeks — not because those are good gameweeks, but because a
   chip unplayed at the end of the window is worth exactly zero, and the window is
   six gameweeks while the chip's window is nineteen. So each chip carries what it
   is worth *held*: 14 points for a bench boost, 10 for a triple captain, 12 for
-  a free hit, 15 for a wildcard. Those are the published aggregates for a chip
-  played on a double or a blank — the gameweeks that are not on the calendar
-  until cup rounds are drawn and games postponed, which is the entire reason
-  holding is worth anything.
+  a free hit. Those are the published aggregates for a chip played on a double
+  or a blank — the gameweeks that are not on the calendar until cup rounds are
+  drawn and games postponed, which is the entire reason holding is worth
+  anything.
+
+The wildcard is not modelled at all. It is not a chip you time against a
+gameweek; it is a week of unlimited transfers, so a solver handed one always
+answers "rebuild now", and that answer is only ever as good as a six-gameweek
+projection of a fifteen-player restructure. Deciding *whether* to wildcard is a
+judgement about the season; once you have made it, `fpl.py plan` builds the
+squad you are rebuilding to.
 
 The result preseason is the same "hold" the heuristic printed, now as an
 arithmetic comparison rather than a hard-coded refusal — which means it also
@@ -1118,24 +1125,44 @@ knows when to stop refusing:
 ```text
 chip             gw   worth   edge  read
 Free Hit          -       -      -  no blank or double to hit
-Wildcard          -       -      -  hold — beaten by keeping it
 Bench Boost       -       -      -  hold — beaten by keeping it
 Triple Captain    -       -      -  hold — beaten by keeping it
 ```
 
 `--ignore-chip-hold` sets every reservation price to zero and asks the narrower
-question the heuristic was asking. It answers bench boost in GW2 worth 12.5, and
-triple captain in GW1 worth 6.1 — both with an `edge` of about 1.1 over the
+question the heuristic was asking. It answers bench boost in GW1 worth 14.3, and
+triple captain in GW2 worth 6.6 — both with an `edge` of under 2 points over the
 median gameweek in the window, which is the number that says *this is noise*.
-An edge of 1.1 points is not a reason to spend a chip you can hold for a double.
+An edge that small is not a reason to spend a chip you can hold for a double.
 
-Two chips have no payout of their own, because they pay through the squad they
-let you buy rather than through points on the day. `--chip-value` prices those
-by re-solving without them: the difference between the best plan that has the
-chip and the best plan that does not.
+The free hit has no payout of its own, because it pays through the squad it
+lets you buy for one week rather than through points on the day.
+`--chip-value` prices it by re-solving without it: the difference between the
+best plan that has the chip and the best plan that does not.
 
-Free hit gets skipped entirely when there is no blank or double in the window,
-which is both honest and a real saving — it is a second fifteen-man squad's
+### "Fine, but what if I *am* playing it?"
+
+"Hold" answers a different question from the one you ask the week you have
+already decided to bench boost. `--force-chip` makes the plan play a chip
+somewhere in the window whether or not it beats holding, and then solves
+everything else around that — which gameweek, and which fifteen to own going
+into it:
+
+```bash
+python fpl.py transfers --squad out/squad.csv --force-chip bboost
+python fpl.py transfers --squad out/squad.csv --force-chip bboost 3xc
+```
+
+Forcing a chip drops its reservation price to zero. The reserve is a charge for
+playing at all, so leaving it in would push a chip you have already committed to
+into the last gameweek of the window, where the discount makes the same charge
+cheapest — the plan would be timing against the discount rather than the
+fixtures. The chip report marks every forced row `forced —` so a plan built this
+way is never mistaken for the model's own recommendation, and the same toggles
+sit under the board's Chips tab.
+
+Free hit is otherwise skipped entirely when there is no blank or double in the
+window, which is both honest and a real saving — it is a second fifteen-man squad's
 worth of binaries to discover it is worth nothing.
 
 ## Form and players who changed club
@@ -1224,8 +1251,10 @@ up as a recommendation:
 chip             gw   detail                                        confidence
 Triple Captain   -    hold — no doubles or blanks scheduled in      n/a
 Bench Boost      -    this window; the first-half set does not      n/a
-Wildcard         -    expire until GW19                             n/a
+Free Hit         -    expire until GW19                             n/a
 ```
+
+`--force-chip` is the override for the week you have decided anyway.
 
 Once doubles and blanks appear, the same code picks real gameweeks and raises
 the confidence. Double and blank gameweeks are detected from fixture counts per
@@ -1454,11 +1483,11 @@ plan that is quietly illegal or quietly oscillating. So it builds synthetic
 projections where the right answer is known by construction and the wrong answer
 is attractive: a squad with nothing to gain (roll), two alternating premiums the
 budget cannot both fit (hold one), an upgrade worth six points a week and one
-worth 0.2 (take the hit, refuse the hit), half the league improving at once
-(wildcard), a blank gameweek (free hit), a flat calendar (hold everything).
-Sixty-four checks over seventeen solves, including the free-transfer recursion
-gameweek by gameweek and the fact that a wildcard leaves the banked balance
-alone.
+worth 0.2 (take the hit, refuse the hit), a bench that outscores the starters
+(bench boost), a blank gameweek (free hit), a flat calendar (hold everything),
+and that same flat calendar with two chips forced (play them anyway, and stop
+charging the reserve that was holding them). Sixty-odd checks over eighteen
+solves, including the free-transfer recursion gameweek by gameweek.
 
 One of those runs backwards on purpose. The alternating-premium scenario is
 solved a second time with the transfer pricing switched off, and it has to bring
@@ -1468,8 +1497,8 @@ thing it claims to test.
 The fifth is the port check for all of the above: `make-transfer-cases.py`
 solves eight small synthetic scenarios — a hold, a hit worth taking and one
 just too small, a bench boost and a triple captain each worth playing, a free
-hit into a blank, a wildcard worth the rebuild, and all four chips available
-at once — and dumps the exact pool, points and settings `plan_transfers`
+hit into a blank, every chip available at once, and two chips forced on a flat
+calendar — and dumps the exact pool, points and settings `plan_transfers`
 solved, verbatim. `verify-transfer-port.mjs` re-solves each with the vendored
 WASM HiGHS and checks the objective agrees (the bar `verify-solver-port.mjs`
 uses, for the same reason: two fifteens can tie on value, and which one either

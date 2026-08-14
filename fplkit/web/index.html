@@ -833,6 +833,12 @@ body.noserver .needs-server { display: none !important; }
 
 /* Chips tab */
 .chipbar { display: flex; align-items: center; gap: 12px; }
+.chipforce {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin-top: 10px; font-size: 12.5px; color: var(--text-secondary);
+}
+.chipforce label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.chipforce .sub { flex-basis: 100%; margin: 0; }
 .chiptable, .movetable { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 4px; }
 .chiptable th, .movetable th {
   text-align: left; font-weight: 500; color: var(--muted); font-size: 11px;
@@ -987,7 +993,6 @@ gameweek of the transfer-and-chip plan.">Free transfers</label>
   <div class="ctl" style="flex:1;min-width:230px">
     <label>Chips already used this half</label>
     <div class="chipused">
-      <label><input type="checkbox" data-chipused="wildcard"> Wildcard</label>
       <label><input type="checkbox" data-chipused="freehit"> Free Hit</label>
       <label><input type="checkbox" data-chipused="bboost"> Bench Boost</label>
       <label><input type="checkbox" data-chipused="3xc"> Triple Captain</label>
@@ -1229,8 +1234,8 @@ gameweek of the transfer-and-chip plan.">Free transfers</label>
       <h2 style="margin:0 0 3px">Transfers &amp; chips</h2>
       <div class="sub">Solves the transfer path and chip timing together, the same way
         <code>fpl.py transfers</code> does — a bench boost is only worth playing if the
-        bench a transfer built weeks earlier is worth fielding, and a wildcard competes
-        directly against the transfers either side of it. Run against the fifteen you
+        bench a transfer built weeks earlier is worth fielding, and a free hit is a squad
+        bought out of what selling yours would raise. Run against the fifteen you
         currently hold, not a hypothetical rebuild.</div>
     </div>
   </div>
@@ -1504,6 +1509,10 @@ const S = {
   // plan -- a fact about the plan like include/exclude, so it travels the
   // same way (readSettings/syncableSettings), not through STORE directly.
   chipsUsed: [],
+  // Chips the next solve must play. A question you are asking of the model
+  // ("if I bench boost, what should the squad be?"), not a fact about the
+  // season, so it lives and dies with the plan below rather than being saved.
+  forceChips: [],
   views: { gw: "chart", exp: "chart", tl: "chart" },
   // How you have chosen to look at the board: which section, which numbers ride
   // on a shirt, which squad the right-hand pitch holds, and any two players
@@ -2451,6 +2460,7 @@ function renderChipVerdictsHTML(plan) {
     chips: plan.opt.chips, chipByGw: plan.chipByGw, squads,
     pointsByPlayer: plan.pointsByPlayer, gameweeks: plan.gameweeks, positions,
     variation: plan.variation, skipped: plan.skipped, chipLabels: plan.chipLabels,
+    forced: plan.forceChips,
   });
   if (!rows.length) return `<div class="sub" style="margin-top:10px">No chips are legal in this window.</div>`;
   return `<table class="chiptable" style="margin-top:10px"><thead><tr>
@@ -2502,6 +2512,17 @@ function renderThisWeekHTML(plan) {
   </div>`;
 }
 
+/** The chips a solve could be made to play: legal in this window and not
+ *  already used. The free hit is offered even on a flat calendar — a solve
+ *  drops it there on its own, and forcing it is precisely the question "what
+ *  would it buy me anyway?". */
+function forcibleChips() {
+  if (!S.meta || !S.snapshot) return [];
+  const gameweeks = S.gameweeks.slice(0, Math.min(S.gameweeks.length, TRANSFER_HORIZON_CAP));
+  return Object.keys(chipSlots(S.meta.chip_windows || {}, gameweeks, S.chipsUsed,
+                               S.snapshot.rules.CHIPS));
+}
+
 function renderChips() {
   const host = $("#chipsBody");
   if (!host) return;
@@ -2513,6 +2534,8 @@ function renderChips() {
   const statusText = tp.state === "solving"
     ? "solving — the pool and horizon here are much bigger than the squad optimiser's, this can take a while…"
     : tp.state === "error" ? tp.error : "";
+  const labels = S.snapshot?.rules?.CHIP_LABELS || {};
+  const forcible = forcibleChips();
 
   host.innerHTML = `
     <div class="chipbar">
@@ -2521,10 +2544,29 @@ function renderChips() {
       </button>
       <span class="optstatus ${tp.state === "error" ? "err" : ""}">${statusText}</span>
     </div>
+    ${forcible.length ? `<div class="chipforce">
+      <span>Must play:</span>
+      ${forcible.map((chip) => `<label><input type="checkbox" data-forcechip="${chip}"
+        ${S.forceChips.includes(chip) ? "checked" : ""}
+        ${tp.state === "solving" ? "disabled" : ""}> ${labels[chip]}</label>`).join("")}
+      <span class="sub">Ticked chips are played somewhere in the window whether or not they
+        beat holding — the plan then shows the best gameweek and the best squad for them.</span>
+    </div>` : ""}
     ${tp.state === "ready" && tp.result ? renderChipVerdictsHTML(tp.result) : ""}
     ${tp.state === "ready" && tp.result ? renderThisWeekHTML(tp.result) : ""}`;
 
   $("#planBtn").addEventListener("click", planTransfersAndChips);
+
+  // Changing what must be played changes the answer, so it re-solves rather
+  // than leaving a plan on screen that no longer matches the boxes above it.
+  host.querySelectorAll("[data-forcechip]").forEach((cb) => cb.addEventListener("change", () => {
+    const chip = cb.dataset.forcechip;
+    S.forceChips = cb.checked
+      ? [...new Set([...S.forceChips, chip])]
+      : S.forceChips.filter((c) => c !== chip);
+    if (S.transferPlan.state === "ready") planTransfersAndChips();
+    else renderChips();
+  }));
 
   if (tp.state === "ready" && tp.result) {
     const week = tp.result.weeks[0];
@@ -4388,8 +4430,12 @@ function buildTransferPayload() {
 
   const variation = fixtureVariation(S.snapshot.fixtures, gameweeks);
   const chips = chipSlots(S.meta.chip_windows || {}, gameweeks, S.chipsUsed, rules.CHIPS);
+  const forceChips = S.forceChips.filter((chip) => chip in chips);
   const skipped = {};
-  if (chips.freehit && !Object.keys(variation).length) {
+  // A free hit with no blank or double to hit is a week of unlimited transfers
+  // you hand straight back — worth about nothing, and a second squad's worth of
+  // binaries to discover. Forcing it says to spend them anyway.
+  if (chips.freehit && !Object.keys(variation).length && !forceChips.includes("freehit")) {
     delete chips.freehit;
     skipped.freehit = "no blank or double to hit";
   }
@@ -4402,7 +4448,7 @@ function buildTransferPayload() {
                                          pts: pointsByPlayer.get(p.id) }));
   const opt = {
     gameweeks, budget, squad: [...S.squad], bank, freeTransfers: +$("#freetransfers").value,
-    chips, captainPool: cPool,
+    chips, forceChips, captainPool: cPool,
     slotWeight: rules.DEFAULT_BENCH_SLOT_WEIGHTS,
     squadByPos: rules.SQUAD_BY_POS, xiMinByPos: rules.XI_MIN_BY_POS, xiMaxByPos: rules.XI_MAX_BY_POS,
     squadSize: rules.SQUAD_SIZE, xiSize: rules.XI_SIZE, maxPerClub: rules.MAX_PER_CLUB,
@@ -4412,7 +4458,8 @@ function buildTransferPayload() {
     hitCost: rules.HIT_COST, bankValue: rules.BANK_VALUE, freeTransfersPerGw: rules.FREE_TRANSFERS_PER_GW,
     idleMovePenalty: rules.IDLE_MOVE_PENALTY,
   };
-  return { pool: poolPayload, opt, variation, skipped, pointsByPlayer, gameweeks, chipLabels: rules.CHIP_LABELS };
+  return { pool: poolPayload, opt, variation, skipped, forceChips, pointsByPlayer,
+           gameweeks, chipLabels: rules.CHIP_LABELS };
 }
 
 async function planTransfersAndChips() {
