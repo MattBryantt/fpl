@@ -4286,6 +4286,24 @@ function mergeEdits(localEdits, localAt, remoteEdits, remoteAt) {
    anything and this device's copy becomes the shared one. */
 const SKIP_PULL = new URL(location.href).searchParams.get("nopull") === "1";
 
+/* `?adoptremote=1` is the other escape hatch: skip the per-id merge entirely
+   and take the remote's edits and editsAt verbatim, this device's own local
+   copy discarded rather than compared.
+
+   The merge exists to let two devices each keep whichever side touched an id
+   more recently, which only works if both sides' timestamps are trustworthy.
+   They can stop being that: two independent local corruption events (this
+   session's null-snapshot race, and an earlier one before per-id timestamps
+   even existed) left this device carrying deletion-stamps on some ids and
+   genuine-but-stale-relative-to-the-other-device stamps on others, accumulated
+   over days across multiple restores. mergeEdits was doing exactly what it is
+   supposed to given those inputs -- correctly picking the newer stamp, id by
+   id -- and the result was still wrong, because "newer" and "the device the
+   override actually still belongs to" had quietly come apart. No amount of
+   smarter tie-breaking recovers that; the only way out is to stop trusting
+   this device's history and take the other side's whole. */
+const ADOPT_REMOTE = new URL(location.href).searchParams.get("adoptremote") === "1";
+
 async function pullSyncState(ready) {
   try {
     await attemptPull(ready);
@@ -4319,15 +4337,21 @@ async function attemptPull(ready) {
     const res = await api("/api/sync");
     if (!res.ok) { console.warn("[sync] pull: GET failed", res.status); return; }
     const remote = await res.json();
-    if (!remote.exists || remote.updated_at <= BOOT_SYNC_STAMP) {
+    if (!remote.exists) { console.log("[sync] pull: nothing in KV yet"); return; }
+    if (!ADOPT_REMOTE && remote.updated_at <= BOOT_SYNC_STAMP) {
       console.log(`[sync] pull: nothing newer (remote ${remote.updated_at}, boot baseline ${BOOT_SYNC_STAMP})`);
       return;
     }
     console.log(`[sync] pull: remote has ${Object.keys(remote.edits || {}).length} edit(s), `
       + `local has ${Object.keys(S.edits).length} before merge`);
     S.drafts = remote.drafts || [];
-    const merged = mergeEdits(S.edits, S.editsAt, remote.edits || {}, remote.editsAt || {});
-    console.log(`[sync] merge: -> ${Object.keys(merged.edits).length} edit(s)`);
+    // adoptremote=1 skips mergeEdits entirely: this device's own edits and
+    // editsAt are discarded rather than compared, because the comparison
+    // itself is what stopped being trustworthy -- see ADOPT_REMOTE's comment.
+    const merged = ADOPT_REMOTE
+      ? { edits: { ...(remote.edits || {}) }, at: { ...(remote.editsAt || {}) } }
+      : mergeEdits(S.edits, S.editsAt, remote.edits || {}, remote.editsAt || {});
+    console.log(`[sync] ${ADOPT_REMOTE ? "adopt" : "merge"}: -> ${Object.keys(merged.edits).length} edit(s)`);
     S.edits = merged.edits;
     S.editsAt = merged.at;
     S.squad = remote.squad || [];
@@ -4462,7 +4486,8 @@ function renderFreshness() {
     + (m.recency ? ` · recency ${m.recency}gw` : "")
     // Silence here would be the trap: a device left on ?nopull=1 keeps looking
     // normal while quietly ignoring every change made anywhere else.
-    + (SKIP_PULL ? ` · <b>not syncing down</b> (nopull=1)` : "");
+    + (SKIP_PULL ? ` · <b>not syncing down</b> (nopull=1)` : "")
+    + (ADOPT_REMOTE ? ` · <b>adopted the remote copy wholesale</b> (adoptremote=1)` : "");
   // The horizon can only ever be shortened: a snapshot taken at 12 has nothing
   // to say about 14, so offering it would be offering a wrong answer.
   for (const option of $("#horizon").options) {
