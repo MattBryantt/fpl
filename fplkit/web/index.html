@@ -3909,6 +3909,7 @@ async function undoEdit() {
    server version came to show one number and hand the optimiser another. */
 function recomputeEdited(ids, { solveDelay = 0, sync = true } = {}) {
   const failed = [];
+  console.log(`[recompute] ${ids.length} id(s), sync=${sync}, snapshot=${!!S.snapshot}`);
   for (const id of ids) {
     // A local edit (sync !== false) touches this id right now, whether it
     // ended up set or cleared -- that timestamp is what lets a future pull's
@@ -3959,6 +3960,11 @@ function recomputeEdited(ids, { solveDelay = 0, sync = true } = {}) {
     saveLocal(STORE.edits, S.edits); saveLocal(STORE.editsAt, S.editsAt);
     snapshotEditsHistory(); pushOverrides();
   }
+  // Logged unconditionally, before the alert -- an alert only ever reaches
+  // someone sitting at the screen when it fires, and this whole investigation
+  // has been guessing at what a `catch` swallowed. The console line survives
+  // even when nothing is watching, and even when rebuildPool() below throws.
+  if (failed.length) console.warn("[recompute] rejected:", failed);
   // Reported before rebuilding, not after. rebuildPool() can throw, and when it
   // did the alert never ran -- so the one message that would have named the
   // dropped overrides was lost to the very failure that dropped them, and the
@@ -3966,7 +3972,12 @@ function recomputeEdited(ids, { solveDelay = 0, sync = true } = {}) {
   if (failed.length) {
     alert("These edits were rejected and have been dropped:\n\n" + failed.join("\n"));
   }
-  rebuildPool();
+  try {
+    rebuildPool();
+  } catch (error) {
+    console.error("[recompute] rebuildPool() threw:", error);
+    throw error;
+  }
   // The solver's answer was computed against the old numbers, so it is no
   // longer a fair comparison. Drop it and solve again.
   S.optimal = []; S.optimalPts = null; S.optimalCost = null; S.optimalBench = {};
@@ -4170,6 +4181,24 @@ let syncPending = false, syncTimer = null;
 const syncMeta = () => loadLocal(SYNC_META_KEY, { updated_at: 0 });
 const setSyncMeta = (m) => saveLocal(SYNC_META_KEY, m);
 
+/* What this device knew before the session started, captured now, at module
+   scope, because the boot pull cannot ask the question any other way.
+
+   "Is the remote newer than mine?" has to mean newer than what I last *knew*,
+   and `syncMeta()` stops answering that the moment anything calls markSynced()
+   -- which stamps the clock for a local change. Anything that saves during
+   startup therefore pushes the stamp past the remote's, and the pull then
+   decides it has nothing to learn and returns, on a device that in fact has
+   nothing. Reading it once, up here, is what keeps the comparison about
+   versions instead of about who wrote most recently. */
+const BOOT_SYNC_STAMP = loadLocal(SYNC_META_KEY, { updated_at: 0 }).updated_at || 0;
+
+/* And nothing may be pushed until that pull has settled. Without this the same
+   startup save races the other way: it uploads this device's state over a
+   remote it has not merged yet, which is how an empty board came to overwrite
+   a full one seconds after being opened. */
+let pullSettled = false;
+
 /** Call after any change to drafts, edits, the squad, or the Settings panel. */
 function markSynced() {
   if (!TOKEN) return;
@@ -4182,6 +4211,10 @@ function markSynced() {
 async function pushSyncState() {
   clearTimeout(syncTimer);
   if (!TOKEN || !syncPending) return;
+  // Held, not dropped: syncPending stays true, and the boot pull flushes it
+  // once it has settled. Uploading before merging is how a device that has not
+  // yet heard about the other one gets to speak for both.
+  if (!pullSettled) return;
   const sending = JSON.stringify({
     updated_at: syncMeta().updated_at, drafts: S.drafts, edits: S.edits, editsAt: S.editsAt,
     squad: S.squad, settings: syncableSettings(),
@@ -4192,6 +4225,15 @@ async function pushSyncState() {
       method: "POST", headers: { "Content-Type": "application/json" }, body: sending,
     });
     if (!res.ok) throw new Error(String(res.status));
+    // The Worker refuses a push whose clock is behind what it already holds,
+    // and says so. Taking its number back is what stops this device believing
+    // it is ahead for ever: syncMeta would otherwise keep a stamp that was
+    // never accepted, sit permanently above the remote's, and every future
+    // boot pull would decide there was nothing newer to fetch.
+    const body = await res.json().catch(() => ({}));
+    if (body && body.stale && typeof body.updated_at === "number") {
+      setSyncMeta({ updated_at: body.updated_at });
+    }
   } catch (_) {
     syncPending = true; // offline, or no token registered on the server side yet
   }
@@ -4245,6 +4287,18 @@ function mergeEdits(localEdits, localAt, remoteEdits, remoteAt) {
 const SKIP_PULL = new URL(location.href).searchParams.get("nopull") === "1";
 
 async function pullSyncState(ready) {
+  try {
+    await attemptPull(ready);
+  } finally {
+    // Always, on every path -- no token, nopull, offline, a thrown merge. A
+    // push held behind this flag and never released is a change that only ever
+    // existed on one device, which is a quieter version of the same bug.
+    pullSettled = true;
+    if (syncPending) pushSyncState();
+  }
+}
+
+async function attemptPull(ready) {
   if (!TOKEN) return;
   if (SKIP_PULL) {
     console.warn("nopull=1: keeping this device's own state, not syncing down");
@@ -4263,11 +4317,17 @@ async function pullSyncState(ready) {
   if (!S.snapshot) return;   // no projection, nothing to validate an edit against
   try {
     const res = await api("/api/sync");
-    if (!res.ok) return;
+    if (!res.ok) { console.warn("[sync] pull: GET failed", res.status); return; }
     const remote = await res.json();
-    if (!remote.exists || remote.updated_at <= syncMeta().updated_at) return;
+    if (!remote.exists || remote.updated_at <= BOOT_SYNC_STAMP) {
+      console.log(`[sync] pull: nothing newer (remote ${remote.updated_at}, boot baseline ${BOOT_SYNC_STAMP})`);
+      return;
+    }
+    console.log(`[sync] pull: remote has ${Object.keys(remote.edits || {}).length} edit(s), `
+      + `local has ${Object.keys(S.edits).length} before merge`);
     S.drafts = remote.drafts || [];
     const merged = mergeEdits(S.edits, S.editsAt, remote.edits || {}, remote.editsAt || {});
+    console.log(`[sync] merge: -> ${Object.keys(merged.edits).length} edit(s)`);
     S.edits = merged.edits;
     S.editsAt = merged.at;
     S.squad = remote.squad || [];
@@ -4278,13 +4338,23 @@ async function pullSyncState(ready) {
     if (remote.settings) applySyncedSettings(remote.settings);
     setSyncMeta({ updated_at: remote.updated_at });
     await recomputeEdited(Object.keys(S.edits).map(Number), { sync: false });
+    console.log(`[sync] after recompute: ${Object.keys(S.edits).length} edit(s) remain`);
     renderAll();
-  } catch (_) { /* offline, or the Worker's KV is empty on a fresh setup */ }
+  } catch (error) {
+    // offline, or the Worker's KV is empty on a fresh setup -- or a genuine
+    // bug, which this used to hide as indistinguishably as the other two.
+    console.error("[sync] pull failed:", error);
+  }
 }
 
 addEventListener("online", () => { if (syncPending) pushSyncState(); });
 addEventListener("pagehide", () => {
   if (!syncPending || !TOKEN) return;
+  // Same bar as pushSyncState: a tab closed before the boot pull settled has
+  // not merged anything yet, so what it would send is this device's state
+  // standing in for both. The change is already in localStorage and goes up
+  // next session; a clobbered remote does not come back.
+  if (!pullSettled) return;
   clearTimeout(syncTimer);
   try {
     api("/api/sync", {
