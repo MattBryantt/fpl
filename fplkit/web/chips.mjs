@@ -189,12 +189,19 @@ export function pairMoves(outIds, inIds, positions) {
   return pairs;
 }
 
-/** What a bench boost and a triple captain would pay in *every* gameweek of the
- *  window, measured against the squad the solve holds that week —
- *  `{chip: {gw: points}}`. The whole option set the solve ranked, not just the
- *  gameweek it settled on: "played in GW1" on its own is indistinguishable
- *  from a model that only ever looked at GW1, and these numbers are what tell
- *  the two apart.
+/** What a bench boost and a triple captain would pay in every gameweek of the
+ *  window, measured against the squad the solve *actually holds* that week —
+ *  `{chip: {gw: points}}`.
+ *
+ *  Read the caveat before using these as a comparison across gameweeks: only
+ *  the week the chip was played has a squad built for it. Every other column
+ *  prices the chip against a fifteen assembled for a different purpose, so the
+ *  played week is flattered and the alternatives are understated — on a real
+ *  snapshot the gap ran to 2.0 points, enough to flip the sign of the `edge`
+ *  in `chipReport`. Answering "which week is best?" honestly needs one solve
+ *  per candidate week with the chip pinned there; that is what `chipReport`'s
+ *  `resolved` argument carries, and this function is the cheap estimate used
+ *  only when no such sweep has been run.
  *
  *  A bench boost is worth the bench *net of what the bench already earns*. A
  *  benched player is already scored at his slot's weight — he is the one who
@@ -232,7 +239,8 @@ export function chipPayouts({ squads, pointsByPlayer, gameweeks, positions, slot
 
 /** What each chip is worth, and whether the gameweek it wants (if any) is a
  *  real choice — read off the *solved* path, not decided here. Port of
- *  `transfers._chip_report`.
+ *  `transfers._chip_report`, extended with the `resolved` sweep the Python
+ *  side does not have.
  *
  *  `chips`: `{chip: [allowed gws]}` from `chipSlots`.
  *  `chipByGw`: `Map<gw, chip>` — which chip (if any) the solve played each
@@ -251,24 +259,56 @@ export function chipPayouts({ squads, pointsByPlayer, gameweeks, positions, slot
  *  Required rather than defaulted: defaulting it to nothing would quietly
  *  report gross bench points, which is the overstatement the netting exists to
  *  remove, and the caller has the snapshot's rules to hand either way.
+ *  `resolved`: `{chip: {gw: {payout, objective}}}` from a sweep that re-solved
+ *  the whole plan once per candidate gameweek with the chip pinned there —
+ *  see `chipPayouts`'s caveat for why nothing else can honestly rank weeks.
+ *  Absent for a chip means no sweep was run for it, and the row says so
+ *  rather than quoting an `edge` computed from numbers that cannot bear it.
+ *
+ *  Each row carries `checked` (was a sweep run), and when it was, `bestObjGw`
+ *  (the week the plan actually scores highest with) and `bestRawGw` (the week
+ *  the chip pays most in undecayed points). The two differ whenever the decay
+ *  is doing the choosing, which is the single most useful thing a reader can
+ *  know about a chip's gameweek.
  */
 export function chipReport({ chips, chipByGw, squads, pointsByPlayer, gameweeks, positions,
-                            variation, skipped, chipLabels, forced = [], slotWeight }) {
+                            variation, skipped, chipLabels, forced = [], slotWeight,
+                            resolved = {} }) {
   const forcedSet = new Set(forced);
   const payouts = chipPayouts({ squads, pointsByPlayer, gameweeks, positions, slotWeight });
 
   const rows = [];
   for (const [chip, why] of Object.entries(skipped || {})) {
-    rows.push({ chip, label: chipLabels[chip], gw: null, worth: null, edge: null, verdict: why });
+    rows.push({ chip, label: chipLabels[chip], gw: null, worth: null, edge: null,
+               checked: false, verdict: why });
   }
   for (const [chip, allowed] of Object.entries(chips)) {
     const playedGw = [...chipByGw.entries()].find(([, c]) => c === chip)?.[0] ?? null;
-    const series = payouts[chip] || {};
+    const sweep = resolved[chip] || null;
+    const checked = !!sweep && Object.keys(sweep).length > 1;
+    // A swept chip is priced from its own pinned solves; an unswept one falls
+    // back to the estimate, which is only ever quoted for the played week --
+    // the one week it is not biased for.
+    const series = sweep
+      ? Object.fromEntries(Object.entries(sweep).map(([gw, v]) => [gw, v.payout]))
+      : (payouts[chip] || {});
     const windowVals = allowed.filter((g) => g in series).map((g) => series[g]);
+
+    const argmax = (pick) => {
+      if (!sweep) return null;
+      let bestGw = null, bestVal = -Infinity;
+      for (const [gw, v] of Object.entries(sweep)) {
+        const x = pick(v);
+        if (Number.isFinite(x) && x > bestVal) { bestVal = x; bestGw = Number(gw); }
+      }
+      return bestGw;
+    };
+    const bestObjGw = argmax((v) => v.objective);
+    const bestRawGw = argmax((v) => v.payout);
 
     if (playedGw === null) {
       rows.push({ chip, label: chipLabels[chip], gw: null, worth: null, edge: null,
-                 verdict: "hold — beaten by keeping it" });
+                 checked, bestObjGw, bestRawGw, verdict: "hold — beaten by keeping it" });
       continue;
     }
     // The verdict leads with what the plan did, because a row that names a
@@ -276,16 +316,39 @@ export function chipReport({ chips, chipByGw, squads, pointsByPlayer, gameweeks,
     const lead = forcedSet.has(chip) ? "forced" : "play";
     if (!Object.keys(series).length) {
       rows.push({ chip, label: chipLabels[chip], gw: playedGw, worth: null, edge: null,
+                 checked, bestObjGw, bestRawGw,
                  verdict: `${lead} — structural, priced through the squad it buys for that one week` });
       continue;
     }
     const worth = series[playedGw];
+
+    // Without a sweep there is no honest cross-week comparison to make, so the
+    // row makes none. Quoting an edge here is what let a flat calendar read as
+    // "timed on a double or blank": every rival week was measured against a
+    // squad built for a different one.
+    if (!checked) {
+      rows.push({ chip, label: chipLabels[chip], gw: playedGw, worth, edge: null,
+                 checked: false, bestObjGw: null, bestRawGw: null,
+                 verdict: `${lead} — other weeks not re-solved, so no timing claim` });
+      continue;
+    }
+
     const edge = windowVals.length ? worth - median(windowVals) : null;
     let timing;
-    if (!variation || !Object.keys(variation).length) timing = "nothing to time against";
-    else if (edge === null || !Number.isFinite(edge) || edge < 1.0) timing = "no better than any other week";
-    else timing = "timed on a double or blank";
-    rows.push({ chip, label: chipLabels[chip], gw: playedGw, worth, edge, verdict: `${lead} — ${timing}` });
+    if (bestRawGw !== null && bestRawGw !== playedGw) {
+      // The decay, not the fixtures, moved it. Say so plainly and name the
+      // week that pays most before discounting -- it is the number a person
+      // is actually asking for when they force a chip.
+      timing = `earlier than its raw peak (GW${bestRawGw}) — the decay chose this week`;
+    } else if (!variation || !Object.keys(variation).length) {
+      timing = `best of ${Object.keys(sweep).length} weeks re-solved, on a flat calendar`;
+    } else if (edge === null || !Number.isFinite(edge) || edge < 1.0) {
+      timing = "no better than any other week";
+    } else {
+      timing = "timed on a double or blank";
+    }
+    rows.push({ chip, label: chipLabels[chip], gw: playedGw, worth, edge,
+               checked: true, bestObjGw, bestRawGw, verdict: `${lead} — ${timing}` });
   }
   return rows;
 }
