@@ -530,7 +530,20 @@ def plan_transfers(
         for pos in ("GKP", "DEF", "MID", "FWD"):
             members = [i for i in index if position[i] == pos]
             problem += pulp.lpSum(in_xi[i][gw] for i in members) >= XI_MIN_BY_POS[pos]
-            problem += pulp.lpSum(in_xi[i][gw] for i in members) <= XI_MAX_BY_POS[pos] + boost
+            # A bench-boosted week starts the whole squad, so the per-position
+            # ceiling that week is the squad's own count for that position --
+            # not the ordinary cap plus one.
+            #
+            # Those coincide under the default caps (XI_MAX_BY_POS equals
+            # SQUAD_BY_POS everywhere except keeper, where the +1 is the
+            # reserve), which is why "+ boost" stood for so long. They come
+            # apart the moment a caller pins the formation: 3-5-2 sets the
+            # defender cap to 3, and "3 + 1" cannot field the five defenders a
+            # bench boost is obliged to start, so the whole solve goes
+            # infeasible rather than dropping the shape for that one week.
+            relax = SQUAD_BY_POS[pos] - XI_MAX_BY_POS[pos]
+            problem += (pulp.lpSum(in_xi[i][gw] for i in members)
+                        <= XI_MAX_BY_POS[pos] + relax * boost)
 
         problem += pulp.lpSum(is_captain[i][gw] for i in captain_pool) == 1
         for i in captain_pool:

@@ -213,8 +213,12 @@
       for (const pos of ["GKP", "DEF", "MID", "FWD"]) {
         const members = pool.filter((p) => p.pos === pos);
         addCon(`ximin_${pos}_${gw}`, members.map((p) => T(1, XI(p.id, gw))), ">=", xiMinByPos[pos]);
+        // Under a bench boost the ceiling is the squad's own count for the
+        // position, not the ordinary cap plus one -- see the same constraint in
+        // transfers.py for why the two come apart once a formation is pinned.
+        const relax = squadByPos[pos] - xiMaxByPos[pos];
         addCon(`ximax_${pos}_${gw}`,
-          [...members.map((p) => T(1, XI(p.id, gw))), ...(boost ? [T(-1, boost)] : [])],
+          [...members.map((p) => T(1, XI(p.id, gw))), ...(boost ? [T(-relax, boost)] : [])],
           "<=", xiMaxByPos[pos]);
       }
 

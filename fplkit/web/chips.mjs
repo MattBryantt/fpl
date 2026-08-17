@@ -265,6 +265,11 @@ export function chipPayouts({ squads, pointsByPlayer, gameweeks, positions, slot
  *  Absent for a chip means no sweep was run for it, and the row says so
  *  rather than quoting an `edge` computed from numbers that cannot bear it.
  *
+ *  `pinned`: `{chip: gw}` for chips whose gameweek the *caller* chose. Changes
+ *  what the verdict may claim: a pinned chip's week is not evidence of
+ *  anything the model decided, so the row reports what the pick cost against
+ *  the best week instead of explaining why the solver landed there.
+ *
  *  Each row carries `checked` (was a sweep run), and when it was, `bestObjGw`
  *  (the week the plan actually scores highest with) and `bestRawGw` (the week
  *  the chip pays most in undecayed points). The two differ whenever the decay
@@ -273,7 +278,7 @@ export function chipPayouts({ squads, pointsByPlayer, gameweeks, positions, slot
  */
 export function chipReport({ chips, chipByGw, squads, pointsByPlayer, gameweeks, positions,
                             variation, skipped, chipLabels, forced = [], slotWeight,
-                            resolved = {} }) {
+                            resolved = {}, pinned = {} }) {
   const forcedSet = new Set(forced);
   const payouts = chipPayouts({ squads, pointsByPlayer, gameweeks, positions, slotWeight });
 
@@ -313,7 +318,8 @@ export function chipReport({ chips, chipByGw, squads, pointsByPlayer, gameweeks,
     }
     // The verdict leads with what the plan did, because a row that names a
     // gameweek and then reads "hold" is a contradiction a reader has to unpick.
-    const lead = forcedSet.has(chip) ? "forced" : "play";
+    const pin = pinned[chip] ?? null;
+    const lead = pin !== null ? "your week" : forcedSet.has(chip) ? "forced" : "play";
     if (!Object.keys(series).length) {
       rows.push({ chip, label: chipLabels[chip], gw: playedGw, worth: null, edge: null,
                  checked, bestObjGw, bestRawGw,
@@ -334,21 +340,32 @@ export function chipReport({ chips, chipByGw, squads, pointsByPlayer, gameweeks,
     }
 
     const edge = windowVals.length ? worth - median(windowVals) : null;
+    const weeks = Object.keys(sweep).length;
     let timing;
-    if (bestRawGw !== null && bestRawGw !== playedGw) {
-      // The decay, not the fixtures, moved it. Say so plainly and name the
+    if (pin !== null) {
+      // You chose the week, so nothing here is a finding about the model. The
+      // one useful number is what the choice cost against the week the plan
+      // would have taken, in the objective the plan is actually ranked on.
+      const cost = (sweep[bestObjGw]?.objective ?? 0) - (sweep[pin]?.objective ?? 0);
+      timing = bestObjGw === pin
+        ? `also the best of ${weeks} weeks re-solved`
+        : `GW${bestObjGw} scores ${cost.toFixed(1)} more over the window`;
+    } else if (bestRawGw !== null && bestRawGw !== playedGw) {
+      // The discount, not the fixtures, moved it. Say so plainly and name the
       // week that pays most before discounting -- it is the number a person
       // is actually asking for when they force a chip.
-      timing = `earlier than its raw peak (GW${bestRawGw}) — the decay chose this week`;
+      timing = `${bestRawGw > playedGw ? "earlier" : "later"} than its raw peak (GW${bestRawGw})`
+        + " — the decay chose this week";
     } else if (!variation || !Object.keys(variation).length) {
-      timing = `best of ${Object.keys(sweep).length} weeks re-solved, on a flat calendar`;
+      timing = `best of ${weeks} weeks re-solved, on a flat calendar`;
     } else if (edge === null || !Number.isFinite(edge) || edge < 1.0) {
       timing = "no better than any other week";
     } else {
       timing = "timed on a double or blank";
     }
     rows.push({ chip, label: chipLabels[chip], gw: playedGw, worth, edge,
-               checked: true, bestObjGw, bestRawGw, verdict: `${lead} — ${timing}` });
+               checked: true, bestObjGw, bestRawGw, pinned: pin,
+               verdict: `${lead} — ${timing}` });
   }
   return rows;
 }

@@ -1205,7 +1205,9 @@ into the last gameweek of the window, where the discount makes the same charge
 cheapest — the plan would be timing against the discount rather than the
 fixtures. The chip report marks every forced row `forced —` so a plan built this
 way is never mistaken for the model's own recommendation, and the same toggles
-sit under the board's Chips tab.
+sit under the board's Chips tab — which goes one further and lets you name the
+gameweek yourself, marking those rows `your week —` and reporting what the pick
+cost against the week the plan would have taken.
 
 Free hit is otherwise skipped entirely when there is no blank or double in the
 window, which is both honest and a real saving — it is a second fifteen-man squad's
@@ -1565,30 +1567,72 @@ a pure function of the same inputs and no tie can excuse a difference.
 `fpl.py transfers` solves the whole window and prints a ledger; the board's
 Chips tab runs the same model — `transfers.js`, the browser port of
 `plan_transfers` — against the fifteen currently on screen, capped to a
-six-gameweek horizon (`DEFAULT_TRANSFER_HORIZON`, independent of the board's
-own horizon slider) because the candidate pool here is the union of the
-top-points and top-value players per position, up to ~150–190 players before
-overlap, not the ~50 the squad optimiser ever sees. That pool times horizon is
-enough binaries that it is a button ("Plan transfers & chips"), not a
-debounced auto-solve — on the synthetic 90-player cases in
-`verify-transfer-port.mjs` the slowest single solve was already north of 15
-seconds, and a real pool is larger.
+six-gameweek horizon (`DEFAULT_TRANSFER_HORIZON`) because the candidate pool
+here is the union of the top-points and top-value players per position, up to
+~150–190 players before overlap, not the ~50 the squad optimiser ever sees.
+The board's own horizon slider may shorten that window but never lengthen it:
+picking 4 gameweeks scopes the plan, picking 12 does not quietly turn a
+forty-second solve into a ten-minute one. That pool times horizon is enough
+binaries that it is a button ("Plan transfers & chips"), not a debounced
+auto-solve — on the synthetic 90-player cases in `verify-transfer-port.mjs`
+the slowest single solve was already north of 15 seconds, and a real pool is
+larger.
 
-Two ownership facts the board didn't otherwise need are new settings: free
-transfers available (0–5) and chips already used this half. Bank is not one of
-them — it is derived from the existing budget slider minus the squad's cost,
-the same number the summary tile already shows. Sell price is always the
+The plan honours the same Settings controls the pitch does — budget, max per
+club, min start probability, bench slot weights, forced formation, required and
+barred players, and every stat override you have made. Each of those was once a
+constant inside the tab's own payload builder while the identically-named
+control drove only the squad optimiser, so the two halves of the board answered
+subtly different questions without saying so; the tab now lists what it is
+applying above the answer. Template tilt is the one exception, and is named as
+an exception: it is an ownership term in the squad optimiser's *objective*, and
+this MILP has no ownership term to tilt.
+
+Three settings are the tab's own. Free transfers available (0–5) and chips
+already used this half are ownership facts the board didn't otherwise need.
+Transfer freedom is a modelling choice: the plan may spend as it likes, may use
+only banked free transfers (no hits), or may make no transfers at all — the
+last answers "what are my chips worth to the fifteen I already own?", which is
+the honest question when you have no intention of churning the side to chase a
+chip week. A free hit is untouched by it, because that chip does not spend
+transfers. Bank is derived rather than set — the budget slider minus the
+squad's cost, the same number the summary tile shows. Sell price is always the
 current listed price, the same default `plan_transfers` itself uses when none
-is given; this tool has never tracked what a player was bought for, so there
-is no way to price the 50% sell-on fee exactly, and pretending otherwise would
-be a false precision.
+is given; this tool has never tracked what a player was bought for, so there is
+no way to price the 50% sell-on fee exactly, and pretending otherwise would be
+a false precision.
 
-Two things `fpl.py transfers` can do that the board deliberately does not:
+### Why the board now does re-solve several times over
+
 `value_of_acting` and `chip_values` each re-solve the whole MILP two to five
-times over, to isolate one number by taking something away and comparing. One
-solve is already the real cost here; a browser button that quietly triggers
-several is not something to add without a much stronger reason than "the CLI
-has it."
+times to isolate one number, and the board still does not offer either. But
+ranking a chip's gameweeks turned out to need the same medicine, and to need it
+badly enough to change the rule.
+
+The tab used to show what each chip would pay in every gameweek of the window,
+read off the squads of the single plan it had solved. That table cannot be read
+across, and the reason is the whole point of solving chips inside the transfer
+model: only the week a chip is actually played has a fifteen built for it, so
+every other column prices the chip against a squad assembled for a different
+purpose. On a real snapshot the alternatives came out understated by up to 2.0
+points, which was enough to flip the sign of the reported edge — the table said
+a bench boost was better-timed than a typical week when the truth was slightly
+worse.
+
+So when you commit to a chip, the tab re-solves the entire plan once per
+candidate gameweek with the chip pinned there, and each week gets to build its
+own squad. Six weeks is seven solves and minutes rather than seconds, which is
+why it happens only for chips you have explicitly committed to — committing
+*is* the request for "when?" — and why the cost is stated on the button before
+you press it and counted off as each solve lands. Chips you have not committed
+to still get the cheap estimate, under a heading that says it is an estimate
+and a caption that says not to read it across.
+
+The same machinery answers the other question worth asking. You can pick the
+gameweek for a chip yourself rather than take the plan's, and the sweep still
+re-solves every other week, so the verdict reports what your pick cost against
+the week the plan would have chosen instead of pretending you had asked its
+opinion.
 
 ## Making the model add up
 
