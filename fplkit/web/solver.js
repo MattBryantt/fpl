@@ -32,6 +32,11 @@
     const benchWeight = opt.benchWeight ?? 0.12;
     const profile = opt.benchSlotProfile || { GKP: 0.25, "1": 2.0, "2": 0.85, "3": 0.35 };
     const ownershipWeight = opt.ownershipWeight ?? 0;
+    // 2 is an ordinary armband, 3 a triple captain. It is the one chip rule the
+    // single-week squad model needs of its own: a bench boost is already
+    // expressible as four bench slots weighted 1.0, and a free hit or wildcard
+    // is just this model under that week's budget.
+    const captainMultiplier = opt.captainMultiplier ?? 2;
     const minStart = opt.minStart ?? 0;
     const include = opt.include || [], exclude = opt.exclude || [];
     const maxPerClub = opt.maxPerClub ?? 3;
@@ -67,7 +72,10 @@
     const obj = [];
     for (const p of players) {
       const pts = p.pts || 0;
-      if (pts) { obj.push(term(pts, X(p))); obj.push(term(pts, C(p))); }
+      if (pts) {
+        obj.push(term(pts, X(p)));
+        if (captainMultiplier !== 1) obj.push(term(pts * (captainMultiplier - 1), C(p)));
+      }
       if (ownershipWeight) {
         const tilt = ownershipWeight * ((p.own || 0) / 100) * pts;
         if (tilt) obj.push(term(tilt, S(p)));
@@ -130,10 +138,11 @@
         + `Binary\n ${bin.join(" ")}\nEnd`,
       players,
       slotWeight,
+      captainMultiplier,
     };
   }
 
-  function readSolution(result, players, slotWeight) {
+  function readSolution(result, players, slotWeight, captainMultiplier = 2) {
     const on = (name) => (result.Columns[name]?.Primal ?? 0) > 0.5;
     const squad = players.filter((p) => on(`s_${p.id}`));
     const bench = {};
@@ -143,7 +152,7 @@
     const starting = squad.filter((p) => on(`x_${p.id}`));
     const captain = squad.find((p) => on(`c_${p.id}`)) || null;
     const xiPoints = starting.reduce((a, p) => a + (p.pts || 0), 0)
-                   + (captain ? captain.pts || 0 : 0);
+                   + (captain ? (captainMultiplier - 1) * (captain.pts || 0) : 0);
     return {
       squad: squad.map((p) => p.id),
       starting: starting.map((p) => p.id),
@@ -200,17 +209,121 @@
 
   async function solveSquad(pool, opt, base) {
     const highs = await loadHighs(base);
-    const { lp, players, slotWeight } = buildLp(pool, opt);
+    const { lp, players, slotWeight, captainMultiplier } = buildLp(pool, opt);
     const result = highs.solve(lp, {});
     if (result.Status !== "Optimal") {
       throw new Error(
         `No legal squad found (solver status: ${result.Status}). `
         + "Budget too low, or too many players excluded?");
     }
-    return readSolution(result, players, slotWeight);
+    return readSolution(result, players, slotWeight, captainMultiplier);
   }
 
-  const api = { buildLp, readSolution, loadHighs, solveSquad, SLOTS };
+  /** Who is worth testing for a near miss — the port of
+   *  optimise.near_miss_candidates, and see its docstring for why this is not
+   *  simply "everyone who missed out".
+   *
+   *  Testing a player means a whole fresh solve, so testing the pool is minutes
+   *  of work for an answer most of it cannot win. A player is ruled out without
+   *  solving anything when some other missing player of the same position costs
+   *  no more and projects no fewer points: any squad built around the beaten man
+   *  becomes a squad built around the better one by swapping the two, so the
+   *  better one is at least as close and the loser's number says nothing new.
+   *  What survives is the price/points frontier — best-in-class at his price.
+   *
+   *  `perClub` narrows the comparison to team-mates as well, which closes the
+   *  one hole in that argument (the swap can break the three-per-club cap when
+   *  the dominant player's club is already full) at roughly seven times the
+   *  candidates. */
+  function nearMissCandidates(pool, opt, squadIds, perClub) {
+    opt = opt || {};
+    const held = new Set(squadIds || []);
+    const exc = new Set(opt.exclude || []);
+    const minStart = opt.minStart ?? 0;
+
+    const groups = new Map();
+    for (const p of pool) {
+      if (held.has(p.id) || exc.has(p.id) || p.p_play < minStart) continue;
+      const key = perClub ? `${p.pos}|${p.team}` : p.pos;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(p);
+    }
+
+    const chosen = [];
+    for (const key of [...groups.keys()].sort()) {
+      const ordered = groups.get(key).slice()
+        .sort((a, b) => a.price - b.price || (b.pts || 0) - (a.pts || 0));
+      let best = -Infinity;
+      for (const p of ordered) {
+        if ((p.pts || 0) > best) { chosen.push(p.id); best = p.pts || 0; }
+      }
+    }
+    return chosen;
+  }
+
+  /** For each candidate, the exact xPts the squad gives up to hold him.
+   *
+   *  The port of optimise.near_misses. One full re-solve per candidate with him
+   *  forced in — nothing cheaper answers the question, because the point is that
+   *  the other fourteen get to rearrange themselves around him and the money he
+   *  ties up. `stopped()` lets a superseded run give up at the next boundary
+   *  rather than run the set out.
+   *
+   *  `onProgress(done, total, row)` carries the candidate that just landed, not
+   *  only the count. A full pool is seconds per solve and tens of seconds for
+   *  the sweep, and every row is a finished answer the moment it exists —
+   *  holding them all back until the last one is done would be a blank table
+   *  for half a minute with the interesting names already known. */
+  async function nearMisses(pool, opt, settings, base) {
+    settings = settings || {};
+    const optimal = await solveSquad(pool, opt, base);
+    const held = new Set(optimal.squad);
+    const byId = new Map(pool.map((p) => [p.id, p]));
+    const candidates = nearMissCandidates(pool, opt, optimal.squad, settings.perClub);
+    const include = opt.include || [];
+
+    const rows = [];
+    for (let i = 0; i < candidates.length; i++) {
+      if (settings.stopped && settings.stopped()) return null;
+      const id = candidates[i];
+      try {
+        const forced = await solveSquad(pool, { ...opt, include: [...include, id] }, base);
+        const got = new Set(forced.squad);
+        const pos = byId.get(id)?.pos;
+        // Room is made in his own position first and paid for elsewhere second,
+        // so the man he actually displaces leads the list.
+        const out = [...held].filter((x) => !got.has(x))
+          .sort((a, b) => (byId.get(a)?.pos === pos ? 0 : 1) - (byId.get(b)?.pos === pos ? 0 : 1));
+        rows.push({
+          id,
+          // Clamped at zero: a constrained solve cannot beat the unconstrained
+          // one, so anything below is the solver's own tolerance, not an edge.
+          gap: Math.max(0, optimal.objective - forced.objective),
+          starting: forced.starting.includes(id),
+          captain: forced.captain === id,
+          replaces: out,
+        });
+      } catch (error) {
+        // No legal fifteen holds him at all: too expensive once the rest is
+        // legal, or his club is spoken for by players you have required. A real
+        // answer about him, and a different one from "far away" -- but only
+        // when it is the solver saying so. Anything else is a broken sweep and
+        // must not be dressed up as a fact about a player.
+        if (!/No legal squad found/.test(String(error && error.message))) throw error;
+        rows.push({ id, gap: null, starting: false, captain: false, replaces: [] });
+      }
+      if (settings.onProgress) {
+        settings.onProgress(i + 1, candidates.length, rows[rows.length - 1]);
+      }
+    }
+
+    rows.sort((a, b) => (a.gap === null) - (b.gap === null) || a.gap - b.gap);
+    return { rows, tested: candidates.length, objective: optimal.objective,
+             squad: optimal.squad };
+  }
+
+  const api = { buildLp, readSolution, loadHighs, solveSquad, SLOTS,
+                nearMissCandidates, nearMisses };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.FplSolver = api;
 })(typeof self !== "undefined" ? self : globalThis);

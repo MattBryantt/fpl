@@ -42,6 +42,7 @@ python fpl.py value --pos DEF                             # best points per £m
 python fpl.py compare Haaland Thiago --squad-test         # is the premium worth it?
 python fpl.py upgrade Saka --budget-extra 2.0             # what else could I buy?
 python fpl.py squad --budget 100                          # optimal legal 15, fixed horizon
+python fpl.py nearmiss                                    # who just missed it, and by how little
 python fpl.py fixtures --horizon 3                        # expected goals per fixture
 python fpl.py overrides Senesi                             # edit stats you think are wrong
 python fpl.py movers                                      # players whose numbers are from another club
@@ -124,7 +125,7 @@ The × drops him.
 | Tab | What is on it |
 | --- | --- |
 | **Squad** | both pitches, the swap table, the legality checks. The badge counts how far you are from the solver |
-| **Analysis** | the weekly profile, the rank-risk list, the fixture timeline, and the club lineups — the expected XI drawn as a pitch too, ranked on start probability, with start / minutes / xPPG on each shirt |
+| **Analysis** | the weekly profile, the rank-risk list, the fixture timeline, **who nearly made the squad and by how little**, and the club lineups — the expected XI drawn as a pitch too, ranked on start probability, with start / minutes / xPPG on each shirt |
 | **Drafts** | saved squads, and the overlaid weekly chart |
 
 **Settings** (top right) holds everything that scopes the numbers: horizon,
@@ -1358,6 +1359,35 @@ locking up £15.5m costs the rest of the squad more than his 7.2-point edge
 returns. That inversion is the whole point of the exercise, and it is invisible
 in any per-player table.
 
+**Who nearly made it** (`nearmiss`) is the same number asked of everybody at
+once, the other way round. For each player left out, it forces him in, rebuilds
+the other fourteen around him, and reports the drop:
+
+```text
+$ python fpl.py nearmiss --limit 5
+
+     Player   Pos   Team     £    xPts    gap    role       in place of
+     Crooks   MID    HUL   4.5    7.38   0.00   bench            Hughes
+ F.Kadıoğlu   DEF    BHA   4.5   15.51   0.01   bench              Shaw
+       Diop   DEF    IPS   4.0    5.81   0.14   bench       Guéhi, Shaw
+     Virgil   DEF    LIV   6.5   21.44   0.14      XI       Guéhi, Shaw
+   Belloumi   MID    HUL   5.0   15.02   0.15   bench      Hughes, Shaw
+```
+
+A gap of 0.00 means a squad built around him scores exactly as well as the one
+the solver returned — which of the two you see is a coin toss, so treat them as
+the same squad and pick on whatever the model cannot see. This is the question
+the ranking cannot answer: a player can be fourth in his position on points and
+nowhere near the squad because everyone above him is cheaper, and another can be
+twentieth and one swap away because he frees exactly the money the rest of the
+fifteen wanted.
+
+Only the price/points frontier is tested — a player beaten outright by someone
+at the same price or less cannot be closer than the man who beats him, so
+re-solving for him buys nothing. `--per-club` compares within a club as well,
+which is slower and the only way to be certain about a club the squad already
+fills to the three-per-club cap.
+
 ## How the projection works
 
 **1 — Expected goals per fixture.** De-vigged 1X2 probabilities plus the
@@ -1633,6 +1663,66 @@ gameweek for a chip yourself rather than take the plan's, and the sweep still
 re-solves every other week, so the verdict reports what your pick cost against
 the week the plan would have chosen instead of pretending you had asked its
 opinion.
+
+## Who nearly made it
+
+The board can rank players and it can solve for the best fifteen, and neither
+says how close the sixteenth man was. That gap matters more than the ranking
+does: a player can be fourth in his position on points and nowhere near the
+squad because everyone above him is cheaper, and another can be twentieth and
+one swap away because he frees exactly the money the rest of the fifteen
+wanted. Nothing in a per-player table can tell those two apart.
+
+**Analysis → Nearly in** answers it the only way it can be answered honestly.
+Each candidate is forced into the squad, the other fourteen are re-optimised
+around him, and the drop in the solver's objective is the gap — the same number
+`compare --squad-test` reports, asked of everybody at once. It already charges
+him for the money he ties up, because the squad that left him out got to spend
+those millions elsewhere. A gap of zero is not "very close": it is an
+alternative optimum, a fifteen that scores exactly as well, and which of the two
+the solver returned is a coin toss.
+
+Only the **price/points frontier** is tested, which is what makes this seconds
+rather than minutes. If another missing player at the same price or less
+projects at least as many points, then any squad built around the cheaper man
+becomes a squad built around the better one by swapping the two — so the loser
+cannot be closer than the man who beats him, and re-solving for him buys
+nothing. That leaves ~20 candidates out of ~300. *Every club* narrows the
+comparison to team-mates as well, which closes the single hole in the argument
+(the swap can break the three-per-club cap when the better player's club is
+already full) at about seven times the solves.
+
+Each solve is a second or two on a full pool, so rows appear as they land and
+the ranking re-sorts itself while it runs. A settings change cancels the sweep
+rather than letting it finish against a squad that is no longer the answer, and
+what had already landed stays on screen under a banner saying so.
+
+### The chip week asks it differently
+
+A chip changes which fifteen is best, so it changes who nearly made it, and the
+board's own answer cannot see any of that — it is a discounted horizon, an
+ordinary armband, and a bench worth a fraction of a starter. So each gameweek of
+a transfer plan carries its own **Nearly in**, solved on that week's terms:
+
+- that gameweek's points rather than the plan-weighted horizon,
+- the money that week's fifteen and bank are actually worth, not the opening
+  budget,
+- and the chip's own scoring — a **bench boost** is four bench slots weighted
+  1.0, so it ranks players the board would never buy because they would sit;
+  a **triple captain** is `captainMultiplier` 3, which is worth paying for.
+
+A free hit or a wildcard needs nothing special: both are this model under the
+money selling the squad would raise. The candidates are drawn from the plan's
+own pool, so the ideal fifteen it measures against is one the plan could
+actually have reached, and the header prices the plan's real fifteen against
+that ideal — the difference is what the transfers that got you there cost.
+
+Both cards run the same solver as everything else (`nearMisses` in `solver.js`,
+`near_misses` in `optimise.py`, verified against each other the way the rest of
+the port is). The Chips tab's version shares the squad optimiser's worker and
+its sequence counter deliberately: it is the same MILP under the same settings,
+and a gap is a difference between two objectives, which only subtract when both
+were solved under identical constraints.
 
 ## Making the model add up
 

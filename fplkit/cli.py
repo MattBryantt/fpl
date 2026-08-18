@@ -17,7 +17,7 @@ from rich.table import Table
 from . import cache, transfers
 from .config import CHIPS, DEFAULT_BENCH_WEIGHT, DEFAULT_BUDGET, OUT_DIR
 from .model import OVERRIDABLE, Projection, project
-from .optimise import marginal_value, optimise
+from .optimise import marginal_value, near_misses, optimise
 from .planning import DEFAULT_HALF_LIFE, build_plan, horizon_sensitivity
 from .snapshot import SNAPSHOT_HORIZON
 from .transfers import DEFAULT_TRANSFER_HORIZON, TRANSFER_HALF_LIFE
@@ -50,6 +50,7 @@ HEADERS = {
     "odds_priced": "priced", "changed_vs_prev": "churn",
     "shared_with_plan": "∩ plan", "frontloaded": "front",
     "mins_if_start": "mins/start", "recent_mins_std": "std", "mins_flags": "flags",
+    "gap": "gap", "role": "role", "replaces": "in place of",
     "chip": "chip", "transfers": "TRs", "free": "FT", "hits": "hits",
     "out": "out", "in": "in", "out_price": "£ out", "in_price": "£ in",
     "in_team": "to", "gain": "gain", "worth": "worth", "edge": "edge",
@@ -67,7 +68,7 @@ FLOAT_FORMATS = {
     "exp_clean_sheets": "{:.2f}", "recency": "{:.2f}", "goal_coverage": "{:.2f}",
     "xpts_plan": "{:.2f}", "ownership_pct": "{:.1f}", "exposure": "{:.2f}", "team_context": "{:.2f}", "npxg_per90": "{:.3f}", "minutes": "{:.0f}", "from_gw": "{:.0f}", "to_gw": "{:.0f}", "length": "{:.0f}", "swing": "{:.2f}", "xpts_gw1": "{:.2f}", "xpts_raw": "{:.2f}",
     "exp_price_change": "{:+.2f}", "xi_xpts": "{:.1f}", "decay": "{:.2f}",
-    "gain": "{:.2f}", "cost": "{:+.1f}", "bank": "{:.1f}",
+    "gain": "{:.2f}", "cost": "{:+.1f}", "bank": "{:.1f}", "gap": "{:.2f}",
     "horizon": "{:.0f}", "last_gw": "{:.0f}", "changed_vs_prev": "{:.0f}",
     "shared_with_plan": "{:.0f}", "gw": "{:.0f}", "frontloaded": "{:.2f}",
     "transfers": "{:.0f}", "free": "{:.0f}", "hits": "{:.0f}",
@@ -320,6 +321,73 @@ def cmd_squad(args) -> None:
                      min_minutes_prob=args.min_start)
     _print_squad(squad, f"Optimal 15 for GW{projection.horizon[0]}–{projection.horizon[-1]}")
     _save(squad.players, args.csv)
+
+
+def cmd_nearmiss(args) -> None:
+    """Who was one decision away from the optimal fifteen, and by how much."""
+    projection = _run_projection(args)
+    players = projection.players
+    include = [int(_resolve(players, name)["fpl_id"]) for name in (args.include or [])]
+    exclude = [int(_resolve(players, name)["fpl_id"]) for name in (args.exclude or [])]
+
+    settings = dict(budget=args.budget, bench_weight=args.bench_weight,
+                    exclude=exclude or None, min_minutes_prob=args.min_start)
+    base = optimise(players, include=include or None, **settings)
+    _print_squad(base, f"Optimal 15 for GW{projection.horizon[0]}–{projection.horizon[-1]}")
+
+    with console.status("[cyan]re-solving the squad around each candidate…") as status:
+        frame = near_misses(
+            players, base=base, include=include or None, per_club=args.per_club,
+            progress=lambda done, total, _id: status.update(
+                f"[cyan]re-solving the squad around each candidate… {done}/{total}"),
+            **settings,
+        )
+
+    tested = len(frame)
+    if args.pos:
+        frame = _filter(frame, args)
+    if frame.empty:
+        console.print("[yellow]nobody left to test — the pool is the squad.[/yellow]")
+        return
+
+    # Forcing a man in can shuffle four others once the money moves, and a
+    # terminal column wide enough for all four leaves none for the numbers.
+    # The first name is the one he actually displaces (see `near_misses`); the
+    # rest are the reshuffle that paid for it, and the CSV keeps them all.
+    def _short(names: str) -> str:
+        parts = [n for n in names.split(", ") if n]
+        return parts[0] + (f" +{len(parts) - 1}" if len(parts) > 2 else
+                           (", " + parts[1] if len(parts) == 2 else "")) if parts else ""
+
+    shown = frame.head(args.limit).copy()
+    shown["replaces"] = shown["replaces"].fillna("").map(_short)
+    _render(shown, "Nearly in — what the squad gives up to hold each of them",
+            ["web_name", "pos", "team_short", "price", "xpts", "gap", "role",
+             "replaces", "p_start"])
+    console.print(
+        "[dim]gap is the drop in the solver's objective when he is forced in and "
+        "everything else is rebuilt around him, so it already charges him for the "
+        "money he ties up. 0.00 means a squad built around him scores exactly as "
+        "well as the one above — the solver picked between them on a tie."
+        f"\n{tested} candidates tested"
+        + (" (every club's own frontier)" if args.per_club else
+           " (the price/points frontier — anyone else is beaten outright by "
+           "someone at the same price or less, so he cannot be closer)")
+        + ".[/dim]"
+    )
+
+    ties = frame[frame["gap"] < 0.005]
+    if len(ties):
+        console.print(f"{len(ties)} would tie it: [bold]"
+                      + ", ".join(ties["web_name"].head(6)) + "[/bold].")
+    else:
+        best = frame.iloc[0]
+        console.print(
+            f"Closest is [bold]{best['web_name']}[/bold] — holding him costs "
+            f"[bold]{best['gap']:.2f}[/bold] xPts"
+            + (f", in place of {best['replaces']}." if best["replaces"] else "."))
+
+    _save(frame, args.csv)
 
 
 def cmd_upgrade(args) -> None:
@@ -982,6 +1050,23 @@ def build_parser() -> argparse.ArgumentParser:
     squad.add_argument("--exclude", nargs="*", default=None, help="players to bar")
     squad.add_argument("--min-start", type=float, default=0.3)
     squad.set_defaults(func=cmd_squad)
+
+    near = subparsers.add_parser(
+        "nearmiss", help="who nearly made the optimal 15, and by how much")
+    add_common(near)
+    near.add_argument("--budget", type=float, default=DEFAULT_BUDGET)
+    near.add_argument("--bench-weight", type=float, default=DEFAULT_BENCH_WEIGHT)
+    near.add_argument("--include", nargs="*", default=None, help="players to force in")
+    near.add_argument("--exclude", nargs="*", default=None, help="players to bar")
+    near.add_argument("--min-start", type=float, default=0.3)
+    near.add_argument("--pos", default=None, help="GKP,DEF,MID,FWD")
+    near.add_argument("--limit", type=int, default=25)
+    near.add_argument("--per-club", action="store_true",
+                      help="test each club's own frontier rather than each "
+                           "position's. Slower by roughly seven times, and the "
+                           "only way to be sure of a club the squad already "
+                           "fills to the three-per-club cap")
+    near.set_defaults(func=cmd_nearmiss)
 
     upgrade = subparsers.add_parser(
         "upgrade", help="what else could I buy instead of this player?")

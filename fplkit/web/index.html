@@ -201,6 +201,21 @@ tbody tr.picked { opacity: 0.4; }
 .meter > div { height: 100%; background: var(--series-1); border-radius: 4px; }
 .meter.over > div { background: var(--critical); }
 
+/* Nearly in. The bar is the point of the table: the gaps are small numbers a
+   couple of decimals apart, and a column of "0.04 0.12 0.31" does not say at a
+   glance that the first two men are basically in and the third is not. */
+.nearmiss td, .nearmiss th { white-space: nowrap; }
+.nearmiss th, .nearmiss td { cursor: default; }
+.nearmiss tbody tr { cursor: pointer; }
+.nearmiss .l { text-align: left; }
+.nearmiss th.barh { width: 33%; min-width: 90px; }
+.nearmiss td.tie { color: var(--good); }
+.nearbar {
+  display: block; height: 6px; border-radius: 3px; background: var(--series-1);
+  opacity: 0.8; min-width: 2px;
+}
+.nearbar.none { background: var(--mid); opacity: 1; }
+
 td.thin-cell { color: var(--muted); }
 td.muted-cell { color: var(--axis); }
 .optstatus { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
@@ -1340,6 +1355,27 @@ gameweek of the transfer-and-chip plan.">Free transfers</label>
 <div class="card" style="margin-top:16px">
   <div class="cardhead">
     <div>
+      <h2 style="margin:0 0 3px">Nearly in</h2>
+      <div class="sub">Who the optimal squad leaves out by the smallest margin. Each
+        candidate is forced in and the other fourteen are rebuilt around him, so the
+        gap already charges him for the money he ties up — a gap of zero means a squad
+        built around him scores exactly as well and the solver chose between them on a
+        tie. This is the question the ranking cannot answer: a player can be fourth in
+        his position on points and nowhere near the squad because everyone above him is
+        cheaper, and another can be twentieth and one swap away.</div>
+    </div>
+    <div class="lineupctl">
+      <button class="chip" id="nearClub" aria-pressed="false"
+              title="Compare each player only against his own club-mates. Slower, and the only way to be sure about a club the squad already fills to the three-per-club cap">Every club</button>
+      <button class="btn" id="nearRun">Find near misses</button>
+    </div>
+  </div>
+  <div id="nearBox"></div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <div class="cardhead">
+    <div>
       <h2 style="margin:0 0 3px">Team lineups</h2>
       <div class="sub">Who the model expects to start, and for how long. Minutes are a
         fixed pool — eleven players start — so overriding one man's start probability
@@ -1514,6 +1550,13 @@ gameweek of the transfer-and-chip plan.">Free transfers</label>
 
 <div class="tip" id="tip"></div>
 
+<!-- The MILP itself always runs in the worker, but its candidate arithmetic does
+     not need a solver: "how many players would a near-miss sweep have to test?"
+     is a sort and a scan, and the button has to be able to answer it before you
+     press it rather than after. A classic script, so the same file serves the
+     page and the worker; nothing here touches the WASM. -->
+<script src="/assets/solver.js"></script>
+
 <script type="module">
 "use strict";
 import { derivePool, editPlayer, explainPlayer, clubLineup, checkOverridable,
@@ -1683,6 +1726,20 @@ const S = {
   // first of them; showing only week one is what made a forced chip look like
   // it had changed nothing.
   planWeek: 0,
+  // Who nearly made the optimal fifteen. Not persisted and not solved on load,
+  // for the same reason the transfer plan is not: it is seconds of solving that
+  // most visits do not ask for. `key` fingerprints the settings it answers, so
+  // the card can say when it has been left behind rather than quietly present a
+  // stale ranking as current.
+  nearMiss: { state: "idle", rows: [], error: "", key: null, tested: 0,
+              progress: { done: 0, total: 0 }, perClub: false },
+  // The same question asked of one gameweek of the transfer plan, where the
+  // chip in force changes both the fifteen and who nearly made it. Keyed by
+  // week index rather than shared with the above, because the two answer
+  // different questions and showing one where the other belongs would be a lie
+  // about which scoring produced it.
+  weekNearMiss: { state: "idle", rows: [], error: "", idx: null, gw: null,
+                  key: null, progress: { done: 0, total: 0 } },
 };
 S.squad = loadLocal(STORE.squad, []);
 
@@ -1856,7 +1913,9 @@ function setTab(name) {
   // the charts are drawn when their tab appears rather than while it is away.
   // Guarded on the pool, because tabs are restored from settings before the
   // snapshot has landed and there is nothing to draw yet.
-  if (name === "analysis" && S.meta) { renderGwChart(); renderExposure(); renderTimeline(); }
+  if (name === "analysis" && S.meta) {
+    renderGwChart(); renderExposure(); renderTimeline(); renderNearMisses();
+  }
   if (name === "chips" && S.meta) { renderChips(); }
 }
 
@@ -2675,6 +2734,179 @@ function renderLineupStrip(gws) {
     </table></div>`;
 }
 
+/* ------------------------------------------------------------------ nearly in
+   Ranking players cannot answer "who nearly made the squad". A player can be
+   fourth in his position on points and nowhere near it because everyone above
+   him is cheaper, and another can be twentieth and one swap away because he
+   frees exactly the money the other fourteen wanted. The only honest answer is
+   the solver's: force him in, rebuild everything around him, read the drop.
+
+   That is a full re-solve per candidate, so it runs on a button rather than on
+   every settings change -- and it reports each candidate as it lands, because
+   several seconds of spinner is indistinguishable from a hang. */
+function renderNearMisses() {
+  const box = $("#nearBox");
+  if (!box) return;
+  const near = S.nearMiss;
+  const solving = near.state === "solving";
+  const count = solving ? 0 : nearMissCount();
+
+  const run = $("#nearRun");
+  run.disabled = solving || !S.optimal.length;
+  run.textContent = solving ? "Solving…"
+    : count ? `Test ${count} candidates` : "Find near misses";
+  $("#nearClub").setAttribute("aria-pressed", String(near.perClub));
+  $("#nearClub").disabled = solving;
+
+  if (solving) {
+    const { done, total } = near.progress;
+    box.innerHTML = `<div class="sub">Rebuilding the squad around each candidate —
+        ${done} of ${total || "?"} solved. The order settles as it goes.</div>
+      <div class="meter" style="margin-bottom:12px"><div style="width:${
+        total ? (done / total) * 100 : 0}%"></div></div>`
+      + (near.rows.length ? nearMissTableHTML(near.rows, (p) => p.xpts_plan, "xPts") : "");
+    return;
+  }
+  if (near.state === "error") {
+    box.innerHTML = `<div class="issue bad"><span class="ico">!</span><span>${near.error}</span></div>`;
+    return;
+  }
+  if (near.state === "idle" || !near.rows.length) {
+    box.innerHTML = `<div class="empty-note">${
+      !S.optimal.length ? "Waiting for the optimal squad."
+      : near.state === "ready" ? "Nobody to test — every player the solver can see is in the squad."
+      : "One full re-solve per candidate. On a full pool that is a second or two each, "
+        + "so the ranking fills in as it goes rather than arriving all at once."
+    }</div>`;
+    return;
+  }
+
+  box.innerHTML = (near.key === nearMissKey() ? "" : `<div class="issue bad" style="margin-bottom:10px">
+      <span class="ico">!</span><span>The settings have moved since this ran — every
+      gap below was measured against a squad that is no longer the answer.</span></div>`)
+    + nearMissTableHTML(near.rows, (p) => p.xpts_plan, "xPts")
+    + `<p class="sub" style="margin:10px 0 0">${near.tested} candidates re-solved in
+      ${((near.ms || 0) / 1000).toFixed(1)}s. ${near.perClub
+        ? "Every club's own price/points frontier."
+        : "The price/points frontier: anyone left out is beaten outright by a player at the same price or less, so he cannot be closer than that player is."}</p>`;
+}
+
+/** The ranking itself, shared by the board's answer and the Chips tab's. Only
+ *  the column of points differs — the horizon there, one gameweek here — and
+ *  the header says which, because a number labelled xPts that turns out to be a
+ *  single week is worse than no number. */
+function nearMissTableHTML(rows, pointsOf, pointsLabel) {
+  // The bar is scaled to the widest gap on show rather than to an absolute
+  // number: the question is which of these men is closest, and a fixed scale
+  // would flatten a tightly packed list into a column of identical stubs.
+  const worst = Math.max(...rows.map((r) => r.gap ?? 0), 0.01);
+  const name = (id) => S.byId.get(id)?.name ?? "—";
+
+  return `<div class="chartbox"><table class="nearmiss"><thead><tr>
+      <th class="l">Player</th><th class="l">Pos</th><th class="l">Team</th><th>£</th>
+      <th>${pointsLabel}</th><th>Gap</th><th class="barh"></th><th class="l">Would be</th>
+      <th class="l">In place of</th></tr></thead><tbody>`
+    + rows.map((r) => {
+        const p = S.byId.get(r.id);
+        if (!p) return "";
+        const tie = r.gap !== null && r.gap < 0.005;
+        return `<tr data-near="${r.id}" title="Open ${p.name}">
+          <td class="l"><b>${p.name}</b></td><td class="l">${p.pos}</td>
+          <td class="l">${p.team_short}</td><td>${p.price.toFixed(1)}</td>
+          <td>${fmt(pointsOf(p), 1)}</td>
+          <td class="${tie ? "tie" : ""}">${
+            r.gap === null ? "—" : tie ? "tie" : r.gap.toFixed(2)}</td>
+          <td><span class="nearbar${r.gap === null ? " none" : ""}" style="width:${
+            r.gap === null ? 100 : Math.max(2, (r.gap / worst) * 100)}%"></span></td>
+          <td class="l">${r.gap === null ? "not holdable"
+            : r.captain ? "XI, captain" : r.starting ? "in the XI" : "on the bench"}</td>
+          <td class="l">${r.replaces.map(name).join(", ") || "—"}</td></tr>`;
+      }).join("")
+    + `</tbody></table></div>`;
+}
+
+/** Redraw only the near-miss block, not the tab around it. A sweep ticks about
+ *  once a second for half a minute, and renderChips rebuilds the week's pitch
+ *  from scratch — including its shirts — which would flash the whole card on
+ *  every candidate that landed. */
+function renderWeekNearMisses() {
+  const box = $("#weekNearBox"), plan = S.transferPlan.result;
+  if (!box || !plan) { renderChips(); return; }
+  box.innerHTML = weekNearMissHTML(plan, S.planWeek);
+  wireWeekNearMiss();
+}
+
+function wireWeekNearMiss() {
+  $("#weekNearBtn")?.addEventListener("click", () => runWeekNearMisses(S.planWeek));
+  document.querySelectorAll("#weekNearBox [data-near]").forEach((row) =>
+    row.addEventListener("click", () => openEditor(+row.dataset.near)));
+}
+
+/** The near-miss block inside one gameweek of a transfer plan.
+ *
+ *  Deliberately a *different* answer from the board's, and says so: it is one
+ *  gameweek rather than a discounted horizon, it spends what that week's squad
+ *  and bank are worth rather than the opening budget, and it scores the chip
+ *  the plan chose to play there. A bench boost week ranks bench-worthy players
+ *  the board would never buy; a triple-captain week pays for the armband. */
+function weekNearMissHTML(plan, idx) {
+  const near = S.weekNearMiss;
+  const week = plan.weeks[idx];
+  const mine = near.state !== "idle" && near.idx === idx && near.key === S.transferPlan.key;
+  const solving = mine && near.state === "solving";
+  const chipName = week.chip ? plan.chipLabels[week.chip] : "";
+
+  const head = `<h4 style="margin:18px 0 6px">Nearly in — GW${week.gw}${
+    chipName ? ", " + chipName.toLowerCase() : ""}
+    <button class="mini" id="weekNearBtn" ${solving ? "disabled" : ""}
+      style="margin-left:8px">${solving ? "Solving…"
+        : mine && near.state === "ready" ? "Solve again" : "Who else?"}</button></h4>`;
+
+  if (!mine) {
+    return head + `<div class="sub">Who the best fifteen this week's money could buy
+      leaves out, and by how little — scored on GW${week.gw} alone${week.chip
+        ? ` with the ${chipName.toLowerCase()} in force` : ""}, not on the horizon the
+      board ranks on. One re-solve per candidate.</div>`;
+  }
+  if (solving) {
+    const { done, total } = near.progress;
+    const at = plan.gameweeks.indexOf(week.gw);
+    return head + `<div class="sub">Rebuilding GW${week.gw} around each candidate —
+      ${done} of ${total || "?"}. The order settles as it goes.</div>
+      <div class="meter" style="margin-bottom:12px"><div style="width:${
+        total ? (done / total) * 100 : 0}%"></div></div>`
+      + (near.rows.length ? nearMissTableHTML(near.rows,
+          (p) => (plan.pointsByPlayer.get(p.id) || [])[at] || 0, `GW${week.gw}`) : "");
+  }
+  if (near.state === "error") {
+    return head + `<div class="issue bad"><span class="ico">!</span><span>${near.error}</span></div>`;
+  }
+  if (!near.rows.length) {
+    return head + `<div class="sub">Nobody to test — every player the solver can
+      see is already in this week's fifteen.</div>`;
+  }
+
+  // A sweep that was cancelled part-way has rows but never got to price the
+  // week's ideal against the plan's own fifteen, so that sentence is left out
+  // rather than printed with dashes in it.
+  const behind = (near.idealPoints || 0) - (near.heldPoints || 0);
+  const note = weekIdealNote(week, near.budget);
+  const summary = near.idealPoints === undefined ? "" :
+    `<div class="sub" style="margin-bottom:8px">Best fifteen £${fmt(near.budget, 1)}m
+       could field in GW${week.gw}: <b>${fmt(near.idealPoints, 1)}</b> points across the
+       squad, against <b>${fmt(near.heldPoints, 1)}</b> for the fifteen the plan holds
+       that week — ${behind > 0.05
+         ? `<b>${fmt(behind, 1)}</b> behind, which is the price of the transfers that got you there`
+         : "the plan is already there"}.${note ? " " + note.charAt(0).toUpperCase() + note.slice(1) + "." : ""}</div>`;
+
+  return head + summary
+    + nearMissTableHTML(near.rows, (p) => (plan.pointsByPlayer.get(p.id)
+        || [])[plan.gameweeks.indexOf(week.gw)] || 0, `GW${week.gw}`)
+    + `<p class="sub" style="margin:8px 0 0">${near.tested} candidates re-solved in
+       ${((near.ms || 0) / 1000).toFixed(1)}s, each one a full rebuild of the other
+       fourteen around him.</p>`;
+}
+
 /* ------------------------------------------------------ transfers & chips
    The Chips tab: a button-triggered solve (not a debounced auto-solve like
    the squad optimiser -- this pool and horizon are both far bigger, so the
@@ -2905,6 +3137,7 @@ function renderPlanHTML(plan) {
     ${movesHTML}
     ${squadDiffers ? `<div class="sub" style="margin-top:8px">This differs from the squad on screen${
         idx ? ` — it is where the moves in GW${weeks[0].gw}–GW${week.gw} leave you` : " — the moves above are what would get you there"}.</div>` : ""}
+    <div id="weekNearBox">${weekNearMissHTML(plan, idx)}</div>
     ${renderPlanPathHTML(plan, idx)}
   </div>`;
 }
@@ -3149,6 +3382,8 @@ function renderChips() {
     renderChips();
   }));
 
+  wireWeekNearMiss();
+
   if (ready) {
     const weeks = tp.result.weeks;
     const week = weeks[Math.min(Math.max(S.planWeek, 0), weeks.length - 1)];
@@ -3184,7 +3419,9 @@ function renderAll() {
   // The charts are the one part that cannot be drawn out of sight: an SVG sized
   // against a hidden container has no width to size against. setTab draws them
   // when the tab appears, so here they are drawn only if it already has.
-  if (S.tab === "analysis") { renderGwChart(); renderExposure(); renderTimeline(); }
+  if (S.tab === "analysis") {
+    renderGwChart(); renderExposure(); renderTimeline(); renderNearMisses();
+  }
   if (S.tab === "chips") { renderChips(); }
 }
 
@@ -5054,6 +5291,25 @@ function scheduleSolve(delay = 400) {
   }, delay);
 }
 
+/** Every constraint the squad MILP answers to, from the controls on screen.
+ *  One helper rather than a literal per call site, for the same reason planOpts
+ *  is one: the near-miss sweep is a difference between two objectives, and two
+ *  objectives are only comparable when both were solved under exactly this. */
+function solverOptions() {
+  return {
+    budget: +$("#budget").value,
+    ownershipWeight: +$("#ownw").value,
+    minStart: +$("#minstart").value,
+    include: S.include, exclude: S.exclude,
+    maxPerClub: +$("#maxclub").value,
+    formation: parseFormation($("#formation").value),
+    benchSlotWeights: benchWeights(),
+    benchSlotProfile: S.snapshot.rules.BENCH_SLOT_PROFILE,
+    squadByPos: S.meta.squad_by_pos, xiMin: S.meta.xi_min, xiMax: S.meta.xi_max,
+    squadSize: S.snapshot.rules.SQUAD_SIZE, xiSize: S.snapshot.rules.XI_SIZE,
+  };
+}
+
 async function solveOptimal() {
   clearTimeout(solveTimer);
   if (!S.meta) return;
@@ -5063,18 +5319,7 @@ async function solveOptimal() {
 
   let data;
   try {
-    data = await solveInWorker(seq, {
-      budget: +$("#budget").value,
-      ownershipWeight: +$("#ownw").value,
-      minStart: +$("#minstart").value,
-      include: S.include, exclude: S.exclude,
-      maxPerClub: +$("#maxclub").value,
-      formation: parseFormation($("#formation").value),
-      benchSlotWeights: benchWeights(),
-      benchSlotProfile: S.snapshot.rules.BENCH_SLOT_PROFILE,
-      squadByPos: S.meta.squad_by_pos, xiMin: S.meta.xi_min, xiMax: S.meta.xi_max,
-      squadSize: S.snapshot.rules.SQUAD_SIZE, xiSize: S.snapshot.rules.XI_SIZE,
-    });
+    data = await solveInWorker(seq, solverOptions());
   } catch (error) {
     // A slower earlier request must never overwrite a faster later one;
     // dragging a slider fires several solves and only the last one describes
@@ -5109,9 +5354,12 @@ function ensureWorker() {
   if (solverWorker) return solverWorker;
   solverWorker = new Worker("/assets/solver-worker.js");
   solverWorker.onmessage = (event) => {
-    const { seq, ok, result, error, ms } = event.data;
+    const { seq, kind, ok, result, error, ms } = event.data;
     const waiter = solveWaiters.get(seq);
     if (!waiter) return;
+    // A near-miss sweep reports each candidate as it lands. It is seconds of
+    // work, and a spinner for seconds is indistinguishable from a hang.
+    if (kind === "progress") { waiter.progress?.(event.data); return; }
     solveWaiters.delete(seq);
     if (ok) waiter.resolve({ ...result, ms }); else waiter.reject(new Error(error));
   };
@@ -5127,18 +5375,260 @@ function ensureWorker() {
   return solverWorker;
 }
 
-function solveInWorker(seq, options) {
-  // The solver only needs seven fields per player, not the whole row with its
-  // per-gameweek arrays and opponent labels — this crosses a structured-clone
-  // boundary on every keystroke.
-  const pool = S.players.map((p) => ({
-    id: p.id, pos: p.pos, team: p.team, price: p.price,
-    pts: p.xpts_plan || 0, own: p.owned || 0, p_play: p.p_play,
-  }));
+/** The solver only needs seven fields per player, not the whole row with its
+ *  per-gameweek arrays and opponent labels — this crosses a structured-clone
+ *  boundary on every keystroke. */
+const solverPool = () => S.players.map((p) => ({
+  id: p.id, pos: p.pos, team: p.team, price: p.price,
+  pts: p.xpts_plan || 0, own: p.owned || 0, p_play: p.p_play,
+}));
+
+function solveInWorker(seq, options, job = null) {
   return new Promise((resolve, reject) => {
-    solveWaiters.set(seq, { resolve, reject });
-    ensureWorker().postMessage({ seq, pool, options });
+    // The worker answers only its newest request and drops the rest without a
+    // word, so a superseded promise would otherwise never settle — which is
+    // survivable when every request is the same kind and the next reply
+    // overwrites the state anyway, and is not once a slider can cancel a
+    // near-miss sweep and a sweep can cancel a solve. Both callers already
+    // ignore a result whose seq has moved on, so rejecting here is silent.
+    for (const [, waiter] of solveWaiters) waiter.reject(new Error("superseded"));
+    solveWaiters.clear();
+    solveWaiters.set(seq, { resolve, reject, progress: job?.onProgress });
+    ensureWorker().postMessage({
+      // A caller may bring its own pool: the Chips tab asks the same question
+      // about one gameweek, where a player is worth that week's points rather
+      // than the horizon's.
+      seq, pool: job?.pool || solverPool(), options,
+      kind: job?.kind, settings: job?.settings,
+    });
   });
+}
+
+/* --------------------------------------------------------- the near-miss sweep
+   Shares the squad optimiser's worker and its sequence counter deliberately.
+   It is the same MILP under the same settings -- the gap is a difference
+   between two objectives, and two objectives only subtract when both were
+   solved under identical constraints -- so a settings change has to cancel a
+   sweep in flight rather than let it finish and land a ranking measured against
+   a squad that is no longer the answer. */
+
+/** What the sweep is an answer *to*. Same idea as transferInputKey: nothing
+ *  pushes an invalidation at the card, so it re-derives this on render and
+ *  compares. The projection is in here through the snapshot stamp and the
+ *  edits, because a changed projection changes every gap. */
+/** Closest first, with the players no legal fifteen can hold at the bottom —
+ *  the same order the worker returns, applied to a part-finished sweep. */
+const sortedNearMisses = (rows) =>
+  rows.slice().sort((a, b) => (a.gap === null) - (b.gap === null) || a.gap - b.gap);
+
+/** A sweep cut short because something else claimed the worker — a slider moved
+ *  while it was running. The rows that did land are still true answers to the
+ *  settings they were solved under, so they stay, and the key check above them
+ *  says those settings have since moved. What must not survive is the spinner:
+ *  the worker drops a superseded request without a word, so nothing else is
+ *  coming and "solving…" would sit there for good. */
+function nearMissCancelled(state, seq) {
+  if (state.seq !== seq || state.state !== "solving") return state;
+  return { ...state, state: state.rows.length ? "ready" : "idle",
+           tested: state.rows.length, error: "" };
+}
+
+function nearMissKey() {
+  return JSON.stringify([
+    S.meta ? solverOptions() : null, S.nearMiss.perClub, $("#horizon").value,
+    gwDecay(), S.snapshot?.generated_at ?? null, S.edits,
+  ]);
+}
+
+/** How many players the sweep would have to solve for, without solving any of
+ *  them. It belongs on the button rather than in the result: this is the one
+ *  control on the board whose cost is worth knowing before you press it, and
+ *  "every club" multiplies it by about seven. */
+function nearMissCount() {
+  // The page's copy of the solver is a plain script tag, so a board that came
+  // up without it must still render. The sweep itself does not depend on this:
+  // the worker loads its own copy, and the count only decides a button label.
+  if (!S.meta || !S.optimal.length || !globalThis.FplSolver) return 0;
+  return FplSolver.nearMissCandidates(
+    solverPool(), solverOptions(), S.optimal, S.nearMiss.perClub).length;
+}
+
+async function runNearMisses() {
+  if (!S.meta || !S.optimal.length) return;
+  const key = nearMissKey();
+  const seq = ++solveSeq;
+  S.nearMiss = { ...S.nearMiss, state: "solving", error: "", key, rows: [], seq,
+                 progress: { done: 0, total: nearMissCount() } };
+  renderNearMisses();
+
+  let data;
+  try {
+    data = await solveInWorker(seq, solverOptions(), {
+      kind: "nearmiss",
+      settings: { perClub: S.nearMiss.perClub },
+      onProgress: ({ done, total, row }) => {
+        if (seq !== solveSeq) return;
+        S.nearMiss.progress = { done, total };
+        // Each row is a finished answer the moment it lands, and a full pool is
+        // a second or two per candidate. Showing the ranking as it builds is
+        // the difference between half a minute of progress bar and a table you
+        // can read before it is finished.
+        if (row) S.nearMiss.rows = sortedNearMisses([...S.nearMiss.rows, row]);
+        renderNearMisses();
+      },
+    });
+  } catch (error) {
+    // A settings change cancels the sweep mid-flight and re-solves the squad.
+    // That is not an error and must not be reported as one -- but the rows that
+    // landed before it are kept, and the spinner is not.
+    if (seq !== solveSeq) {
+      S.nearMiss = nearMissCancelled(S.nearMiss, seq);
+      renderNearMisses();
+      return;
+    }
+    S.nearMiss = { ...S.nearMiss, state: "error", rows: [],
+                   error: String(error.message || error) };
+    renderNearMisses();
+    return;
+  }
+  if (seq !== solveSeq) {
+    S.nearMiss = nearMissCancelled(S.nearMiss, seq);
+    renderNearMisses();
+    return;
+  }
+
+  S.nearMiss = { ...S.nearMiss, state: "ready", rows: data.rows, error: "",
+                 tested: data.tested, ms: data.ms, key };
+  renderNearMisses();
+}
+
+/* ------------------------------------------- the same question, one gameweek
+   A chip changes which fifteen is best, so it changes who nearly made it. A
+   bench boost pays the bench in full and stops the cheap fourth-choice keeper
+   being free; a triple captain is worth more to the man who wears it than to
+   the squad around him; a free hit or a wildcard buys a side for one week out
+   of money the plan has already worked out you can raise. None of that is
+   visible in the board's own answer, which is a horizon, an ordinary armband
+   and a bench worth a fraction.
+
+   So the Chips tab asks the same question its own way: the plan's chosen week,
+   that week's points rather than the discounted horizon, that week's money, and
+   the chip's own scoring. Everything it needs is expressible in the squad model
+   already -- a bench boost is four bench slots weighted 1.0, a triple captain
+   is captainMultiplier 3 -- which is what keeps this one solver and not two. */
+
+/** The single-gameweek squad problem the selected week of a plan describes:
+ *  its pool (priced in that week's points), its budget, and its scoring. */
+function weekSquadProblem(plan, idx) {
+  const week = plan.weeks[idx];
+  const at = plan.gameweeks.indexOf(week.gw);
+  if (at < 0) return null;
+
+  // The plan's own pool, not the board's. Two reasons, and both are about the
+  // comparison meaning something: these are the players the transfer LP was
+  // allowed to pick from, so an "ideal fifteen" drawn from them is one the plan
+  // could actually have reached; and their points are the plan's own numbers
+  // for that week -- survival-adjusted, undecayed -- so a gap here reads as
+  // points in that gameweek rather than as a slice of a discounted horizon.
+  const pool = plan.pool.map((p) => ({
+    id: p.id, pos: p.pos, team: p.team, price: p.price,
+    pts: (p.pts || [])[at] || 0,
+    own: S.byId.get(p.id)?.owned || 0,
+    // candidatePool has already applied the availability filter, and it keeps
+    // the squad you hold regardless — dropping one of your own men here would
+    // make the week's fifteen unrepresentable.
+    p_play: 1,
+  }));
+
+  // What a rebuild that week could actually spend: what the fifteen you would
+  // be holding is worth, plus what is already in the bank.
+  const budget = Math.round(
+    (week.squad.reduce((a, id) => a + (S.byId.get(id)?.price || 0), 0) + week.bank) * 10) / 10;
+
+  const boosted = week.chip === "bboost";
+  return {
+    week, pool,
+    options: {
+      ...solverOptions(),
+      budget,
+      // Under a bench boost every one of the fifteen scores, so the four
+      // substitutes are worth exactly what a starter is and the model should
+      // stop shopping for cheap bodies to fill them.
+      benchSlotWeights: boosted ? { GKP: 1, 1: 1, 2: 1, 3: 1 } : benchWeights(),
+      captainMultiplier: week.chip === "3xc" ? 3 : 2,
+    },
+  };
+}
+
+/** Why that week's ideal fifteen is the one it is, in a sentence. */
+function weekIdealNote(week, budget) {
+  const rebuild = week.chip === "freehit" || week.chip === "wildcard";
+  return {
+    bboost: "all fifteen score, so the bench is bought to play rather than to be affordable",
+    "3xc": "the armband is worth triple, which is worth paying for",
+    freehit: "one week only, out of everything selling the squad would raise",
+    wildcard: "a permanent rebuild, judged on this week alone",
+  }[week.chip] || (rebuild ? "" : "no chip — this is what a rebuild on £"
+      + fmt(budget, 1) + "m would field this week");
+}
+
+async function runWeekNearMisses(idx) {
+  const plan = S.transferPlan.result;
+  if (!plan) return;
+  const problem = weekSquadProblem(plan, idx);
+  if (!problem) return;
+
+  const seq = ++solveSeq;
+  S.weekNearMiss = {
+    state: "solving", rows: [], error: "", gw: problem.week.gw, idx,
+    chip: problem.week.chip || null, budget: problem.options.budget,
+    // Tied to the plan it was run against, not to the settings as they stand:
+    // re-planning is what makes this answer wrong, and the tab already says
+    // when the plan itself has been left behind.
+    key: S.transferPlan.key, seq, progress: { done: 0, total: 0 },
+  };
+  renderWeekNearMisses();
+
+  let data;
+  try {
+    data = await solveInWorker(seq, problem.options, {
+      kind: "nearmiss", pool: problem.pool, settings: {},
+      onProgress: ({ done, total, row }) => {
+        if (seq !== solveSeq) return;
+        S.weekNearMiss.progress = { done, total };
+        if (row) S.weekNearMiss.rows = sortedNearMisses([...S.weekNearMiss.rows, row]);
+        renderWeekNearMisses();
+      },
+    });
+  } catch (error) {
+    if (seq !== solveSeq) {
+      S.weekNearMiss = nearMissCancelled(S.weekNearMiss, seq);
+      renderWeekNearMisses();
+      return;
+    }
+    S.weekNearMiss = { ...S.weekNearMiss, state: "error",
+                       error: String(error.message || error) };
+    renderWeekNearMisses();
+    return;
+  }
+  if (seq !== solveSeq) {
+    S.weekNearMiss = nearMissCancelled(S.weekNearMiss, seq);
+    renderWeekNearMisses();
+    return;
+  }
+
+  // What the plan's own fifteen for that week is worth under the same scoring,
+  // so the gaps below have something to be gaps from. The plan is constrained
+  // by the transfers that got it there and the ideal is not, which is exactly
+  // the distance worth reporting.
+  const pts = new Map(problem.pool.map((p) => [p.id, p.pts]));
+  const held = problem.week.squad.reduce((a, id) => a + (pts.get(id) || 0), 0);
+  const ideal = data.squad.reduce((a, id) => a + (pts.get(id) || 0), 0);
+
+  S.weekNearMiss = { ...S.weekNearMiss, state: "ready", rows: data.rows,
+                     tested: data.tested, ms: data.ms, ideal: data.squad,
+                     idealPoints: ideal, heldPoints: held };
+  renderWeekNearMisses();
 }
 
 /* ------------------------------------------------------ transfers & chips
@@ -5858,6 +6348,17 @@ $("#squadPitch").addEventListener("click", (e) => {
   }
   const edit = e.target.closest("[data-edit]");
   if (edit) openEditor(+edit.dataset.edit);
+});
+$("#nearRun").addEventListener("click", runNearMisses);
+$("#nearClub").addEventListener("click", () => {
+  // A different candidate set is a different answer, so the old one goes rather
+  // than sitting under a button that now says something else.
+  S.nearMiss = { ...S.nearMiss, perClub: !S.nearMiss.perClub, state: "idle", rows: [] };
+  renderNearMisses();
+});
+$("#nearBox").addEventListener("click", (e) => {
+  const row = e.target.closest("[data-near]");
+  if (row) openEditor(+row.dataset.near);
 });
 $("#addPlayer").addEventListener("click", () => openPool());
 $("#poolClose").addEventListener("click", closePool);
