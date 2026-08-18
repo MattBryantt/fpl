@@ -873,18 +873,6 @@ body.noserver .needs-server { display: none !important; }
   border-bottom: 1px solid var(--border);
 }
 .chiptable td, .movetable td { padding: 6px 5px; border-bottom: 1px solid var(--border); }
-/* The verdict and estimate tables are chip-then-numbers, so 2-4 are figures.
-   The sweep and path tables have their own shapes and opt out. */
-.chiptable:not(.path):not(.sweep) td:nth-child(2),
-.chiptable:not(.path):not(.sweep) td:nth-child(3),
-.chiptable:not(.path):not(.sweep) td:nth-child(4) {
-  text-align: right; font-variant-numeric: tabular-nums;
-}
-.chiptable.sweep td:nth-child(2), .chiptable.sweep td:nth-child(3) {
-  text-align: right; font-variant-numeric: tabular-nums;
-}
-.chiptable.sweep td.tag { color: var(--muted); font-size: 12px; padding-left: 14px; }
-.chiptable.sweep td.tag b { color: var(--text-primary); }
 .chiptable.path td:nth-child(n+5) { text-align: right; font-variant-numeric: tabular-nums; }
 .chiptable.path tbody tr { cursor: pointer; }
 .chiptable.path tbody tr:hover { background: var(--hover); }
@@ -893,6 +881,67 @@ body.noserver .needs-server { display: none !important; }
 }
 .chiptable tr.picked > td { background: var(--hover); }
 .chiptable tr.haschip > td:first-child { font-weight: 600; }
+
+/* The one chip table: a chip per row, a gameweek per column, so "which week is
+   this chip worth playing?" is read across and "which chip wants this week?" is
+   read down. Every figure is points, so one alignment rule covers the lot. */
+.chiptable.worth td:nth-child(n+2):not(.read) {
+  text-align: right; font-variant-numeric: tabular-nums;
+}
+.chiptable.worth th:nth-child(n+2):not(.read) { text-align: right; }
+.chiptable.worth td.read, .chiptable.worth th.read {
+  padding-left: 14px; min-width: 190px; text-align: left;
+}
+.chiptable.worth td.read { color: var(--text-secondary); font-size: 12.5px; }
+/* Estimated figures never look like re-solved ones. Muted plus a dotted rule is
+   two encodings, so the distinction survives a greyscale print or a colourblind
+   reader -- it is the difference between a number you can act on and one you
+   cannot read across, so it cannot rest on weight alone. */
+.chiptable.worth td.est { color: var(--muted); border-bottom-style: dotted; }
+.chiptable.worth td.on {
+  font-weight: 700; color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--series-1); border-radius: 4px;
+}
+.chiptable.worth td.peak { color: var(--series-1); font-weight: 600; }
+.chiptable.worth td.na { color: var(--border); }
+.chipkey {
+  display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
+  margin-top: 8px; font-size: 12px; color: var(--muted);
+}
+/* The footnote, as a definition list: a reader scanning for "what does Hold
+   mean?" finds the term, not a sentence four lines into a paragraph. */
+.chipnote dl {
+  display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px;
+  margin: 8px 0 0; align-items: baseline;
+}
+.chipnote dt { font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+.chipnote dd { margin: 0; }
+@media (max-width: 620px) {
+  .chipnote dl { grid-template-columns: 1fr; gap: 2px; }
+  .chipnote dd { margin-bottom: 6px; }
+}
+.chipkey .swatch {
+  display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+  box-shadow: inset 0 0 0 1px var(--series-1); vertical-align: -1px; margin-right: 5px;
+}
+
+/* Everything that is not the headline answer folds away. The tab had six blocks
+   stacked on one page and no way to tell which one answered your question; the
+   two solve-on-demand ones are now shut until asked for. */
+.chipfold {
+  margin-top: 14px; border: 1px solid var(--border); border-radius: 8px; padding: 0 12px;
+}
+.chipfold > summary {
+  cursor: pointer; padding: 10px 0; font-size: 13px; font-weight: 600;
+  color: var(--text-primary); list-style: none;
+}
+.chipfold > summary::-webkit-details-marker { display: none; }
+.chipfold > summary::before { content: "▸ "; color: var(--muted); }
+.chipfold[open] > summary::before { content: "▾ "; }
+.chipfold > summary .scope {
+  font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 6px;
+}
+.chipfold > .foldbody { padding-bottom: 12px; }
 
 /* Week selector above the plan pitch. The plan is six gameweeks long and the
    chip is rarely in the first, so which week is on the pitch has to be both
@@ -1404,13 +1453,14 @@ gameweek of the transfer-and-chip plan.">Free transfers</label>
   <div class="cardhead">
     <div>
       <h2 style="margin:0 0 3px">Transfers &amp; chips</h2>
-      <div class="sub">Solves the transfer path and chip timing together, the same way
-        <code>fpl.py transfers</code> does — a bench boost is only worth playing if the
-        bench a transfer built weeks earlier is worth fielding, and a free hit is a squad
-        bought out of what selling yours would raise. The path starts from the fifteen you
-        currently hold; every gameweek of it is also <b>rebuilt from scratch</b> for the
-        chip in force, so you can see the squad the chip actually wants next to the one
-        the transfers can afford to reach.</div>
+      <div class="sub">One plan, solved over the whole window: the transfer path and the
+        chip timing together, the same way <code>fpl.py transfers</code> does — a bench
+        boost is only worth playing if the bench a transfer built weeks earlier is worth
+        fielding, and a free hit is a squad bought out of what selling yours would raise.
+        It starts from the fifteen you currently hold and charges for every move away from
+        it. Everything below answers <b>that</b> plan across GW-by-GW: the table prices each
+        chip in each week, the chart is what the plan scores against holding your squad, and
+        the pitch is whichever week you select.</div>
     </div>
   </div>
   <div id="chipsBody"></div>
@@ -1710,7 +1760,7 @@ const S = {
   // worth to the squad I already have?). A modelling choice worth keeping, so
   // unlike the two above it is saved with the settings.
   transferMode: "plan",
-  views: { gw: "chart", exp: "chart", tl: "chart" },
+  views: { gw: "chart", exp: "chart", tl: "chart", plan: "chart" },
   // How you have chosen to look at the board: which section, which numbers ride
   // on a shirt, which squad the right-hand pitch holds, and any two players
   // being read against each other. All saved -- re-choosing them on every load
@@ -1753,6 +1803,12 @@ const S = {
   // if I play this?" means throwing the ownership away and re-solving, which is
   // exactly what this is.
   weekIdeal: { key: null, byWeek: {} },
+  // Which of the Chips tab's collapsible blocks you have opened. Both boxes are
+  // re-rendered wholesale whenever their solve advances, which throws away the
+  // <details> element's own open state, so it is held here instead — a block
+  // snapping shut mid-solve because a progress tick redrew it is worse than the
+  // wall of stacked sections the folds exist to fix.
+  chipFolds: { ideal: false, near: false },
 };
 S.squad = loadLocal(STORE.squad, []);
 
@@ -1802,7 +1858,11 @@ const DEFAULT_SETTINGS = { horizon: "8", gwdecay: "0.79", budget: "100", ownw: "
                            minstart: "0.3", maxclub: "3", formation: "", freetransfers: "1" };
 const DEFAULT_BENCH = { GKP: 0.03, "1": 0.24, "2": 0.10, "3": 0.04 };
 const VIEW_PANES = { gw: ["#gwChart", "#gwTable"], exp: ["#expChart", "#expTable"],
-                     tl: ["#tlChart", "#tlTable"] };
+                     tl: ["#tlChart", "#tlTable"],
+                     // The Chips tab's own line chart. Its toggle lives inside
+                     // #chipsBody, which is rebuilt on every render, so it is
+                     // wired in renderChips rather than once at load.
+                     plan: ["#planChart", "#planChartTable"] };
 
 /* ------------------------------------------------------------ fixture decay
 
@@ -1877,8 +1937,13 @@ function setView(which, mode) {
   const panes = VIEW_PANES[which];
   if (!panes) return;
   const table = mode === "table";
-  $(panes[0]).classList.toggle("hidden", table);
-  $(panes[1]).classList.toggle("hidden", !table);
+  // The Chips tab's panes only exist once a plan has been solved, so a saved
+  // preference restored at load has nothing to act on yet. Record it anyway --
+  // renderChips reads S.views when it writes the markup, so the preference
+  // applies the moment the panes appear.
+  const chart = $(panes[0]), tbl = $(panes[1]);
+  chart?.classList.toggle("hidden", table);
+  tbl?.classList.toggle("hidden", !table);
   const btn = document.querySelector(`.toggle[data-view="${which}"]`);
   if (btn) btn.textContent = table ? "Chart" : "Table";
   S.views[which] = table ? "table" : "chart";
@@ -2851,8 +2916,21 @@ function renderWeekNearMisses() {
 
 function wireWeekNearMiss() {
   $("#weekNearBtn")?.addEventListener("click", () => runWeekNearMisses(S.planWeek));
+  wireChipFolds("#weekNearBox");
   document.querySelectorAll("#weekNearBox [data-near]").forEach((row) =>
     row.addEventListener("click", () => openEditor(+row.dataset.near)));
+}
+
+/** Remember which folds are open across the re-renders their own solves cause.
+ *  Listens on the summary rather than on `toggle`, because the toggle event
+ *  fires when the element is recreated with the `open` attribute we just set
+ *  from state, which would flip it straight back. */
+function wireChipFolds(scope) {
+  document.querySelectorAll(`${scope} [data-fold]`).forEach((sum) =>
+    sum.addEventListener("click", () => {
+      const which = sum.dataset.fold;
+      S.chipFolds = { ...S.chipFolds, [which]: !sum.parentElement.open };
+    }));
 }
 
 /** Redraw only the rebuild block. Same reason renderWeekNearMisses exists: the
@@ -2877,6 +2955,7 @@ function wireWeekIdeal() {
   if (!plan) return;
   const idx = Math.min(Math.max(S.planWeek, 0), plan.weeks.length - 1);
   $("#weekIdealBtn")?.addEventListener("click", () => solveWeekIdeal(idx, { force: true }));
+  wireChipFolds("#weekIdealBox");
 
   const pitch = $("#weekIdealPitch");
   const st = weekIdealState(idx);
@@ -2928,24 +3007,38 @@ function weekIdealHTML(plan, idx) {
   const st = weekIdealState(idx);
   const solving = st?.state === "solving";
 
-  const head = `<h4 style="margin:18px 0 6px">Built for GW${week.gw}${
-    chipName ? ", " + chipName.toLowerCase() : ""}
-    <button class="mini" id="weekIdealBtn" ${solving ? "disabled" : ""}
-      style="margin-left:8px">${solving ? "Solving…"
-        : st?.state === "ready" ? "Solve again" : "Rebuild this week"}</button></h4>`;
+  // Shut unless you opened it, and nothing else may open it. This block is
+  // solved automatically for the selected week, so keying the fold off "is there
+  // an answer" would leave it permanently expanded -- which is the state that
+  // made it read as the tab's headline when it is nothing of the kind: it is one
+  // gameweek, solved on its own, and next to a pitch it looks like a squad to go
+  // and buy.
+  const open = S.chipFolds.ideal;
+  const head = `<summary data-fold="ideal">Best fifteen for GW${week.gw} alone${
+    chipName ? `, ${chipName.toLowerCase()}` : ""}
+    <span class="scope">— this gameweek only, ignores the rest of the window</span></summary>`;
 
-  const premise = `<div class="sub">The best fifteen this week's money could buy if it were
-    picked for this week from scratch${week.chip ? `, with the ${chipName.toLowerCase()} in
-    force — rather than the fifteen you own with a chip laid over it`
-      : " — rather than where the plan's transfers can afford to leave you"}. The plan has to
-    pay for every move towards this one; this does not, which is what makes the difference
-    between them worth reading.</div>`;
+  const wrap = (body) => `<details class="chipfold"${open ? " open" : ""}>${head}
+    <div class="foldbody">${body}</div></details>`;
 
-  if (!st) return head + premise;
-  if (solving) return head + premise + `<div class="sub" style="margin-top:6px">Rebuilding
-    GW${week.gw} on £${fmt(st.budget, 1)}m…</div>`;
+  const btn = `<button class="mini" id="weekIdealBtn" ${solving ? "disabled" : ""}>${
+    solving ? "Solving…" : st?.state === "ready" ? "Solve again" : "Rebuild this week"}</button>`;
+
+  const premise = `<div class="sub" style="margin-bottom:8px">The best fifteen this week's
+    money could buy if it were picked for <b>GW${week.gw} on its own</b>${week.chip
+      ? `, with the ${chipName.toLowerCase()} in force — rather than the fifteen you own with
+         a chip laid over it`
+      : " — rather than where the plan's transfers can afford to leave you"}. It maximises
+    that one gameweek and nothing after it, so it is not a squad to keep — it is the ceiling
+    the plan is being measured against, and the plan has to pay for every move towards it
+    while this does not. The line chart above is the horizon answer; this is the week.</div>`;
+
+  if (!st) return wrap(premise + btn);
+  if (solving) return wrap(premise + btn + `<div class="sub" style="margin-top:6px">Rebuilding
+    GW${week.gw} on £${fmt(st.budget, 1)}m…</div>`);
   if (st.state === "error") {
-    return head + `<div class="issue bad"><span class="ico">!</span><span>${st.error}</span></div>`;
+    return wrap(premise + btn
+      + `<div class="issue bad"><span class="ico">!</span><span>${st.error}</span></div>`);
   }
 
   const price = (id) => S.byId.get(id)?.price || 0;
@@ -2990,8 +3083,8 @@ function weekIdealHTML(plan, idx) {
         transfers, which is the charge the plan is weighing and this rebuild is not.</div>`
     : `<div class="sub">No changes — the plan already holds the best fifteen for this week.</div>`;
 
-  return head + premise + `<div id="weekIdealPitch" style="margin-top:10px"></div>`
-    + `<h4 style="margin:14px 0 6px">What it would take</h4>` + summary + moves;
+  return wrap(premise + btn + `<div id="weekIdealPitch" style="margin-top:10px"></div>`
+    + `<h4 style="margin:14px 0 6px">What it would take</h4>` + summary + moves);
 }
 
 /** The near-miss block inside one gameweek of a transfer plan.
@@ -3008,34 +3101,39 @@ function weekNearMissHTML(plan, idx) {
   const solving = mine && near.state === "solving";
   const chipName = week.chip ? plan.chipLabels[week.chip] : "";
 
-  const head = `<h4 style="margin:18px 0 6px">Nearly in — GW${week.gw}${
-    chipName ? ", " + chipName.toLowerCase() : ""}
-    <button class="mini" id="weekNearBtn" ${solving ? "disabled" : ""}
-      style="margin-left:8px">${solving ? "Solving…"
-        : mine && near.state === "ready" ? "Solve again" : "Who else?"}</button></h4>`;
+  const open = S.chipFolds.near || (mine && near.state !== "idle");
+  const head = `<summary data-fold="near">Who nearly made GW${week.gw}${
+    chipName ? `, ${chipName.toLowerCase()}` : ""}
+    <span class="scope">— this gameweek only, one re-solve per candidate</span></summary>`;
+  const wrap = (body) => `<details class="chipfold"${open ? " open" : ""}>${head}
+    <div class="foldbody">${body}</div></details>`;
+
+  const btn = `<button class="mini" id="weekNearBtn" ${solving ? "disabled" : ""}>${
+    solving ? "Solving…" : mine && near.state === "ready" ? "Solve again" : "Who else?"}</button>`;
 
   if (!mine) {
-    return head + `<div class="sub">Who the best fifteen this week's money could buy
-      leaves out, and by how little — scored on GW${week.gw} alone${week.chip
+    return wrap(`<div class="sub" style="margin-bottom:8px">Who the best fifteen this week's
+      money could buy leaves out, and by how little — scored on GW${week.gw} alone${week.chip
         ? ` with the ${chipName.toLowerCase()} in force` : ""}, not on the horizon the
-      board ranks on. One re-solve per candidate.</div>`;
+      board ranks on. One re-solve per candidate.</div>` + btn);
   }
   if (solving) {
     const { done, total } = near.progress;
     const at = plan.gameweeks.indexOf(week.gw);
-    return head + `<div class="sub">Rebuilding GW${week.gw} around each candidate —
+    return wrap(`<div class="sub">Rebuilding GW${week.gw} around each candidate —
       ${done} of ${total || "?"}. The order settles as it goes.</div>
       <div class="meter" style="margin-bottom:12px"><div style="width:${
         total ? (done / total) * 100 : 0}%"></div></div>`
       + (near.rows.length ? nearMissTableHTML(near.rows,
-          (p) => (plan.pointsByPlayer.get(p.id) || [])[at] || 0, `GW${week.gw}`) : "");
+          (p) => (plan.pointsByPlayer.get(p.id) || [])[at] || 0, `GW${week.gw}`) : ""));
   }
   if (near.state === "error") {
-    return head + `<div class="issue bad"><span class="ico">!</span><span>${near.error}</span></div>`;
+    return wrap(btn
+      + `<div class="issue bad"><span class="ico">!</span><span>${near.error}</span></div>`);
   }
   if (!near.rows.length) {
-    return head + `<div class="sub">Nobody to test — every player the solver can
-      see is already in this week's fifteen.</div>`;
+    return wrap(`<div class="sub" style="margin-bottom:8px">Nobody to test — every player the
+      solver can see is already in this week's fifteen.</div>` + btn);
   }
 
   // What that ideal fifteen *is*, and what holding the plan's one instead
@@ -3047,12 +3145,12 @@ function weekNearMissHTML(plan, idx) {
      rebuild shown above, on £${fmt(near.budget, 1)}m — each row is what the squad gives up
      to hold that player instead.</div>`;
 
-  return head + summary
+  return wrap(summary + btn
     + nearMissTableHTML(near.rows, (p) => (plan.pointsByPlayer.get(p.id)
         || [])[plan.gameweeks.indexOf(week.gw)] || 0, `GW${week.gw}`)
     + `<p class="sub" style="margin:8px 0 0">${near.tested} candidates re-solved in
        ${((near.ms || 0) / 1000).toFixed(1)}s, each one a full rebuild of the other
-       fourteen around him.</p>`;
+       fourteen around him.</p>`);
 }
 
 /* ------------------------------------------------------ transfers & chips
@@ -3076,7 +3174,61 @@ function weekNearMissHTML(plan, idx) {
      bench boost plays the chip over the bench you already have. Each week is
      therefore also rebuilt from scratch under that week's chip, money and
      points (solveWeekIdeal) and the two squads are shown together. */
-function renderChipVerdictsHTML(plan) {
+/** Every chip's worth in every gameweek of the window, from the best source
+ *  each chip has.
+ *
+ *  Two sources, and the difference between them is the single thing a reader has
+ *  to keep straight, so it is carried on the data rather than left to prose:
+ *
+ *  - `solved: true` — one full re-solve of the whole plan per candidate week
+ *    with the chip pinned there, so every week got to build its own squad. Only
+ *    committed chips get this, because it costs a solve a week.
+ *  - `solved: false` — the cheap estimate, which prices the chip against
+ *    whatever fifteen the single plan happens to hold that week. Only the week
+ *    the chip was actually played has a squad built for it, so those rows are
+ *    understated everywhere else and cannot honestly be read across.
+ *
+ *  `total` is the discounted objective the solver actually maximises, and is
+ *  what picks the week; `worth` is the undecayed payout, which is what a person
+ *  means by "what is this chip worth". They routinely disagree, and when they
+ *  do it is the decay choosing rather than the fixtures. */
+function chipWorthSeries(plan) {
+  const estimate = chipPayouts({
+    squads: new Map(plan.weeks.map((w) => [w.gw, w.squad])),
+    pointsByPlayer: plan.pointsByPlayer, gameweeks: plan.gameweeks,
+    positions: plan.positions, slotWeight: plan.opt.slotWeight,
+  });
+  const out = {};
+  for (const chip of Object.keys(plan.opt.chips)) {
+    const sweep = plan.resolved?.[chip] || null;
+    const solved = !!sweep && Object.keys(sweep).length > 1;
+    // Pinning a chip narrows `opt.chips` to the one week you chose, but the
+    // sweep still covers every week it could have gone in -- and showing the
+    // whole row is exactly how you see what the pin cost.
+    const legal = new Set([...(plan.opt.chips[chip] || []), ...(plan.sweepSlots?.[chip] || [])]);
+    const byGw = {};
+    for (const gw of plan.gameweeks) {
+      if (!legal.has(gw)) { byGw[gw] = null; continue; }
+      byGw[gw] = solved
+        ? (sweep[gw] ? { worth: sweep[gw].payout, total: sweep[gw].objective } : null)
+        : { worth: estimate[chip]?.[gw] ?? null, total: null };
+    }
+    out[chip] = { solved, byGw };
+  }
+  return out;
+}
+
+/** The one chip table: a chip per row, a gameweek per column, one figure per
+ *  cell.
+ *
+ *  This replaced three tables that each priced chips a different way and sat one
+ *  under the other — a verdict table, a per-chip sweep table, and an estimate
+ *  grid — which is what made the tab impossible to read: the same chip appeared
+ *  three times carrying three numbers, and nothing on screen said which of them
+ *  to believe. There is one number per chip per week now, drawn from the best
+ *  source that chip has, and the source is marked on the cell itself. */
+function renderChipTableHTML(plan) {
+  const rules = S.snapshot.rules;
   const squads = new Map(plan.weeks.map((w) => [w.gw, w.squad]));
   const rows = chipReport({
     chips: plan.opt.chips, chipByGw: plan.chipByGw, squads,
@@ -3086,27 +3238,64 @@ function renderChipVerdictsHTML(plan) {
     forced: plan.forceChips, slotWeight: plan.opt.slotWeight,
     resolved: plan.resolved || {}, pinned: plan.pinned || {},
   });
-  if (!rows.length) return `<div class="sub" style="margin-top:10px">No chips are legal in this window.</div>`;
-  return `<table class="chiptable" style="margin-top:10px"><thead><tr>
-      <th>Chip</th><th>GW</th><th>Worth</th><th>Edge</th><th>Read</th>
+  if (!rows.length) {
+    return `<div class="sub" style="margin-top:10px">No chips are legal in this window.</div>`;
+  }
+  const series = chipWorthSeries(plan);
+  const anyEstimated = Object.values(series).some((s) => !s.solved);
+  const anySolved = Object.values(series).some((s) => s.solved);
+
+  const cells = (r) => plan.gameweeks.map((gw) => {
+    const s = series[r.chip];
+    const cell = s?.byGw?.[gw];
+    if (!cell) return `<td class="na" title="${s ? `The ${r.label.toLowerCase()} cannot be played in GW${gw}.`
+      : ""}">—</td>`;
+    const classes = [];
+    if (!s.solved) classes.push("est");
+    if (gw === r.gw) classes.push("on");
+    // The raw peak, not the best objective: the objective is what chose the week
+    // the plan plays, so marking it is almost always marking the same cell
+    // twice. The week that *pays* most and was not taken is the one a reader
+    // stops at, and the Read column is there to say why it was not taken.
+    else if (s.solved && gw === r.bestRawGw) classes.push("peak");
+    // The objective is the number that actually chose the week, so it belongs
+    // where the week is chosen -- on the cell, not in a table of its own.
+    const tip = [
+      `GW${gw} · ${r.label}`,
+      cell.worth == null ? "no per-gameweek payout — it pays through the squad it buys"
+        : `worth ${fmt(cell.worth, 1)} pts, undecayed`,
+      cell.total == null ? "estimated against the squad this plan happens to hold"
+        : `plan total ${fmt(cell.total, 1)} — the discounted score the solver ranks on`,
+    ].join("\n");
+    return `<td class="${classes.join(" ")}" title="${tip}">${
+      cell.worth == null ? "·" : fmt(cell.worth, 1)}</td>`;
+  }).join("");
+
+  return `
+  <h4 style="margin:18px 0 4px">What each chip is worth, week by week</h4>
+  <table class="chiptable worth"><thead><tr>
+      <th>Chip</th>${plan.gameweeks.map((gw) => `<th>GW${gw}</th>`).join("")}
+      <th title="What the chip has to clear to be worth playing inside this window rather than held for a double or a blank later">Hold</th>
+      <th class="read">Read</th>
     </tr></thead><tbody>${rows.map((r) => `<tr>
       <td>${r.label}</td>
-      <td>${r.gw ?? "—"}</td>
-      <td>${r.worth == null ? "—" : fmt(r.worth, 1)}</td>
-      <td>${r.edge == null ? "—" : fmt(r.edge, 1)}</td>
-      <td>${r.verdict}</td>
+      ${series[r.chip] ? cells(r) : plan.gameweeks.map(() => `<td class="na">—</td>`).join("")}
+      <td>${fmt(rules.CHIP_HOLD_VALUE[r.chip] ?? 0, 0)}</td>
+      <td class="read">${r.verdict}</td>
     </tr>`).join("")}</tbody></table>
-    ${renderChipWindowHTML(plan)}
-    ${plan.forceChips.map((chip) => renderChipSweepHTML(plan, chip)).join("")}
-    ${renderChipEstimateHTML(plan)}`;
+  <div class="chipkey">
+    <span><span class="swatch"></span>the week the plan plays it</span>
+    ${anySolved ? `<span><b style="color:var(--series-1)">12.3</b> pays most, but was not taken</span>` : ""}
+    ${anyEstimated ? `<span><i style="border-bottom:1px dotted currentColor">12.3</i> estimated, not re-solved</span>` : ""}
+    <span>Hover any figure for what is behind it.</span>
+  </div>
+  ${renderChipNoteHTML(plan, { anyEstimated, anySolved })}`;
 }
 
-/** What the plan could and could not see. The window is six gameweeks and the
- *  chips are legal for nineteen, so "hold" always means "hold, on this
- *  evidence" — and everything past the window is represented by a single
- *  reservation price rather than by any fixture. Saying so is cheap and stops
- *  the table above reading as more than it is. */
-function renderChipWindowHTML(plan) {
+/** The one footnote under the one table: what the numbers are, where they came
+ *  from, and what the plan could not see. Every sentence here was previously
+ *  repeated under one of the three tables this replaced. */
+function renderChipNoteHTML(plan, { anyEstimated, anySolved }) {
   const gws = plan.gameweeks;
   const rules = S.snapshot.rules;
   const windows = S.meta?.chip_windows || {};
@@ -3114,127 +3303,255 @@ function renderChipWindowHTML(plan) {
     .filter(([chip]) => chip in plan.opt.chips)
     .map(([, w]) => w[1]);
   const legalTo = ends.length ? Math.max(...ends) : null;
-  const held = plan.forceChips.length
-    ? `Forced chips carry no reserve — you have already decided to play them, so the
-       only question left is when.`
-    : `Chips the plan holds were beaten by their reservation price
-       (${Object.entries(rules.CHIP_HOLD_VALUE).map(([c, v]) => `${rules.CHIP_LABELS[c]} ${fmt(v, 0)}`).join(", ")}),
-       which stands in for every gameweek past GW${gws[gws.length - 1]}.`;
-  return `<div class="sub" style="margin-top:8px">Planned over GW${gws[0]}–GW${gws[gws.length - 1]}${
+  const reserves = Object.entries(rules.CHIP_HOLD_VALUE)
+    .map(([c, v]) => `${rules.CHIP_LABELS[c]} ${fmt(v, 0)}`).join(", ");
+
+  // One labelled line per thing a reader can actually be wrong about, rather
+  // than the three paragraphs this replaced. Every claim below was previously
+  // buried mid-sentence under a table that no longer exists.
+  const lines = [];
+  if (anySolved) {
+    lines.push([`Solid figures`, `one full re-solve of the whole plan per week, with the chip
+      pinned there — so each week built its own squad. The only comparison that means
+      anything, since the point of a bench boost is the bench you buy for it.`]);
+  }
+  if (anyEstimated) {
+    lines.push([`Dotted figures`, `<b>do not read these across.</b> They price the chip
+      against whatever fifteen this one plan happens to hold that week, and only the week
+      the chip was actually played has a squad built for it — so the rest are understated,
+      by up to a couple of points. Tick a chip above to re-solve its weeks properly.`]);
+  }
+  lines.push([`A ·`, `no per-gameweek payout of its own. The free hit pays through the
+    squad it buys for that one week, so it is priced by plan total rather than by worth.`]);
+  lines.push([`Hold`, `what the chip must clear to be worth playing inside this window
+    rather than saved for a double or a blank later. <b>These are hand-set constants</b>
+    (${reserves}) — not fitted from your data. They live in <code>fplkit/config.py</code> as
+    <code>CHIP_HOLD_VALUE</code>, and are the published aggregates for a chip played on a
+    double or a blank: a double-gameweek bench boost returns 15–25 against 8–12 in an
+    ordinary week, so 14 is the low end of the case for waiting. Without them a chip left
+    unplayed at the end of the window is worth zero and the plan burns all three in the
+    first three gameweeks.${plan.forceChips.length ? ` A chip you have committed to carries
+    no reserve — you have already decided to play it, so the only question left is when.`
+      : ""}`]);
+  lines.push([`Window`, `GW${gws[0]}–GW${gws[gws.length - 1]}${
     S.gameweeks.length > gws.length ? ` of the ${S.gameweeks.length} in this snapshot` : ""
-  }${legalTo && legalTo > gws[gws.length - 1] ? `; these chips stay legal to GW${legalTo}` : ""}. ${held}
-    ${noDecay() ? `Decay is off, so every gameweek in the window counts equally and no
-         dropout risk is priced in.`
+  }${legalTo && legalTo > gws[gws.length - 1] ? `; these chips stay legal to GW${legalTo}` : ""}.
+    ${noDecay() ? `Decay is off, so every gameweek counts equally and no dropout risk is
+         priced in.`
       : `Later gameweeks are discounted (half-life ${fmt(rules.TRANSFER_HALF_LIFE, 1)}) and each
-         player's points are cut by his chance of dropping out, which on a calendar with no
-         doubles or blanks is enough to pick a chip's week on its own — the <b>No decay</b>
-         toggle in Settings turns both off.`}</div>`;
+         player's points are cut by his chance of dropping out — on a calendar with no doubles
+         or blanks that is enough to pick a chip's week on its own. <b>No decay</b> in
+         Settings turns both off.`}`]);
+
+  return `<div class="sub chipnote">Figures are points the chip pays that week, undecayed.
+    <dl>${lines.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl></div>`;
 }
 
-/** The honest per-gameweek comparison: one full re-solve per candidate week,
- *  with the chip pinned there and the squad free to be built around it.
+/* ------------------------------------------------- the plan's weekly profile
+   The headline of the tab, and the thing it had no answer to before: a plan is
+   six gameweeks of decisions and the tab only ever showed totals, so "when does
+   this actually pay?" could not be read off it at all.
+
+   Two lines, both scored on the plan's own per-gameweek numbers so the gap
+   between them is points and not an artefact of two different models:
+
+   - what the plan scores each week, transfers, hits and chips included;
+   - what the fifteen you hold today scores each week if you never touch it.
+
+   The second is the baseline the first has to beat, and it is free -- no solve,
+   just your squad priced on the plan's own numbers. Chip weeks are marked with a
+   band and a label rather than by colour, so the mark survives a greyscale print
+   and a colourblind reader both. */
+
+/** What `ids` score in one gameweek of a plan, on the plan's own per-gameweek
+ *  numbers rather than the board's — the same quantity `transfers.js` records as
+ *  a week's `xiPoints`, so the two series can be subtracted.
  *
- *  Laid out a row per gameweek rather than a column, because there are two
- *  numbers per week and they routinely disagree. "Worth" is what the chip pays
- *  in undecayed points — the number a person means when they ask which week is
- *  best. "Plan total" is the discounted objective the solver actually maximises,
- *  and is what picks the week. When the two peaks are different rows, the decay
- *  moved the chip earlier than the fixtures alone would have, and that is worth
- *  seeing rather than inferring. */
-function renderChipSweepHTML(plan, chip) {
-  const sweep = plan.resolved?.[chip];
-  if (!sweep || Object.keys(sweep).length < 2) return "";
-  const rules = S.snapshot.rules;
-  const playedGw = [...plan.chipByGw.entries()].find(([, c]) => c === chip)?.[0] ?? null;
-  const pin = plan.pinned?.[chip] ?? null;
-  const entries = plan.gameweeks.filter((gw) => sweep[gw]).map((gw) => ({ gw, ...sweep[gw] }));
-  const best = (key) => entries.reduce((a, b) => (b[key] > a[key] ? b : a), entries[0]);
-  const bestObj = best("objective"), bestRaw = best("payout");
-  const infeasible = (plan.sweepSlots?.[chip] || []).filter((gw) => !sweep[gw]);
-
-  return `
-  <h4 style="margin:18px 0 4px">${rules.CHIP_LABELS[chip]} — every gameweek re-solved</h4>
-  <table class="chiptable sweep"><thead><tr>
-      <th>GW</th><th>Worth (raw)</th><th>Plan total</th><th></th>
-    </tr></thead><tbody>${entries.map((e) => {
-      const tags = [];
-      if (e.gw === playedGw) tags.push(pin === null ? `<b>played</b>` : `<b>your week</b>`);
-      if (e.gw === bestRaw.gw && e.gw !== playedGw) tags.push("best raw worth");
-      if (e.gw === bestObj.gw && e.gw !== playedGw) tags.push("best plan total");
-      // Against the week you chose, not against the best one -- the question a
-      // pinned chip raises is "what did my pick cost?", and the sign says it.
-      if (pin !== null && e.gw !== pin && sweep[pin]) {
-        const d = e.objective - sweep[pin].objective;
-        tags.push(`${d >= 0 ? "+" : ""}${fmt(d, 1)} vs yours`);
-      }
-      return `<tr class="${e.gw === playedGw ? "picked" : ""}">
-        <td>GW${e.gw}</td>
-        <td>${e.payout == null ? "—" : fmt(e.payout, 1)}</td>
-        <td>${fmt(e.objective, 1)}</td>
-        <td class="tag">${tags.join(" · ")}</td>
-      </tr>`;
-    }).join("")}</tbody></table>
-  <div class="sub" style="margin-top:6px">Each row is a complete re-solve of the whole
-    plan with the chip pinned to that gameweek, so every week got to build its own squad
-    — the only comparison that means anything, since the point of a bench boost is the
-    bench you buy for it. <b>Worth</b> is the chip's payout in that week, undecayed.
-    <b>Plan total</b> is the discounted objective the solver maximises, and is what
-    chooses the week.${
-      pin !== null
-        ? (bestObj.gw === pin
-            ? ` You picked GW${pin}, and it is also the best week on plan total.`
-            : ` You picked GW${pin}. GW${bestObj.gw} scores
-                ${fmt(bestObj.objective - (sweep[pin]?.objective ?? 0), 1)} more over the window
-                — set the chip back to <b>best week</b> to take it.`)
-      : bestRaw.gw !== bestObj.gw
-        ? ` They disagree here: GW${bestRaw.gw} pays most (${fmt(bestRaw.payout, 1)}) but
-            GW${bestObj.gw} wins on plan total, because the discount on later gameweeks
-            outweighs the extra ${fmt(bestRaw.payout - (sweep[bestObj.gw]?.payout ?? 0), 1)}
-            points. Turn off decay in the header to see the undiscounted answer.`
-        : ` They agree here, so the choice is the fixtures rather than the discount.`
-    }${infeasible.length ? ` GW${infeasible.join(", GW")} had no legal plan with the chip pinned there.` : ""}</div>`;
+ *  `boosted` is the exception it looks like: under a bench boost all fifteen
+ *  score, so there is no XI to pick. `multiplier` is the armband's, which a
+ *  triple captain moves to three. */
+function planWeekPoints(plan, ids, at, { boosted = false, multiplier = 2 } = {}) {
+  const scoreOf = (p) => (plan.pointsByPlayer.get(p.id) || [])[at] || 0;
+  const held = ids.filter((id) => S.byId.has(id));
+  if (!held.length) return 0;
+  const captain = Math.max(...held.map((id) => scoreOf(S.byId.get(id))), 0);
+  const fielded = boosted
+    ? held.reduce((a, id) => a + scoreOf(S.byId.get(id)), 0)
+    : bestXI(held, scoreOf).total;
+  return fielded + (multiplier - 1) * captain;
 }
 
-/** The cheap estimate, for chips nobody forced. Kept because it still answers
- *  "roughly what is this chip worth to the squad I am going to have?", and
- *  labelled for what it is: every column but the played one prices the chip
- *  against a fifteen built for a different week, so the row cannot be read
- *  across. Forcing the chip buys the real comparison above. */
-function renderChipEstimateHTML(plan) {
-  const rules = S.snapshot.rules;
-  const payouts = chipPayouts({
-    squads: new Map(plan.weeks.map((w) => [w.gw, w.squad])),
-    pointsByPlayer: plan.pointsByPlayer, gameweeks: plan.gameweeks,
-    positions: plan.positions, slotWeight: plan.opt.slotWeight,
-  });
-  const forced = new Set(plan.forceChips);
-  const chips = Object.keys(plan.opt.chips).filter((chip) => payouts[chip] && !forced.has(chip));
-  if (!chips.length) return "";
+/** The two series the chart and its table view both read from. */
+function planChartSeries(plan) {
+  const gws = plan.gameweeks;
+  return [
+    { name: "This plan", color: slotColor(0),
+      data: plan.weeks.map((w) => w.xiPoints) },
+    { name: "Your squad, no transfers", color: slotColor(1),
+      // The chip is held constant across both lines, or the one week that
+      // matters most would be comparing two different things: the question here
+      // is what the *transfers* bought, so a bench-boost week scores all fifteen
+      // on both sides and a triple-captain week pays the third multiple on both.
+      // Vary the squad, hold the chip.
+      data: gws.map((gw, i) => planWeekPoints(plan, S.squad, i, {
+        boosted: plan.chipByGw.get(gw) === "bboost",
+        multiplier: plan.chipByGw.get(gw) === "3xc" ? 3 : 2,
+      })) },
+  ];
+}
 
-  return `
-  <h4 style="margin:18px 0 4px">Chips this plan did not commit to <span class="sub"
-    style="text-transform:none;letter-spacing:0;font-weight:400">— estimated, not re-solved</span></h4>
-  <table class="chiptable"><thead><tr>
-      <th>Chip</th>${plan.gameweeks.map((gw) => `<th>GW${gw}</th>`).join("")}
-      <th>Reserve</th><th>Played</th>
-    </tr></thead><tbody>${chips.map((chip) => {
-      const allowed = new Set(plan.opt.chips[chip]);
-      const playedGw = [...plan.chipByGw.entries()].find(([, c]) => c === chip)?.[0] ?? null;
-      return `<tr>
-        <td>${rules.CHIP_LABELS[chip]}</td>
-        ${plan.gameweeks.map((gw) => `<td>${allowed.has(gw) ? fmt(payouts[chip][gw], 1) : "—"}</td>`).join("")}
-        <td>${fmt(rules.CHIP_HOLD_VALUE[chip] ?? 0, 1)}</td>
-        <td>${playedGw === null ? "—" : "GW" + playedGw}</td>
-      </tr>`;
-    }).join("")}</tbody></table>
-  <div class="sub" style="margin-top:6px"><b>Do not read these across.</b> Each number
-    prices the chip against whatever fifteen this one plan happens to hold that gameweek,
-    and only the week a chip was actually played has a squad built for it — so the other
-    weeks are understated, by up to a couple of points. Tick a chip under
-    <b>Must play</b> to re-solve every one of its gameweeks properly. The reserve is what
-    the chip has to clear to be worth playing inside this window rather than held for a
-    double or a blank later. The free hit is absent because it has no per-gameweek payout
-    of its own; it pays through the squad it buys for that one week.</div>`;
+/** True when the plan makes no move that changes any week's score, so the two
+ *  series are one line drawn twice.
+ *
+ *  This is the common case on the Chips tab, not an edge one: force a chip with
+ *  a squad the solver is happy with and it holds every week, and a legend
+ *  listing two series over one visible line is how a chart says it is broken.
+ *  Compared at the printed precision, because a line that differs in the fourth
+ *  decimal is still one line on screen. */
+const planIsHold = (series) =>
+  series[0].data.every((v, i) => v.toFixed(1) === series[1].data[i].toFixed(1));
+
+/** Points per gameweek, drawn the way the Analysis tab draws them. Called after
+ *  `renderChips` has written its HTML, because an SVG sized against a container
+ *  that is not in the document yet has no width to size against. */
+function renderPlanChart(plan) {
+  const host = $("#planChart");
+  if (!host) return;
+  host.innerHTML = "";
+
+  const gws = plan.gameweeks;
+  const both = planChartSeries(plan);
+  const hold = planIsHold(both);
+  // One line when the plan holds: the second would sit exactly under the first,
+  // and two keys over one visible line reads as a bug rather than as a finding.
+  const series = hold ? [{ ...both[0], name: "This plan (no transfers — same as holding)" }] : both;
+  const chipAt = (gw) => plan.chipByGw.get(gw) || null;
+
+  $("#planLegend").innerHTML = series.length > 1
+    ? series.map((s) => `<span class="key"><i style="background:${s.color}"></i>${s.name}</span>`).join("")
+    : `<span class="sub">This plan makes no transfers, so it scores exactly what holding
+        your fifteen scores — one line, not two.</span>`;
+
+  const W = Math.max(300, host.clientWidth || 460), H = 250;
+  const M = { t: 22, r: 58, b: 30, l: 40 };
+  const all = series.flatMap((s) => s.data);
+  const lo = Math.min(...all) * 0.94, hi = Math.max(...all) * 1.04;
+  const x = (i) => M.l + (i * (W - M.l - M.r)) / Math.max(1, gws.length - 1);
+  const y = (v) => H - M.b - ((v - lo) / (hi - lo || 1)) * (H - M.t - M.b);
+
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img" }, host);
+  el("title", {}, svg).textContent =
+    "Projected points for each gameweek of the plan, against holding your squad";
+
+  const step = Math.max(1, Math.round((hi - lo) / 4));
+  for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) {
+    el("line", { x1: M.l, x2: W - M.r, y1: y(v), y2: y(v), stroke: css("--grid"), "stroke-width": 1 }, svg);
+    const t = el("text", { x: M.l - 8, y: y(v) + 4, "text-anchor": "end", fill: css("--muted"),
+      "font-size": 11, style: "font-variant-numeric:tabular-nums" }, svg);
+    t.textContent = v;
+  }
+
+  // Chip weeks, behind the lines: a recessive band and a label at the top, so
+  // the week a chip lands in is legible without reading the numbers off it.
+  const half = (W - M.l - M.r) / Math.max(1, gws.length - 1) / 2;
+  gws.forEach((gw, i) => {
+    const chip = chipAt(gw);
+    if (!chip) return;
+    el("rect", { x: x(i) - half * 0.62, y: M.t, width: half * 1.24, height: H - M.t - M.b,
+      fill: css("--hover") }, svg);
+    const t = el("text", { x: x(i), y: M.t - 7, "text-anchor": "middle",
+      fill: css("--text-secondary"), "font-size": 10, "font-weight": 700,
+      style: "letter-spacing:0.04em" }, svg);
+    t.textContent = CHIP_SHORT[chip] || "chip";
+  });
+
+  gws.forEach((gw, i) => {
+    const t = el("text", { x: x(i), y: H - 10, "text-anchor": "middle", fill: css("--muted"), "font-size": 11 }, svg);
+    t.textContent = "GW" + gw;
+  });
+  el("line", { x1: M.l, x2: W - M.r, y1: H - M.b, y2: H - M.b, stroke: css("--axis"), "stroke-width": 1 }, svg);
+
+  // Direct end-labels, nudged apart when they collide. A plan that makes no
+  // transfers scores exactly what holding scores, so the two lines finish on top
+  // of each other far more often here than on the Analysis tab -- and two labels
+  // stacked in one place is how a chart says "one series" when there are two.
+  const last = gws.length - 1;
+  const placed = [];
+  for (const s of series) {
+    el("path", {
+      d: s.data.map((v, i) => `${i ? "L" : "M"}${x(i)},${y(v)}`).join(" "),
+      fill: "none", stroke: s.color, "stroke-width": 2,
+      "stroke-linejoin": "round", "stroke-linecap": "round",
+    }, svg);
+    el("circle", { cx: x(last), cy: y(s.data[last]), r: 4.5, fill: s.color,
+      stroke: css("--surface-1"), "stroke-width": 2 }, svg);
+    let ly = y(s.data[last]) + 4;
+    while (placed.some((p) => Math.abs(p - ly) < 12)) ly += 12;
+    placed.push(ly);
+    const lab = el("text", { x: x(last) + 9, y: ly, fill: css("--text-secondary"),
+      "font-size": 11.5, style: "font-variant-numeric:tabular-nums" }, svg);
+    lab.textContent = s.data[last].toFixed(1);
+  }
+
+  const cross = el("line", { y1: M.t, y2: H - M.b, stroke: css("--axis"), "stroke-width": 1, opacity: 0 }, svg);
+  gws.forEach((gw, i) => {
+    const band = el("rect", { x: x(i) - half, y: M.t, width: half * 2, height: H - M.t - M.b,
+      fill: "transparent", style: "cursor:crosshair" }, svg);
+    band.addEventListener("mousemove", (e) => {
+      cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("opacity", 1);
+      const chip = chipAt(gw);
+      showTip(e, `<b>GW${gw}</b>${chip ? ` — ${plan.chipLabels[chip]}` : ""}<br>`
+        + series.map((s) => `<span class="key"><i style="background:${s.color};width:9px;height:9px;border-radius:50%"></i>${s.name} <span class="r">${s.data[i].toFixed(1)}</span></span>`).join("<br>"));
+    });
+    band.addEventListener("mouseleave", () => { cross.setAttribute("opacity", 0); hideTip(); });
+    // Clicking a gameweek in the chart puts that week on the pitch below, which
+    // is the question the chart provokes and the selector answered on its own.
+    band.addEventListener("click", () => { S.planWeek = i; renderChips(); solveWeekIdeal(i); });
+  });
+
+  // The table keeps both columns even when the chart folds them into one line:
+  // a column of +0.0 differences is the precise statement of "the transfers
+  // changed nothing", which is exactly what a reader opens the table for.
+  const totals = both.map((s) => s.data.reduce((a, b) => a + b, 0));
+  const signed = (v) => (v >= 0 ? "+" : "") + v.toFixed(1);
+  $("#planChartTable").innerHTML = `<table><thead><tr><th>GW</th><th>Chip</th>${
+      both.map((s) => `<th>${s.name}</th>`).join("")}<th>Difference</th></tr></thead>
+    <tbody>${gws.map((gw, i) => `<tr><td>GW${gw}</td>
+      <td>${chipAt(gw) ? plan.chipLabels[chipAt(gw)] : "—"}</td>
+      ${both.map((s) => `<td>${s.data[i].toFixed(1)}</td>`).join("")}
+      <td>${signed(both[0].data[i] - both[1].data[i])}</td></tr>`).join("")}</tbody>
+    <tfoot><tr><td colspan="2">Over the window</td>${
+      totals.map((t) => `<td>${t.toFixed(1)}</td>`).join("")}
+      <td>${signed(totals[0] - totals[1])}</td>
+    </tr></tfoot></table>`;
+}
+
+/** One sentence under the chart: what the whole window comes to either way, and
+ *  what the difference bought — the answer to "was any of this worth it?". */
+function planChartNoteHTML(plan) {
+  const series = planChartSeries(plan);
+  const [mine, held] = series;
+  const gain = mine.data.reduce((a, b) => a + b, 0) - held.data.reduce((a, b) => a + b, 0);
+  const hits = plan.weeks.reduce((a, w) => a + w.hits, 0);
+  const cost = hits * (S.snapshot.rules.HIT_COST || 4);
+  const chipWeeks = plan.gameweeks.filter((gw) => plan.chipByGw.get(gw));
+  const span = `GW${plan.gameweeks[0]}–GW${plan.gameweeks[plan.gameweeks.length - 1]}`;
+
+  const verdict = planIsHold(series)
+    ? `Over ${span} the plan makes no move that changes a single week's score — it is your
+       fifteen, held.${chipWeeks.length ? ` The only decision in it is when to play the
+       chip, and the spike is that week.` : ""}`
+    : `Over ${span} the plan is worth <b>${gain >= 0 ? "+" : ""}${fmt(gain, 1)}</b> points
+       against holding your fifteen and making no transfers at all${hits
+         ? `, before the ${cost} points its ${hits} hit${hits > 1 ? "s" : ""} cost` : ""}.`;
+
+  return `<div class="sub" style="margin-top:8px">${verdict}
+    ${chipWeeks.length ? `Chip weeks are banded, and both lines play the chip — the gap
+      between them is what the <i>transfers</i> bought, not what the chip did.` : ""}
+    Figures are undecayed and scored on the plan's own per-gameweek numbers; the solver
+    ranks plans on a discounted objective that also subtracts hits, so this is the raw
+    profile rather than the thing being maximised. Click a gameweek to put that week's
+    eleven on the pitch below.</div>`;
 }
 
 /** The whole plan, one gameweek at a time, with the pitch for whichever week
@@ -3274,6 +3591,18 @@ function renderPlanHTML(plan) {
 
   return `
   <div class="card" style="margin-top:14px">
+    <div class="cardhead">
+      <div>
+        <h3 style="margin:0 0 3px">Projected points by gameweek</h3>
+        <div class="legend" id="planLegend"></div>
+      </div>
+      <button class="toggle" data-view="plan">${S.views.plan === "table" ? "Chart" : "Table"}</button>
+    </div>
+    <div class="chartbox${S.views.plan === "table" ? " hidden" : ""}" id="planChart"></div>
+    <div class="${S.views.plan === "table" ? "" : "hidden"}" id="planChartTable"></div>
+    ${planChartNoteHTML(plan)}
+
+    <h4 style="margin:20px 0 6px">Week by week</h4>
     <div class="weekpick">${weeks.map((w, i) => `
       <button class="mini ${i === idx ? "on" : ""} ${w.chip ? "haschip" : ""}" data-planweek="${i}">
         GW${w.gw}${w.chip ? `<span class="wtag">${chipTag(w)}</span>` : ""}
@@ -3290,9 +3619,9 @@ function renderPlanHTML(plan) {
     ${movesHTML}
     ${squadDiffers ? `<div class="sub" style="margin-top:8px">This differs from the squad on screen${
         idx ? ` — it is where the moves in GW${weeks[0].gw}–GW${week.gw} leave you` : " — the moves above are what would get you there"}.</div>` : ""}
+    ${renderPlanPathHTML(plan, idx)}
     <div id="weekIdealBox">${weekIdealHTML(plan, idx)}</div>
     <div id="weekNearBox">${weekNearMissHTML(plan, idx)}</div>
-    ${renderPlanPathHTML(plan, idx)}
   </div>`;
 }
 
@@ -3480,12 +3809,21 @@ function renderChips() {
       </div>
     </div>
 
-    ${ready ? renderChipVerdictsHTML(tp.result) : ""}
+    ${ready ? renderChipTableHTML(tp.result) : ""}
     ${ready ? renderPlanHTML(tp.result) : ""}`;
 
   $("#planBtn").addEventListener("click", planTransfersAndChips);
   $("#replanBtn")?.addEventListener("click", planTransfersAndChips);
   renderChipConstraints();
+
+  // The chart's toggle sits inside #chipsBody, which this function rewrites on
+  // every render, so it cannot use the load-time listener the Analysis tab's
+  // three toggles share.
+  host.querySelector('.toggle[data-view="plan"]')?.addEventListener("click", () => {
+    setView("plan", S.views.plan === "table" ? "chart" : "table");
+    saveSettings();
+    if (S.views.plan === "chart" && S.transferPlan.result) renderPlanChart(S.transferPlan.result);
+  });
 
   // Every control here changes the answer, so each re-solves rather than
   // leaving a plan on screen that no longer matches the controls above it.
@@ -3544,6 +3882,10 @@ function renderChips() {
   wireWeekIdeal();
 
   if (ready) {
+    // After the markup, never inside it: an SVG sized against a container that
+    // is not in the document has no width to size against.
+    renderPlanChart(tp.result);
+
     const weeks = tp.result.weeks;
     const week = weeks[Math.min(Math.max(S.planWeek, 0), weeks.length - 1)];
     const fielded = [...week.starters, ...week.bench.map((b) => b.id)];
@@ -6886,7 +7228,12 @@ $("#theme").addEventListener("click", () => {
   saveSettings();
   renderAll();
 });
-addEventListener("resize", () => { renderGwChart(); renderExposure(); });
+addEventListener("resize", () => {
+  renderGwChart(); renderExposure();
+  // Only when it is on screen and has something to draw -- the plan chart lives
+  // behind a solve, and re-drawing an SVG in a hidden panel sizes it to zero.
+  if (S.tab === "chips" && S.transferPlan.result) renderPlanChart(S.transferPlan.result);
+});
 
 if (TOKEN) $("#dataLink").href = "/data?t=" + encodeURIComponent(TOKEN);
 
