@@ -1407,8 +1407,10 @@ gameweek of the transfer-and-chip plan.">Free transfers</label>
       <div class="sub">Solves the transfer path and chip timing together, the same way
         <code>fpl.py transfers</code> does — a bench boost is only worth playing if the
         bench a transfer built weeks earlier is worth fielding, and a free hit is a squad
-        bought out of what selling yours would raise. Run against the fifteen you
-        currently hold, not a hypothetical rebuild.</div>
+        bought out of what selling yours would raise. The path starts from the fifteen you
+        currently hold; every gameweek of it is also <b>rebuilt from scratch</b> for the
+        chip in force, so you can see the squad the chip actually wants next to the one
+        the transfers can afford to reach.</div>
     </div>
   </div>
   <div id="chipsBody"></div>
@@ -1740,6 +1742,17 @@ const S = {
   // about which scoring produced it.
   weekNearMiss: { state: "idle", rows: [], error: "", idx: null, gw: null,
                   key: null, progress: { done: 0, total: 0 } },
+  // The fifteen a gameweek would field if it were built for that gameweek from
+  // scratch, chip and all -- one squad solve per week of the plan, cached
+  // against the plan's own key in `byWeek` (index into result.weeks).
+  //
+  // This is the answer the plan structurally cannot give. The plan starts from
+  // the fifteen you own and every step towards a better one costs a transfer, a
+  // hit, or both, so a forced bench boost lands on the bench you already have
+  // rather than on the bench the chip wants. Asking "what should the squad be
+  // if I play this?" means throwing the ownership away and re-solving, which is
+  // exactly what this is.
+  weekIdeal: { key: null, byWeek: {} },
 };
 S.squad = loadLocal(STORE.squad, []);
 
@@ -2842,6 +2855,145 @@ function wireWeekNearMiss() {
     row.addEventListener("click", () => openEditor(+row.dataset.near)));
 }
 
+/** Redraw only the rebuild block. Same reason renderWeekNearMisses exists: the
+ *  week card holds a pitch whose shirts are images, and rebuilding the tab
+ *  around a solve that takes a second would flash all of it. */
+function renderWeekIdeal() {
+  const box = $("#weekIdealBox"), plan = S.transferPlan.result;
+  if (!box || !plan) return;
+  const idx = Math.min(Math.max(S.planWeek, 0), plan.weeks.length - 1);
+  box.innerHTML = weekIdealHTML(plan, idx);
+  wireWeekIdeal();
+}
+
+/** The state of the rebuild for the week on screen, or null when the plan it
+ *  answered has been re-solved since. */
+function weekIdealState(idx) {
+  return S.weekIdeal.key === S.transferPlan.key ? (S.weekIdeal.byWeek[idx] || null) : null;
+}
+
+function wireWeekIdeal() {
+  const plan = S.transferPlan.result;
+  if (!plan) return;
+  const idx = Math.min(Math.max(S.planWeek, 0), plan.weeks.length - 1);
+  $("#weekIdealBtn")?.addEventListener("click", () => solveWeekIdeal(idx, { force: true }));
+
+  const pitch = $("#weekIdealPitch");
+  const st = weekIdealState(idx);
+  if (!pitch || st?.state !== "ready") return;
+
+  // Marked against the fifteen the plan holds that week, not against the squad
+  // you own today: the pitch directly above this one is the plan's, so "in" has
+  // to mean "the rebuild wants him and the plan does not" or the two pitches
+  // are marked in two different languages.
+  const held = new Set(plan.weeks[idx].squad);
+  const tags = {};
+  for (const id of st.squad) if (!held.has(id)) tags[id] = { kind: "in", text: "in" };
+
+  // A bench boost has no bench: all fifteen score, so all fifteen go on the
+  // pitch and the substitutes' band is dropped — the same shape the plan's own
+  // pitch directly above takes for that week, and drawing one of them with an
+  // "auto-subs run down this order" band and the other without would say the
+  // two squads are playing under different rules.
+  const boosted = plan.weeks[idx].chip === "bboost";
+  const layout = squadLayout({ ids: st.squad, lookup: S.byId, need: S.meta.squad_by_pos,
+                               xiIds: boosted ? st.squad : st.starting,
+                               benchOrder: st.bench });
+  pitch.innerHTML = pitchHTML({ layout, teams: S.snapshot?.teams, metrics: S.metrics,
+                               captain: st.captain, tags, versus: true });
+  wireShirts(pitch);
+  pitch.addEventListener("click", (e) => {
+    const vs = e.target.closest("[data-vs]");
+    if (vs) return toggleVersus(+vs.dataset.vs);
+    const edit = e.target.closest("[data-edit]");
+    if (edit) openEditor(+edit.dataset.edit);
+  });
+}
+
+/** The squad the chip actually wants, against the squad the plan can afford to
+ *  build towards.
+ *
+ *  This block exists because the plan alone answers the wrong question once a
+ *  chip is committed. Ask it to bench boost and it plays the chip over the
+ *  bench you happen to own, because reaching a better one costs transfers and
+ *  hits it has to charge for. The rebuild pays none of that: it is the best
+ *  fifteen that week's money could buy, under that week's scoring, and the gap
+ *  between the two is exactly what the ownership and the transfer costs are
+ *  taking off you. Cheapest-four is quoted alongside the totals because it is
+ *  where a bench boost shows up in money — a £4.0m fourth keeper and three
+ *  bodies become four players bought to play. */
+function weekIdealHTML(plan, idx) {
+  const week = plan.weeks[idx];
+  const chipName = week.chip ? plan.chipLabels[week.chip] : "";
+  const st = weekIdealState(idx);
+  const solving = st?.state === "solving";
+
+  const head = `<h4 style="margin:18px 0 6px">Built for GW${week.gw}${
+    chipName ? ", " + chipName.toLowerCase() : ""}
+    <button class="mini" id="weekIdealBtn" ${solving ? "disabled" : ""}
+      style="margin-left:8px">${solving ? "Solving…"
+        : st?.state === "ready" ? "Solve again" : "Rebuild this week"}</button></h4>`;
+
+  const premise = `<div class="sub">The best fifteen this week's money could buy if it were
+    picked for this week from scratch${week.chip ? `, with the ${chipName.toLowerCase()} in
+    force — rather than the fifteen you own with a chip laid over it`
+      : " — rather than where the plan's transfers can afford to leave you"}. The plan has to
+    pay for every move towards this one; this does not, which is what makes the difference
+    between them worth reading.</div>`;
+
+  if (!st) return head + premise;
+  if (solving) return head + premise + `<div class="sub" style="margin-top:6px">Rebuilding
+    GW${week.gw} on £${fmt(st.budget, 1)}m…</div>`;
+  if (st.state === "error") {
+    return head + `<div class="issue bad"><span class="ico">!</span><span>${st.error}</span></div>`;
+  }
+
+  const price = (id) => S.byId.get(id)?.price || 0;
+  const cheapestFour = (ids) => ids.map(price).sort((a, b) => a - b).slice(0, 4)
+    .reduce((a, b) => a + b, 0);
+  const name = (id) => S.byId.get(id)?.name ?? "—";
+
+  const idealSet = new Set(st.squad), heldSet = new Set(week.squad);
+  const outIds = week.squad.filter((id) => !idealSet.has(id));
+  const inIds = st.squad.filter((id) => !heldSet.has(id));
+  const pairs = pairMoves(outIds, inIds, plan.positions);
+  const mine = new Set(S.squad);
+  const fromNow = st.squad.filter((id) => !mine.has(id)).length;
+
+  const gain = st.points - st.held;
+  const note = weekIdealNote(week, st.budget);
+  const summary = `<div class="sub" style="margin-bottom:8px">Scores
+    <b>${fmt(st.points, 1)}</b> in GW${week.gw} against <b>${fmt(st.held, 1)}</b> for the
+    fifteen the plan holds that week — ${gain > 0.05
+      ? `<b>${fmt(gain, 1)}</b> more, which is what the transfers between here and there
+         would have to be worth`
+      : "the plan is already there, so the chip is not asking for a different squad"}.
+    Costs £${fmt(st.cost, 1)}m of the £${fmt(st.budget, 1)}m that week's fifteen and bank are
+    worth, £${fmt(cheapestFour(st.squad), 1)}m of it on the cheapest four against
+    £${fmt(cheapestFour(week.squad), 1)}m in the plan's squad.${
+      note ? " " + note.charAt(0).toUpperCase() + note.slice(1) + "." : ""}</div>`;
+
+  const spend = (out, inn) => {
+    if (inn == null) return "";
+    const d = price(inn) - (out != null ? price(out) : 0);
+    return `${d < 0 ? "−" : "+"}£${fmt(Math.abs(d), 1)}m`;
+  };
+  const moves = pairs.length
+    ? `<table class="movetable"><tbody>${pairs.map(([out, inn]) => `<tr>
+        <td>${out != null ? name(out) : "—"}</td><td>→</td>
+        <td>${inn != null ? name(inn) : "—"}</td>
+        <td class="${inn != null && price(inn) >= (out != null ? price(out) : 0) ? "loss" : "gain"}">${spend(out, inn)}</td>
+      </tr>`).join("")}</tbody></table>
+      <div class="sub" style="margin-top:6px">${pairs.length} change${pairs.length > 1 ? "s" : ""}
+        from the fifteen the plan holds in GW${week.gw}, and ${fromNow} from the fifteen you own
+        today — at ${fmt(S.snapshot.rules.HIT_COST, 0)} points a hit beyond your free
+        transfers, which is the charge the plan is weighing and this rebuild is not.</div>`
+    : `<div class="sub">No changes — the plan already holds the best fifteen for this week.</div>`;
+
+  return head + premise + `<div id="weekIdealPitch" style="margin-top:10px"></div>`
+    + `<h4 style="margin:14px 0 6px">What it would take</h4>` + summary + moves;
+}
+
 /** The near-miss block inside one gameweek of a transfer plan.
  *
  *  Deliberately a *different* answer from the board's, and says so: it is one
@@ -2886,18 +3038,14 @@ function weekNearMissHTML(plan, idx) {
       see is already in this week's fifteen.</div>`;
   }
 
-  // A sweep that was cancelled part-way has rows but never got to price the
-  // week's ideal against the plan's own fifteen, so that sentence is left out
-  // rather than printed with dashes in it.
-  const behind = (near.idealPoints || 0) - (near.heldPoints || 0);
-  const note = weekIdealNote(week, near.budget);
-  const summary = near.idealPoints === undefined ? "" :
-    `<div class="sub" style="margin-bottom:8px">Best fifteen £${fmt(near.budget, 1)}m
-       could field in GW${week.gw}: <b>${fmt(near.idealPoints, 1)}</b> points across the
-       squad, against <b>${fmt(near.heldPoints, 1)}</b> for the fifteen the plan holds
-       that week — ${behind > 0.05
-         ? `<b>${fmt(behind, 1)}</b> behind, which is the price of the transfers that got you there`
-         : "the plan is already there"}.${note ? " " + note.charAt(0).toUpperCase() + note.slice(1) + "." : ""}</div>`;
+  // What that ideal fifteen *is*, and what holding the plan's one instead
+  // costs, is the block above this one -- solved on its own and scored the way
+  // the week scores, weights and armband included. Repeating it here from a raw
+  // fifteen-man total would put two different numbers for one claim on one
+  // card, so this block sticks to its own question: who just missed out.
+  const summary = `<div class="sub" style="margin-bottom:8px">Ranked against the same
+     rebuild shown above, on £${fmt(near.budget, 1)}m — each row is what the squad gives up
+     to hold that player instead.</div>`;
 
   return head + summary
     + nearMissTableHTML(near.rows, (p) => (plan.pointsByPlayer.get(p.id)
@@ -2922,7 +3070,12 @@ function weekNearMissHTML(plan, idx) {
      buildTransferJobs). Reading payouts off a single plan's squads cannot do
      it, because only the chosen week has a squad built for the chip.
    - The plan carries the fingerprint of the settings it answers, and says so
-     when they move underneath it. */
+     when they move underneath it.
+   - The plan is not the whole answer once a chip is committed. It starts from
+     the fifteen you own and charges for every move away from it, so a forced
+     bench boost plays the chip over the bench you already have. Each week is
+     therefore also rebuilt from scratch under that week's chip, money and
+     points (solveWeekIdeal) and the two squads are shown together. */
 function renderChipVerdictsHTML(plan) {
   const squads = new Map(plan.weeks.map((w) => [w.gw, w.squad]));
   const rows = chipReport({
@@ -3137,6 +3290,7 @@ function renderPlanHTML(plan) {
     ${movesHTML}
     ${squadDiffers ? `<div class="sub" style="margin-top:8px">This differs from the squad on screen${
         idx ? ` — it is where the moves in GW${weeks[0].gw}–GW${week.gw} leave you` : " — the moves above are what would get you there"}.</div>` : ""}
+    <div id="weekIdealBox">${weekIdealHTML(plan, idx)}</div>
     <div id="weekNearBox">${weekNearMissHTML(plan, idx)}</div>
     ${renderPlanPathHTML(plan, idx)}
   </div>`;
@@ -3380,9 +3534,14 @@ function renderChips() {
   host.querySelectorAll("[data-planweek]").forEach((el) => el.addEventListener("click", () => {
     S.planWeek = +el.dataset.planweek;
     renderChips();
+    // Every week is a different squad problem -- different money, different
+    // chip, different points -- so selecting one asks for its rebuild. Cached,
+    // so clicking back and forth costs nothing after the first look.
+    solveWeekIdeal(S.planWeek);
   }));
 
   wireWeekNearMiss();
+  wireWeekIdeal();
 
   if (ready) {
     const weeks = tp.result.weeks;
@@ -5515,7 +5674,13 @@ async function runNearMisses() {
    that week's points rather than the discounted horizon, that week's money, and
    the chip's own scoring. Everything it needs is expressible in the squad model
    already -- a bench boost is four bench slots weighted 1.0, a triple captain
-   is captainMultiplier 3 -- which is what keeps this one solver and not two. */
+   is captainMultiplier 3 -- which is what keeps this one solver and not two.
+
+   One problem statement, two callers. solveWeekIdeal solves it once and shows
+   the fifteen that comes back, which is the answer to "what should my squad be
+   if I play this chip?"; runWeekNearMisses solves it once per candidate to rank
+   the players it left out. Both have to be the same problem or the ranking is
+   against a squad nobody is being shown. */
 
 /** The single-gameweek squad problem the selected week of a plan describes:
  *  its pool (priced in that week's points), its budget, and its scoring. */
@@ -5551,6 +5716,11 @@ function weekSquadProblem(plan, idx) {
     options: {
       ...solverOptions(),
       budget,
+      // Template tilt is the one board setting this tab does not honour -- the
+      // transfer LP has no ownership term at all, and chipScopeText says so out
+      // loud. Leaving it on here would make the rebuilt fifteen disagree with
+      // the plan it is being read against for a reason the tab has just denied.
+      ownershipWeight: 0,
       // Under a bench boost every one of the fifteen scores, so the four
       // substitutes are worth exactly what a starter is and the model should
       // stop shopping for cheap bodies to fill them.
@@ -5570,6 +5740,116 @@ function weekIdealNote(week, budget) {
     wildcard: "a permanent rebuild, judged on this week alone",
   }[week.chip] || (rebuild ? "" : "no chip — this is what a rebuild on £"
       + fmt(budget, 1) + "m would field this week");
+}
+
+/** What a fifteen scores in one gameweek under that week's scoring — the same
+ *  objective the rebuild was maximised on, applied to both squads so that the
+ *  gap between them is a number and not a vibe. Bench slots pay their weight
+ *  (all four in full under a bench boost, which is the whole point of the
+ *  chip), and the armband pays its multiplier.
+ *
+ *  `bench` is `{slot: id}`, the shape neither caller has to hand: the solver
+ *  returns `{id: slot}` and the plan returns a list of `{slot, id}`. Inverting
+ *  at the call site keeps this function from having to guess which it was
+ *  handed. */
+function weekSquadScore(problem, { starting = [], bench = {}, captain = null }) {
+  const pts = new Map(problem.pool.map((p) => [p.id, p.pts]));
+  const weights = problem.options.benchSlotWeights || {};
+  let total = starting.reduce((a, id) => a + (pts.get(id) || 0), 0);
+  for (const [slot, id] of Object.entries(bench)) {
+    total += (weights[slot] || 0) * (pts.get(id) || 0);
+  }
+  if (captain != null) {
+    total += ((problem.options.captainMultiplier ?? 2) - 1) * (pts.get(captain) || 0);
+  }
+  return total;
+}
+
+/** The board's own optimal-squad solve shares this worker and its sequence
+ *  counter, so starting anything here cancels one in flight — and solveOptimal
+ *  drops a superseded reply silently, which leaves the pitch's status stuck on
+ *  "solving…" with nothing coming. Ask for it again once we are out of the way.
+ *  Re-entrant by construction: the next rebuild cancels this one too and
+ *  re-schedules it in turn, and the debounce collapses the repeats. */
+function resumeBoardSolve() {
+  if (S.optimalState === "solving" || S.optimalState === "pending") scheduleSolve(0);
+}
+
+/** Rebuild one gameweek of the plan from scratch: the best fifteen that week's
+ *  money could buy, scored the way that week actually scores.
+ *
+ *  The plan answers "what should I do, owning what I own?" — hits, banked
+ *  transfers, friction and all. That is the right question most of the time and
+ *  the wrong one the moment you commit to a chip, because the plan can only
+ *  reach a better squad through moves it has to pay for: force a bench boost
+ *  with one free transfer and it plays the chip over the bench you already
+ *  have, which is not the squad the chip is worth having. This throws the
+ *  ownership away and asks what the chip wants, so the two can be read side by
+ *  side and the difference between them priced.
+ *
+ *  One solve, cached per week against the plan's key, and only ever run for a
+ *  week you are looking at — seconds against the plan's minutes, but not free.
+ *  `force` re-runs a week already answered. */
+async function solveWeekIdeal(idx, { force = false } = {}) {
+  const plan = S.transferPlan.result;
+  if (!plan || !plan.weeks[idx]) return;
+  const key = S.transferPlan.key;
+  if (S.weekIdeal.key !== key) S.weekIdeal = { key, byWeek: {} };
+  const had = S.weekIdeal.byWeek[idx];
+  if (had && !force && had.state !== "error") return;
+
+  const problem = weekSquadProblem(plan, idx);
+  if (!problem) return;
+  const week = problem.week;
+  const seq = ++solveSeq;
+  S.weekIdeal.byWeek[idx] = { state: "solving", seq, gw: week.gw,
+                              chip: week.chip || null, budget: problem.options.budget };
+  renderWeekIdeal();
+
+  // A rebuild the settings have already moved past goes back to "not solved"
+  // rather than to an error: nothing went wrong, and selecting the week again
+  // should simply ask again.
+  const cancelled = () => {
+    if (S.weekIdeal.key === key && S.weekIdeal.byWeek[idx]?.seq === seq) {
+      delete S.weekIdeal.byWeek[idx];
+    }
+    renderWeekIdeal();
+  };
+  const settle = (patch) => {
+    if (S.weekIdeal.key !== key || S.weekIdeal.byWeek[idx]?.seq !== seq) return;
+    S.weekIdeal.byWeek[idx] = { ...S.weekIdeal.byWeek[idx], ...patch };
+    renderWeekIdeal();
+  };
+
+  let data;
+  try {
+    data = await solveInWorker(seq, problem.options, { pool: problem.pool });
+  } catch (error) {
+    if (seq !== solveSeq) { cancelled(); return; }
+    settle({ state: "error", error: String(error.message || error) });
+    resumeBoardSolve();
+    return;
+  }
+  if (seq !== solveSeq) { cancelled(); return; }
+
+  const benchBySlot = {};
+  for (const [id, slot] of Object.entries(data.bench || {})) benchBySlot[slot] = +id;
+  const planBench = {};
+  for (const b of week.bench) planBench[b.slot] = b.id;
+
+  settle({
+    state: "ready", ms: data.ms, squad: data.squad, starting: data.starting,
+    captain: data.captain, bench: data.bench || {}, cost: data.cost,
+    points: weekSquadScore(problem,
+      { starting: data.starting, bench: benchBySlot, captain: data.captain }),
+    // The plan's own fifteen for that week, priced the same way. Under a bench
+    // boost the LP starts all fifteen and benches nobody, so `planBench` is
+    // empty and the sum is simply the whole squad -- which is what a bench
+    // boost week scores, and is the number the rebuild has to beat.
+    held: weekSquadScore(problem,
+      { starting: week.starters, bench: planBench, captain: week.captain }),
+  });
+  resumeBoardSolve();
 }
 
 async function runWeekNearMisses(idx) {
@@ -5617,17 +5897,8 @@ async function runWeekNearMisses(idx) {
     return;
   }
 
-  // What the plan's own fifteen for that week is worth under the same scoring,
-  // so the gaps below have something to be gaps from. The plan is constrained
-  // by the transfers that got it there and the ideal is not, which is exactly
-  // the distance worth reporting.
-  const pts = new Map(problem.pool.map((p) => [p.id, p.pts]));
-  const held = problem.week.squad.reduce((a, id) => a + (pts.get(id) || 0), 0);
-  const ideal = data.squad.reduce((a, id) => a + (pts.get(id) || 0), 0);
-
   S.weekNearMiss = { ...S.weekNearMiss, state: "ready", rows: data.rows,
-                     tested: data.tested, ms: data.ms, ideal: data.squad,
-                     idealPoints: ideal, heldPoints: held };
+                     tested: data.tested, ms: data.ms, ideal: data.squad };
   renderWeekNearMisses();
 }
 
@@ -5863,6 +6134,9 @@ async function planTransfersAndChips() {
   // The week on screen is an index into a plan that no longer exists, so it
   // goes back to the first gameweek rather than pointing at nothing.
   S.planWeek = 0;
+  // Every rebuild answered the old plan's weeks, and the plan about to land may
+  // not even have the same gameweeks in it.
+  S.weekIdeal = { key: null, byWeek: {} };
   S.transferPlan = { state: "solving", result: null, error: "", key,
                      progress: { done: 0, total: jobs.length } };
   renderChips();
@@ -5908,6 +6182,11 @@ async function planTransfersAndChips() {
   S.transferPlan = { state: "ready", key, error: "",
                      result: { ...plan.result, ...payload, resolved, ms: data.ms } };
   renderChips();
+  // The chip week opens selected, so rebuild it without being asked: "what
+  // should the squad be if I play this?" is the question the press was, and
+  // making it a second click leaves the plan's own compromise looking like the
+  // answer. One solve, on the week already on screen.
+  solveWeekIdeal(S.planWeek);
 }
 
 const optDiff = () => {
