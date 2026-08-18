@@ -144,13 +144,17 @@ select, input[type=search], input[type=number] {
 .btn.ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
 .btn:disabled { opacity: 0.5; cursor: default; }
 
-/* A checkbox wearing a button's clothes. Decay is the single setting most
-   worth flipping mid-thought -- "does this hold up if I stop discounting the
-   back half of the horizon?" -- so it lives in the header rather than three
-   clicks deep in Settings, and reads as pressed when it is on. */
+/* A checkbox wearing a button's clothes, and it reads as pressed when it is on.
+   It sits in Settings beside the decay slider it overrides: the two are one
+   setting asked twice -- "how fast does a fixture lose value with distance?"
+   and "does it lose value at all?" -- and a control that disables another
+   control belongs next to it, not in a different part of the page. */
 .btn.chk { display: inline-flex; align-items: center; gap: 6px; user-select: none; }
 .btn.chk input { margin: 0; cursor: pointer; }
 .btn.chk.on { border-color: var(--series-1); color: var(--text-primary); }
+/* `.ctl label` is the small uppercase caption above a slider, and would claim
+   this one purely for being a <label> inside a .ctl. It is a button. */
+.ctl label.btn { font-size: inherit; text-transform: none; letter-spacing: normal; }
 
 /* min-width:0 is load-bearing, not defensive. A grid item's default
    min-width:auto refuses to shrink below its content's min-content width, so a
@@ -1041,13 +1045,6 @@ body.noserver .needs-server { display: none !important; }
   <span class="sub" id="meta"></span>
   <span style="flex:1"></span>
   <span class="sub" id="freshness" title="The board runs on a frozen projection — this is how old it is"></span>
-  <label class="btn ghost chk" id="nodecayWrap"
-         title="Count every fixture in the horizon equally — for the board, the optimiser and
-the transfer-and-chip plan alike. Off, the board discounts by the slider in Settings and the
-chip planner halves a gameweek's weight every 6.5 gameweeks, which on a flat calendar is enough
-to decide a chip's gameweek on its own.">
-    <input type="checkbox" id="nodecay"> No decay
-  </label>
   <button class="btn ghost" id="settingsBtn" aria-expanded="false"
           title="Horizon, budget and everything else that scopes the numbers">Settings ▾</button>
   <button class="btn ghost needs-server" id="syncBtn" title="Re-run the projection on the laptop and pull it down">Sync</button>
@@ -1069,6 +1066,16 @@ to decide a chip's gameweek on its own.">
 Drag to 1.00× to count every fixture in the horizon equally.">Fixture decay
       <span class="val" id="hlval">0.79× · half-life 2.9</span></label>
     <input type="range" id="gwdecay" min="0.5" max="1" step="0.01" value="0.79">
+  </div>
+  <div class="ctl">
+    <label>&nbsp;</label>
+    <label class="btn ghost chk" id="nodecayWrap"
+           title="Count every gameweek in the horizon at its full value — no distance decay and
+no injury/rotation dropout — for the board, the optimiser and the transfer-and-chip plan alike.
+Off, the board discounts by the slider beside this one, compounds each player's ~3%-per-gameweek
+chance of dropping out, and the chip planner halves a gameweek's weight every 6.5 gameweeks.">
+      <input type="checkbox" id="nodecay"> No decay
+    </label>
   </div>
   <div class="ctl">
     <label for="budget">Budget <span class="val" id="budval">100.0</span></label>
@@ -1742,8 +1749,8 @@ const VIEW_PANES = { gw: ["#gwChart", "#gwTable"], exp: ["#expChart", "#expTable
    an Infinity: JSON (saved drafts, the /api/ask body), where null means no
    decay, and prose, where it is spelled out.
 
-   The header's "No decay" checkbox overrides the slider rather than moving it,
-   so flipping it off returns you to the weighting you had chosen instead of to
+   The "No decay" checkbox overrides the slider rather than moving it, so
+   flipping it off returns you to the weighting you had chosen instead of to
    1.00x. It is read here, at the one place every consumer of the setting
    already funnels through, so nothing downstream has to know it exists -- and
    it reaches the transfer-and-chip planner too, whose own discount
@@ -1751,7 +1758,13 @@ const VIEW_PANES = { gw: ["#gwChart", "#gwTable"], exp: ["#expChart", "#expTable
    at all. That discount is worth being able to switch off: over a six-gameweek
    window it weights GW1 at 1.00 and GW6 at 0.59, so a later gameweek has to pay
    1.7x more to win, and on a calendar with no doubles or blanks it is the only
-   thing choosing a chip's week. */
+   thing choosing a chip's week.
+
+   It switches off the injury/rotation hazard as well -- see `hazardOf` in
+   board.mjs for why the two are one setting. The slider on its own does not:
+   at 1.00x it says "these fixtures are all equally far away", which is a claim
+   about the calendar, while the checkbox says "stop discounting the far end of
+   the horizon at all", which is a claim about what you want ranked. */
 const noDecay = () => !!$("#nodecay")?.checked;
 const gwDecay = () => (noDecay() ? 1 : +$("#gwdecay").value);
 const halfLifeOf = (perGw) => (perGw >= 1 ? Infinity : Math.log(0.5) / Math.log(perGw));
@@ -1762,6 +1775,13 @@ const hlJSON = (hl) => (Number.isFinite(hl) ? hl : null);
  *  only in being switched off by the same checkbox. */
 const transferHalfLife = () =>
   (noDecay() ? null : (S.snapshot?.rules?.TRANSFER_HALF_LIFE ?? null));
+/** Everything board.mjs needs to weight a projection, from the controls on
+ *  screen. One helper rather than four copies of the same object literal, so a
+ *  new weighting knob cannot reach three of the four call sites and be missing
+ *  from the fourth -- which is how the pool, the editor and the club panel come
+ *  to disagree about what a player is worth. */
+const planOpts = () => ({ horizon: +$("#horizon").value, halfLife: halfLife(),
+                          dropout: !noDecay() });
 
 /** The decay setting as a sentence fragment. */
 function decayText(perGw) {
@@ -1899,7 +1919,7 @@ function renderControlValues() {
   $("#gwdecay").disabled = off;
   $("#nodecayWrap").classList.toggle("on", off);
   $("#hlval").textContent = off
-    ? `off — every fixture 1.00× (slider: ${(+$("#gwdecay").value).toFixed(2)}×)`
+    ? `off — 1.00×, no dropout (slider: ${(+$("#gwdecay").value).toFixed(2)}×)`
     : decayLabel(gwDecay());
   $("#budval").textContent = (+$("#budget").value).toFixed(1);
   $("#ownval").textContent = (+$("#ownw").value).toFixed(2);
@@ -2718,10 +2738,12 @@ function renderChipWindowHTML(plan) {
   return `<div class="sub" style="margin-top:8px">Planned over GW${gws[0]}–GW${gws[gws.length - 1]}${
     S.gameweeks.length > gws.length ? ` of the ${S.gameweeks.length} in this snapshot` : ""
   }${legalTo && legalTo > gws[gws.length - 1] ? `; these chips stay legal to GW${legalTo}` : ""}. ${held}
-    ${noDecay() ? "Fixture decay is off, so every gameweek in the window counts equally."
-      : `Later gameweeks are discounted (half-life ${fmt(rules.TRANSFER_HALF_LIFE, 1)}), which on a
-         calendar with no doubles or blanks is enough to pick a chip's week on its own — the
-         <b>No decay</b> toggle in the header turns that off.`}</div>`;
+    ${noDecay() ? `Decay is off, so every gameweek in the window counts equally and no
+         dropout risk is priced in.`
+      : `Later gameweeks are discounted (half-life ${fmt(rules.TRANSFER_HALF_LIFE, 1)}) and each
+         player's points are cut by his chance of dropping out, which on a calendar with no
+         doubles or blanks is enough to pick a chip's week on its own — the <b>No decay</b>
+         toggle in Settings turns both off.`}</div>`;
 }
 
 /** The honest per-gameweek comparison: one full re-solve per candidate week,
@@ -2961,7 +2983,7 @@ function chipScopeText() {
   ];
   if ($("#formation").value) bits.push(`formation ${$("#formation").value}`);
   if (S.chipsUsed.length) bits.push(`${S.chipsUsed.length} chip${S.chipsUsed.length > 1 ? "s" : ""} already used`);
-  bits.push(noDecay() ? "no decay" : "decay on");
+  bits.push(noDecay() ? "no decay, no dropout risk" : "decay and dropout risk on");
   return `${bits.join(" · ")}. Player edits apply too. Template tilt does not — it is an
     ownership term the squad optimiser has and this model does not.`;
 }
@@ -3573,8 +3595,7 @@ function renderExplain() {
   let x;
   try {
     x = explainPlayer(S.snapshot, S.snapshot.players.find((r) => r.id === editingId),
-      scoringEdit(p, editBuffer),
-      { horizon: +$("#horizon").value, halfLife: halfLife() });
+      scoringEdit(p, editBuffer), planOpts());
   } catch {
     box.innerHTML = `<p class="exnote">Cannot break these points down right now.</p>`;
     return;
@@ -3620,12 +3641,15 @@ function renderExplain() {
     <p class="exnote">${Number.isFinite(x.half_life)
       ? `A gameweek you may never field him in is worth less than this Saturday.
          Each gameweek of distance is worth <b>${gwDecay().toFixed(2)}×</b> the one
-         before it — halving every ${x.half_life.toFixed(1)} gameweeks — and every
-         gameweek is`
+         before it — halving every ${x.half_life.toFixed(1)} gameweeks.`
       : `Fixture decay is off, so all ${x.gw.length} gameweeks count their full
-         value regardless of distance. Each one is still`}
-      multiplied by his chance of still being available — ${hazardPct}% risk of dropping
-      out per gameweek, compounding.</p>
+         value regardless of distance.`}
+      ${x.hazard
+        ? `Every gameweek is then multiplied by his chance of still being available —
+           ${hazardPct}% risk of dropping out per gameweek, compounding.`
+        : `Nothing further comes off them either: the injury and rotation dropout is
+           switched off with the decay, so the weight column is a column of 1.00s and
+           the total below is the fixtures added up.`}</p>
     <table class="extable">
       <thead><tr><th>Fixture</th><th>Points</th><th>Weight</th><th>Counts as</th></tr></thead>
       <tbody>${rows}</tbody>
@@ -3860,8 +3884,7 @@ function renderDrawerClub() {
   let after;
   try {
     const pending = { ...S.edits, [editingId]: tidy(editBuffer) };
-    after = derivePool(S.snapshot, pending,
-      { horizon: +$("#horizon").value, halfLife: halfLife() }).players;
+    after = derivePool(S.snapshot, pending, planOpts()).players;
   } catch {
     box.innerHTML = ""; label.textContent = ""; return;
   }
@@ -4276,8 +4299,7 @@ function previewEdit() {
     let r;
     try {
       checkOverridable(editBuffer, S.snapshot);
-      r = editPlayer(S.snapshot, editingId, scoringEdit(p, editBuffer),
-        { horizon: +$("#horizon").value, halfLife: halfLife() });
+      r = editPlayer(S.snapshot, editingId, scoringEdit(p, editBuffer), planOpts());
     } catch (error) {
       // An illegal buffer is shown, not committed. Committing it would send it
       // straight to recomputeEdited, which drops rejected edits and alerts --
@@ -4900,8 +4922,7 @@ async function loadSnapshot() {
     Pure and fast -- a few milliseconds for 573 players -- so it runs on every
     horizon or half-life change instead of a two-second round trip. */
 function rebuildPool(keepSquad = true) {
-  const data = derivePool(S.snapshot, S.edits,
-    { horizon: +$("#horizon").value, halfLife: halfLife() });
+  const data = derivePool(S.snapshot, S.edits, planOpts());
 
   S.players = data.players; S.gameweeks = data.gameweeks; S.meta = data.meta;
   S.byId = new Map(data.players.map((p) => [p.id, p]));

@@ -177,9 +177,22 @@ export function effectiveEdits(snap, edits) {
   return out;
 }
 
+/* Two weightings sit between a player's fixtures and the number the board ranks
+   him on, and "no decay" switches off both. Distance decay is the obvious one.
+   The other is the injury/rotation hazard -- a ~3%-per-gameweek chance of
+   dropping out, compounding, so an eighth gameweek counts about 0.81x before
+   any decay at all. Discounting for distance and discounting for the chance he
+   is gone are the same statement made twice: both say a far gameweek is worth
+   less than a near one. Somebody who has turned decay off is asking for the
+   undiscounted total over the horizon, and leaving a silent 19% taper on the
+   far end of it is not that. So the switch is one switch. `dropout: false`
+   zeroes the hazard; it defaults to true, which is the weighting everything
+   had before the option existed. */
+const hazardOf = (raw, dropout) => (dropout === false ? 0 : raw.hazard || 0);
+
 /** The player pool as the board renders it, for one set of settings.
  *  `edits` maps fpl_id -> {field: value}. */
-export function derivePool(snap, edits, { horizon, halfLife }) {
+export function derivePool(snap, edits, { horizon, halfLife, dropout = true }) {
   const view = truncate(snap, horizon);
   const count = view.gameweeks.length;
   const overridable = Object.keys(snap.rules.OVERRIDABLE);
@@ -248,14 +261,19 @@ export function derivePool(snap, edits, { horizon, halfLife }) {
 
     const played = games[raw.team] || 0;
     const xptsRaw = sum(gw, count);
+    const hazard = hazardOf(raw, dropout);
 
     rows.push({
       id: raw.id, name: raw.name, full_name: raw.full_name,
       pos: raw.pos, team: raw.team, team_short: raw.team_short,
       price, p_start: pStart,
-      xpts_plan: planWeight(gw, raw.hazard, halfLife),
+      xpts_plan: planWeight(gw, hazard, halfLife),
       xpts_raw: xptsRaw,
-      model_xpts_plan: planWeight(raw.gw.slice(0, count), raw.hazard, halfLife),
+      model_xpts_plan: planWeight(raw.gw.slice(0, count), hazard, halfLife),
+      // Carried on the row, not left to be looked up again from the snapshot,
+      // so the transfer-and-chip planner survival-adjusts with the same hazard
+      // the pitch ranked on -- including the zero it gets under "no decay".
+      hazard,
       // Undecayed and per match on purpose. xpts_plan discounts distant
       // gameweeks, which is right for ranking a squad and wrong for a rate you
       // want to read against last season's PPG.
@@ -341,14 +359,15 @@ export const POINT_SOURCES = [
  *  discounted and the chance he is still available is priced in. The board ranks
  *  on the second and people read the first, which is most of the confusion.
  */
-export function explainPlayer(snap, raw, edit, { horizon, halfLife }) {
+export function explainPlayer(snap, raw, edit, { horizon, halfLife, dropout = true }) {
   const view = truncate(snap, horizon);
   const applied = edit && Object.keys(edit).length ? edit : null;
   const out = reprojectPlayer(view, raw, applied);
+  const hazard = hazardOf(raw, dropout);
 
   const rows = view.gameweeks.map((gw, i) => {
     const decay = Math.pow(0.5, i / halfLife);
-    const survival = Math.pow(1 - (raw.hazard || 0), i);
+    const survival = Math.pow(1 - hazard, i);
     const points = out.gw[i] || 0;
     return {
       gw, points, decay, survival,
@@ -368,7 +387,7 @@ export function explainPlayer(snap, raw, edit, { horizon, halfLife }) {
     derived: out.derived,
     gw: rows,
     games,
-    hazard: raw.hazard || 0,
+    hazard,
     half_life: halfLife,
     raw_total: total((r) => r.points),
     plan_total: total((r) => r.weighted),
@@ -409,12 +428,12 @@ export function clubLineup(players, team) {
 }
 
 /** Recompute one player under a set of overrides — what `/api/edit` did. */
-export function editPlayer(snap, playerId, overrides, { horizon, halfLife }) {
+export function editPlayer(snap, playerId, overrides, { horizon, halfLife, dropout = true }) {
   const view = truncate(snap, horizon);
   const raw = snap.players.find((p) => p.id === playerId);
   if (!raw) throw new Error(`no player with id ${playerId}`);
   const out = reprojectPlayer(view, raw, overrides);
-  out.xpts_plan = planWeight(out.gw, raw.hazard, halfLife);
+  out.xpts_plan = planWeight(out.gw, hazardOf(raw, dropout), halfLife);
   return out;
 }
 
