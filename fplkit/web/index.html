@@ -1473,6 +1473,45 @@ gameweek of the transfer-and-chip plan.">Free transfers</label>
         there from where you are — that is the Squad tab's job.</div>
     </div>
   </div>
+  <div class="card controls" id="chipEconRow">
+    <div class="ctl">
+      <label for="holdBboost" title="What Bench Boost is judged against if left unplayed for a
+double or a blank later in the season. A chip only earns its place in the plan by beating this,
+so raising it makes the plan more reluctant to play it now.">Bench Boost hold
+        <span class="val" id="holdBboostVal">14.0</span></label>
+      <input type="range" id="holdBboost" min="0" max="30" step="0.5" value="14">
+    </div>
+    <div class="ctl">
+      <label for="holdTc" title="What Triple Captain is judged against if left unplayed for a
+double later in the season.">Triple Captain hold
+        <span class="val" id="holdTcVal">10.0</span></label>
+      <input type="range" id="holdTc" min="0" max="30" step="0.5" value="10">
+    </div>
+    <div class="ctl">
+      <label for="holdFreehit" title="What Free Hit is judged against if left unplayed for a
+blank later in the season.">Free Hit hold
+        <span class="val" id="holdFreehitVal">12.0</span></label>
+      <input type="range" id="holdFreehit" min="0" max="30" step="0.5" value="12">
+    </div>
+    <div class="ctl">
+      <label for="ftValue" title="The marginal value of a free transfer banked beyond the first
+few, whose worth is tabulated separately. Zero makes holding a transfer free, so the plan spends
+every one the moment it has it; raising it makes banking more attractive.">Transfer hold value
+        <span class="val" id="ftValueVal">1.5</span></label>
+      <input type="range" id="ftValue" min="0" max="4" step="0.1" value="1.5">
+    </div>
+    <div class="ctl">
+      <label>&nbsp;</label>
+      <button class="btn ghost" id="chipEconReset" type="button"
+              title="Put these back to fplkit/config.py's hand-set constants">Reset to default</button>
+    </div>
+    <div class="ctl" style="flex:1 1 100%">
+      <span class="sub" style="text-transform:none;letter-spacing:0">These are the hand-set
+        constants the plan reserves a chip or a banked transfer against — see the note under the
+        table below for what they mean. Dragging one re-prices every chip; press
+        <b>Re-plan</b> to see the new answer.</span>
+    </div>
+  </div>
   <div id="chipsBody"></div>
 </div>
 </section>
@@ -1820,6 +1859,14 @@ const S = {
   // if I play this?" means throwing the ownership away and re-solving, which is
   // exactly what this is.
   weekIdeal: { key: null, byWeek: {} },
+  // The same transfer-and-chip plan, anchored to the fifteen you actually own
+  // instead of built from scratch -- "given what I hold, when should I play
+  // my chips and what do I transfer?" rather than "what would an ideal side
+  // do?". Lives on its own worker (see ensureOwnedWorker) so re-solving it
+  // never races the from-scratch plan above; not persisted, for the same
+  // reason transferPlan is not.
+  ownedPlan: { state: "idle", result: null, error: "", key: null, progress: null },
+  ownedPlanWeek: 0,
   // Which of the Chips tab's collapsible blocks you have opened. Both boxes are
   // re-rendered wholesale whenever their solve advances, which throws away the
   // <details> element's own open state, so it is held here instead — a block
@@ -1874,6 +1921,8 @@ const SETTING_IDS = ["horizon", "gwdecay", "budget", "ownw", "minstart",
 const DEFAULT_SETTINGS = { horizon: "8", gwdecay: "0.79", budget: "100", ownw: "0",
                            minstart: "0.3", maxclub: "3", formation: "", freetransfers: "1" };
 const DEFAULT_BENCH = { GKP: 0.03, "1": 0.24, "2": 0.10, "3": 0.04 };
+const DEFAULT_CHIP_HOLD = { bboost: 14, "3xc": 10, freehit: 12 };
+const DEFAULT_FT_VALUE = 1.5;
 const VIEW_PANES = { gw: ["#gwChart", "#gwTable"], exp: ["#expChart", "#expTable"],
                      tl: ["#tlChart", "#tlTable"],
                      // The Chips tab's own line chart. Its toggle lives inside
@@ -2083,6 +2132,7 @@ function renderControlValues() {
   $("#recval").textContent = recency ? recency + " gw" : "off";
   $("#recency").classList.toggle("needsync", recency !== (S.meta?.recency || 0));
   renderBenchWeights();
+  renderChipEconValues();
 }
 
 function readSettings() {
@@ -2096,6 +2146,7 @@ function readSettings() {
     transferMode: S.transferMode, chipSkip: [...S.chipSkip],
     bench: Object.fromEntries(BENCH_KEYS.map((k) => [k, $(`#bw_${k}`).value])),
     benchTouched,
+    chipHold: chipHoldValues(), ftValue: ftValueSetting(), chipEconTouched,
     theme: document.documentElement.getAttribute("data-theme") || "",
     settingsOpen, moreOpen,
     views: { ...S.views },
@@ -2162,6 +2213,10 @@ function applySettings(saved) {
       if (saved.bench[k] != null) $(`#bw_${k}`).value = saved.bench[k];
     }
   }
+  if (saved.chipEconTouched) {
+    chipEconTouched = true;
+    setChipEconDefaults(saved.chipHold, saved.ftValue);
+  }
   settingsOpen = !!saved.settingsOpen;
   moreOpen = !!saved.moreOpen;
   renderChrome();
@@ -2190,6 +2245,9 @@ function restoreDefaults() {
   benchTouched = false;
   const bench = S.meta?.bench_slot_weights || DEFAULT_BENCH;
   for (const k of BENCH_KEYS) $(`#bw_${k}`).value = bench[k] ?? DEFAULT_BENCH[k];
+  chipEconTouched = false;
+  const rules = S.snapshot?.rules;
+  setChipEconDefaults(rules?.CHIP_HOLD_VALUE || DEFAULT_CHIP_HOLD, rules?.FT_VALUE ?? DEFAULT_FT_VALUE);
   document.documentElement.removeAttribute("data-theme");
   S.include = []; S.exclude = [];
   S.chipsUsed = []; renderChipsUsed();
@@ -2579,6 +2637,30 @@ function setBenchScale(scale) {
   }
   for (const k of BENCH_KEYS) $(`#bwv_${k}`).textContent = (+$(`#bw_${k}`).value).toFixed(3);
   $("#bwval").textContent = (+scale).toFixed(2);
+}
+
+/* --------------------------------------------------------- chip economics
+   What a chip is judged against if left unplayed, and what a banked transfer
+   is worth beyond the tabulated first few -- CHIP_HOLD_VALUE and FT_VALUE in
+   fplkit/config.py. Same "sliders are the source of truth, snapshot supplies
+   the default until touched" pattern as the bench weights above. */
+const HOLD_KEYS = ["bboost", "3xc", "freehit"];
+const HOLD_INPUT_ID = { bboost: "holdBboost", "3xc": "holdTc", freehit: "holdFreehit" };
+
+const chipHoldValues = () =>
+  Object.fromEntries(HOLD_KEYS.map((k) => [k, +$(`#${HOLD_INPUT_ID[k]}`).value]));
+const ftValueSetting = () => +$("#ftValue").value;
+
+function renderChipEconValues() {
+  for (const k of HOLD_KEYS) $(`#${HOLD_INPUT_ID[k]}Val`).textContent = (+$(`#${HOLD_INPUT_ID[k]}`).value).toFixed(1);
+  $("#ftValueVal").textContent = ftValueSetting().toFixed(1);
+}
+
+let chipEconTouched = false;
+function setChipEconDefaults(hold, ftValue) {
+  for (const k of HOLD_KEYS) if (hold?.[k] != null) $(`#${HOLD_INPUT_ID[k]}`).value = hold[k];
+  if (ftValue != null) $("#ftValue").value = ftValue;
+  renderChipEconValues();
 }
 
 /* -------------------------------------------------------------- gw line chart */
@@ -3209,7 +3291,6 @@ function weekNearMissHTML(plan, idx) {
  *  money, and `Changes` because a chip that reshapes nothing (a triple captain
  *  usually) is a different kind of decision from one that reshapes four players. */
 function renderChipTableHTML(plan) {
-  const rules = S.snapshot.rules;
   const built = plan.built || {};
   const baseline = plan.baseline || null;
   const labels = plan.chipLabels;
@@ -3227,7 +3308,7 @@ function renderChipTableHTML(plan) {
     const b = built[chip];
     const played = [...plan.chipByGw.entries()].find(([, c]) => c === chip)?.[0] ?? null;
     const pin = plan.pinned?.[chip] ?? null;
-    const hold = rules.CHIP_HOLD_VALUE[chip] ?? 0;
+    const hold = plan.opt.holdValue[chip] ?? 0;
     if (!b) {
       return `<tr><td>${labels[chip]}</td><td class="na">—</td><td class="na">—</td>
         <td>${fmt(hold, 0)}</td><td class="na">—</td><td class="na">—</td>
@@ -3263,7 +3344,7 @@ function renderChipTableHTML(plan) {
 
   const skipRow = ([chip, why]) => `<tr>
     <td>${labels[chip] || chip}</td><td class="na">—</td><td class="na">—</td>
-    <td>${fmt(rules.CHIP_HOLD_VALUE[chip] ?? 0, 0)}</td>
+    <td>${fmt(plan.opt.holdValue[chip] ?? 0, 0)}</td>
     <td class="na">—</td><td class="na">—</td><td class="read">${why}</td></tr>`;
 
   return `
@@ -3340,7 +3421,7 @@ function renderChipNoteHTML(plan) {
     .filter(([chip]) => chip in plan.opt.chips)
     .map(([, w]) => w[1]);
   const legalTo = ends.length ? Math.max(...ends) : null;
-  const reserves = Object.entries(rules.CHIP_HOLD_VALUE)
+  const reserves = Object.entries(plan.opt.holdValue)
     .map(([c, v]) => `${rules.CHIP_LABELS[c]} ${fmt(v, 0)}`).join(", ");
   const base = plan.baseline;
 
@@ -3353,16 +3434,15 @@ function renderChipNoteHTML(plan) {
   lines.push([`Week`, `where the from-scratch build chose to play it, with every legal week
     available. Commit to a chip to see what each of the other weeks would have scored.`]);
   lines.push([`Hold`, `what the chip is worth kept for a double or a blank beyond this window —
-    so a chip only earns its place here by beating this. <b>These are hand-set constants</b>
-    (${reserves}), not fitted from your data: they live in <code>fplkit/config.py</code> as
-    <code>CHIP_HOLD_VALUE</code> and are the published aggregates for a chip played on a double
-    or a blank, where a double-gameweek bench boost returns 15–25 against 8–12 in an ordinary
-    week. Without them a chip left unplayed at the end of the window is worth zero and the plan
+    so a chip only earns its place here by beating this. <b>Adjustable above</b> (currently
+    ${reserves}); the sliders default to the hand-set constants in <code>fplkit/config.py</code>
+    as <code>CHIP_HOLD_VALUE</code>, the published aggregates for a chip played on a double or a
+    blank, where a double-gameweek bench boost returns 15–25 against 8–12 in an ordinary week.
+    Zero them out and a chip left unplayed at the end of the window is worth nothing, so the plan
     burns all three immediately.`]);
-  lines.push([`Not your squad`, `nothing on this tab reads the fifteen you own. It answers
-    "what is this chip worth to a side built for it", which is the question the table was
-    always labelled with and never actually asked. What it cannot tell you is how to get there
-    from where you are.`]);
+  lines.push([`Not your squad`, `this table answers "what is this chip worth to a side built for
+    it", not "what should I do with what I own" — nothing here reads the fifteen you own. <b>Your
+    squad</b> below is the anchored answer to that second question.`]);
   lines.push([`Window`, `GW${gws[0]}–GW${gws[gws.length - 1]}${
     S.gameweeks.length > gws.length ? ` of the ${S.gameweeks.length} in this snapshot` : ""
   }${legalTo && legalTo > gws[gws.length - 1] ? `; these chips stay legal to GW${legalTo}` : ""}.
@@ -3413,11 +3493,23 @@ function planChartSeries(plan) {
 const planIsHold = (series) =>
   series.length < 2 || series[0].data.every((v, i) => v.toFixed(1) === series[1].data[i].toFixed(1));
 
+/** What a gameweek click does for the from-scratch plan: switch the pitch to
+ *  that week and refresh who nearly made its squad. The owned plan's click
+ *  handler is supplied separately (see renderOwnedPanel) since it has no
+ *  near-miss cache to refresh. */
+const defaultOnWeek = (i) => { S.planWeek = i; renderChips(); solveWeekIdeal(i); };
+
 /** Points per gameweek, drawn the way the Analysis tab draws them. Called after
  *  `renderChips` has written its HTML, because an SVG sized against a container
- *  that is not in the document yet has no width to size against. */
-function renderPlanChart(plan) {
-  const host = $("#planChart");
+ *  that is not in the document yet has no width to size against.
+ *
+ *  `prefix` namespaces every element id so the from-scratch plan and the
+ *  owned-squad plan can each have their own chart on screen at once. `onWeek`
+ *  is what a click on a gameweek does -- the from-scratch plan also re-solves
+ *  who nearly made that week's squad; the owned plan has no such cache to
+ *  refresh, so it just switches the week. */
+function renderPlanChart(plan, { prefix = "", onWeek } = {}) {
+  const host = $(`#${prefix}planChart`);
   if (!host) return;
   host.innerHTML = "";
 
@@ -3429,7 +3521,7 @@ function renderPlanChart(plan) {
   const series = hold ? [{ ...both[0], name: "This plan" }] : both;
   const chipAt = (gw) => plan.chipByGw.get(gw) || null;
 
-  $("#planLegend").innerHTML = series.length > 1
+  $(`#${prefix}planLegend`).innerHTML = series.length > 1
     ? series.map((s) => `<span class="key"><i style="background:${s.color}"></i>${s.name}</span>`).join("")
     : `<span class="sub">This plan plays no chip, so it is the same build as the chip-free
         one — one line, not two.</span>`;
@@ -3508,7 +3600,7 @@ function renderPlanChart(plan) {
     band.addEventListener("mouseleave", () => { cross.setAttribute("opacity", 0); hideTip(); });
     // Clicking a gameweek in the chart puts that week on the pitch below, which
     // is the question the chart provokes and the selector answered on its own.
-    band.addEventListener("click", () => { S.planWeek = i; renderChips(); solveWeekIdeal(i); });
+    band.addEventListener("click", () => (onWeek || defaultOnWeek)(i));
   });
 
   // The table keeps both columns even when the chart folds them into one line: a
@@ -3518,7 +3610,7 @@ function renderPlanChart(plan) {
   const totals = both.map((s) => s.data.reduce((a, b) => a + b, 0));
   const signed = (v) => (v >= 0 ? "+" : "\u2212") + Math.abs(v).toFixed(1);
   const paired = both.length > 1;
-  $("#planChartTable").innerHTML = `<table><thead><tr><th>GW</th><th>Chip</th>${
+  $(`#${prefix}planChartTable`).innerHTML = `<table><thead><tr><th>GW</th><th>Chip</th>${
       both.map((s) => `<th>${s.name}</th>`).join("")}${
       paired ? "<th>Difference</th>" : ""}</tr></thead>
     <tbody>${gws.map((gw, i) => `<tr><td>GW${gw}</td>
@@ -3570,9 +3662,19 @@ function planChartNoteHTML(plan) {
  *  returned, and then never drawn. The selector defaults to the first week
  *  with a chip in it, because that is the week you pressed the button to see;
  *  with no chip it stays on the first, which is still "what do I do now". */
-function renderPlanHTML(plan) {
+/** `owned` plans (anchored to a fifteen you already hold) and from-scratch
+ *  plans differ in what week 0 means: a from-scratch plan buys its opening
+ *  fifteen outright, so there is nothing to call a transfer there; an owned
+ *  plan's week 0 is exactly like every other week, just possibly a hold.
+ *  `prefix` namespaces every element id, so the from-scratch plan and the
+ *  owned plan can share the page; `weekIdx` overrides the module-level
+ *  S.planWeek for whichever plan is not the live one, and `live` gates the
+ *  near-miss / ideal-squad boxes, which only exist for the plan actually
+ *  being solved on this worker cycle (see weekIdealHTML's own note). */
+function renderPlanHTML(plan, { prefix = "", weekIdx = null, live = true } = {}) {
+  const owned = (plan.opt.squad || []).length === 15;
   const weeks = plan.weeks;
-  const idx = Math.min(Math.max(S.planWeek, 0), weeks.length - 1);
+  const idx = Math.min(Math.max(weekIdx ?? S.planWeek, 0), weeks.length - 1);
   const week = weeks[idx];
   const name = (id) => S.byId.get(id)?.name ?? "—";
   const pairs = pairMoves(week.soldIds, week.boughtIds, plan.positions);
@@ -3590,14 +3692,16 @@ function renderPlanHTML(plan) {
           <td class="${gain >= 0 ? "gain" : "loss"}">${gain >= 0 ? "+" : ""}${fmt(gain, 1)}</td>
         </tr>`;
       }).join("")}</tbody></table>`
-    : `<div class="sub">No changes this gameweek — the same fifteen.</div>`;
+    : `<div class="sub">${owned ? "No transfers this gameweek — hold."
+        : "No changes this gameweek — the same fifteen."}</div>`;
 
-  // The first gameweek has no transfers by construction: the opening fifteen is
-  // bought, not transferred into. Labelling it "Transfers in GW1" and then
-  // printing "no transfers" read as a bug rather than as the definition.
-  const opening = idx === 0;
+  // The first gameweek of a from-scratch plan has no transfers by construction:
+  // the opening fifteen is bought, not transferred into. An owned plan's week 0
+  // is not special that way -- it is just the fifteen you hold, maybe moved.
+  const opening = !owned && idx === 0;
   const mine = new Set(S.squad);
   const shared = week.squad.filter((id) => mine.has(id)).length;
+  const squadDiffers = owned && week.squad.slice().sort().join() !== S.squad.slice().sort().join();
   const chipTag = (w) => (w.chip ? CHIP_SHORT[w.chip] || "chip" : "");
 
   return `
@@ -3605,17 +3709,17 @@ function renderPlanHTML(plan) {
     <div class="cardhead">
       <div>
         <h3 style="margin:0 0 3px">Projected points by gameweek</h3>
-        <div class="legend" id="planLegend"></div>
+        <div class="legend" id="${prefix}planLegend"></div>
       </div>
-      <button class="toggle" data-view="plan">${S.views.plan === "table" ? "Chart" : "Table"}</button>
+      <button class="toggle" data-view="plan" data-prefix="${prefix}">${S.views.plan === "table" ? "Chart" : "Table"}</button>
     </div>
-    <div class="chartbox${S.views.plan === "table" ? " hidden" : ""}" id="planChart"></div>
-    <div class="${S.views.plan === "table" ? "" : "hidden"}" id="planChartTable"></div>
+    <div class="chartbox${S.views.plan === "table" ? " hidden" : ""}" id="${prefix}planChart"></div>
+    <div class="${S.views.plan === "table" ? "" : "hidden"}" id="${prefix}planChartTable"></div>
     ${planChartNoteHTML(plan)}
 
     <h4 style="margin:20px 0 6px">Week by week</h4>
     <div class="weekpick">${weeks.map((w, i) => `
-      <button class="mini ${i === idx ? "on" : ""} ${w.chip ? "haschip" : ""}" data-planweek="${i}">
+      <button class="mini ${i === idx ? "on" : ""} ${w.chip ? "haschip" : ""}" data-planweek="${i}" data-prefix="${prefix}">
         GW${w.gw}${w.chip ? `<span class="wtag">${chipTag(w)}</span>` : ""}
       </button>`).join("")}
     </div>
@@ -3625,17 +3729,20 @@ function renderPlanHTML(plan) {
         <div class="sub">${week.hits ? `${week.hits} hit${week.hits > 1 ? "s" : ""} (−${week.hits * 4}) · ` : ""}${week.freeTransfers} FT banked · £${fmt(week.bank, 1)}m in the bank · ${fmt(week.xiPoints, 1)} xI points${week.chip === "bboost" ? " · all 15 score" : ""}</div>
       </div>
     </div>
-    <div id="thisWeekPitch"></div>
+    <div id="${prefix}thisWeekPitch"></div>
     <h4 style="margin:14px 0 6px">${opening ? `The opening fifteen`
-      : `Changes in GW${week.gw}`}</h4>
+      : `Transfers in GW${week.gw}`}</h4>
     ${opening
       ? `<div class="sub">Bought outright on £${fmt(plan.opt.budget, 1)}m — this plan starts
          from nothing, so there are no transfers to make here.${S.squad.length === 15
            ? ` You already own <b>${shared}</b> of these fifteen.` : ""}</div>`
       : movesHTML}
-    ${renderPlanPathHTML(plan, idx)}
-    <div id="weekIdealBox">${weekIdealHTML(plan, idx)}</div>
-    <div id="weekNearBox">${weekNearMissHTML(plan, idx)}</div>
+    ${squadDiffers ? `<div class="sub" style="margin-top:8px">This differs from the squad on
+      screen${idx ? ` — it is where the moves from GW${weeks[0].gw} to GW${week.gw} leave you`
+        : " — the moves above are what would get you there"}.</div>` : ""}
+    ${renderPlanPathHTML(plan, idx, { prefix })}
+    ${live ? `<div id="weekIdealBox">${weekIdealHTML(plan, idx)}</div>` : ""}
+    ${live ? `<div id="weekNearBox">${weekNearMissHTML(plan, idx)}</div>` : ""}
   </div>`;
 }
 
@@ -3643,7 +3750,7 @@ function renderPlanHTML(plan) {
  *  week properly; this shows the shape of the whole thing, which is what says
  *  whether a chip week was paid for by banking a transfer three weeks earlier
  *  or by taking a hit on the day. */
-function renderPlanPathHTML(plan, idx) {
+function renderPlanPathHTML(plan, idx, { prefix = "" } = {}) {
   const name = (id) => S.byId.get(id)?.name ?? "—";
   const total = plan.weeks.reduce((a, w) => a + w.xiPoints, 0);
   const hits = plan.weeks.reduce((a, w) => a + w.hits, 0);
@@ -3652,7 +3759,7 @@ function renderPlanPathHTML(plan, idx) {
   <table class="chiptable path"><thead><tr>
       <th>GW</th><th>Chip</th><th>In</th><th>Out</th><th>FT</th><th>Hits</th><th>Bank</th><th>xI pts</th>
     </tr></thead><tbody>${plan.weeks.map((w, i) => `
-      <tr class="${i === idx ? "picked" : ""} ${w.chip ? "haschip" : ""}" data-planweek="${i}">
+      <tr class="${i === idx ? "picked" : ""} ${w.chip ? "haschip" : ""}" data-planweek="${i}" data-prefix="${prefix}">
         <td>GW${w.gw}</td>
         <td>${w.chip ? plan.chipLabels[w.chip] : "—"}</td>
         <td>${w.boughtIds.map(name).join(", ") || "—"}</td>
@@ -3755,42 +3862,161 @@ function renderChipConstraints() {
  *  Was a checkbox plus a select, which could express states the model has no
  *  meaning for ("play it, but in no particular week" read the same as "consider
  *  it") and had no way at all to say "do not spend a solve on this". One control
- *  per chip, four states, and the solve cost of each is on the label. */
+ *  per chip, three states, and the solve cost of each is on the label. Which
+ *  weeks are even in play is a separate question now (see toggleChipWeek) --
+ *  narrowing to one week is what a "pin" means, independent of skip/force. */
 const chipModeOf = (chip) =>
   S.chipSkip.includes(chip) ? "skip"
-  : S.chipWeek[chip] ? `at:${S.chipWeek[chip]}`
   : S.forceChips.includes(chip) ? "force" : "consider";
 
-/** Apply a chip's select back onto the three pieces of state it spans. Written
- *  as a full reset of all three rather than as a patch, because the states are
- *  mutually exclusive and a patch is how "skip" used to leave a stale pin behind
- *  that forced the chip straight back in. */
-function setChipMode(chip, mode) {
-  S.chipSkip = S.chipSkip.filter((c) => c !== chip);
-  S.forceChips = S.forceChips.filter((c) => c !== chip);
-  const { [chip]: _dropped, ...restWeek } = S.chipWeek;
-  S.chipWeek = restWeek;
-  if (mode === "skip") S.chipSkip = [...S.chipSkip, chip];
-  else if (mode === "force") S.forceChips = [...S.forceChips, chip];
-  else if (mode.startsWith("at:")) {
-    // A week is a stronger statement than "must play": you cannot pin a week for
-    // a chip you are not playing, so the pin implies the force.
-    S.chipWeek = { ...S.chipWeek, [chip]: +mode.slice(3) };
-    S.forceChips = [...S.forceChips, chip];
+/** The gameweeks a chip is even allowed to land in, honouring whatever subset
+ *  you have narrowed it to below -- the full legal window when you have not. */
+function chipCandidateWeeks(chip, legal) {
+  const chosen = S.chipWeek[chip];
+  return Array.isArray(chosen) && chosen.length ? legal.filter((gw) => chosen.includes(gw)) : legal;
+}
+
+/** Add or drop one gameweek from a chip's candidate set. Narrowing to exactly
+ *  one week is what "pin" means to buildTransferPayload; narrowing to any
+ *  other non-empty subset still restricts the solve without forcing the chip
+ *  to be played at all. Never allowed down to zero -- that is "leave it out",
+ *  which already has its own control. */
+function toggleChipWeek(chip, gw) {
+  const legal = forcibleChipSlots()[chip] || [];
+  const current = chipCandidateWeeks(chip, legal);
+  const next = current.includes(gw) ? current.filter((g) => g !== gw) : [...current, gw];
+  if (!next.length) return;
+  if (next.length === legal.length) {
+    const { [chip]: _dropped, ...rest } = S.chipWeek;
+    S.chipWeek = rest;
+  } else {
+    S.chipWeek = { ...S.chipWeek, [chip]: next };
   }
   saveSettings();
 }
 
+function resetChipWeeks(chip) {
+  const { [chip]: _dropped, ...rest } = S.chipWeek;
+  S.chipWeek = rest;
+  saveSettings();
+}
+
+/** Apply a chip's select back onto the two pieces of state it spans. Written
+ *  as a full reset of both rather than as a patch, because the states are
+ *  mutually exclusive and a patch is how "skip" used to leave a chip forced
+ *  behind it. Leaves S.chipWeek alone -- which weeks are in play does not
+ *  reset just because you changed your mind about forcing it. */
+function setChipMode(chip, mode) {
+  S.chipSkip = S.chipSkip.filter((c) => c !== chip);
+  S.forceChips = S.forceChips.filter((c) => c !== chip);
+  if (mode === "skip") S.chipSkip = [...S.chipSkip, chip];
+  else if (mode === "force") S.forceChips = [...S.forceChips, chip];
+  saveSettings();
+}
+
+/** Whether a chip's sweep (the per-week re-solve) will actually run, matching
+ *  buildTransferPayload's own forceChips derivation exactly: explicitly forced,
+ *  or narrowed down to the one week that counts as a pin. */
+const chipWillSweep = (chip, weeks) => S.forceChips.includes(chip) || weeks.length === 1;
+
 /** What the next press will cost, counted the way buildTransferJobs builds it:
  *  the plan, the chip-free baseline, one per chip still in, and a gameweek's
- *  worth for each chip you have committed to. Shown before the press, because a
- *  five-minute wait is worth being able to see coming -- and because the only
- *  way to shorten it is a control sitting right beside the number. */
+ *  worth for each chip you have committed to (or narrowed to a single week).
+ *  Shown before the press, because a five-minute wait is worth being able to
+ *  see coming -- and because the only way to shorten it is a control sitting
+ *  right beside the number. */
 function chipSolveCount(slots) {
   const live = Object.keys(slots).filter((c) => !S.chipSkip.includes(c));
-  const sweeps = live.filter((c) => S.forceChips.includes(c) || S.chipWeek[c])
-    .reduce((a, c) => a + (slots[c]?.length || 0), 0);
+  const sweeps = live.reduce((a, c) => {
+    const weeks = chipCandidateWeeks(c, slots[c] || []);
+    return a + (chipWillSweep(c, weeks) ? weeks.length : 0);
+  }, 0);
   return 2 + live.length + sweeps;
+}
+
+/** The pitch for one week of a solved plan -- starters, bench in solver order,
+ *  captain and vice -- shared by the from-scratch plan and the owned-squad
+ *  plan, which each keep their own copy at `#${prefix}thisWeekPitch`. */
+function renderWeekPitchInto(prefix, plan, weekIdx) {
+  const box = $(`#${prefix}thisWeekPitch`);
+  if (!box) return;
+  const weeks = plan.weeks;
+  const week = weeks[Math.min(Math.max(weekIdx, 0), weeks.length - 1)];
+  const fielded = [...week.starters, ...week.bench.map((b) => b.id)];
+  const benchOrder = Object.fromEntries(week.bench.map((b) => [b.id, b.slot]));
+  const layout = squadLayout({ ids: fielded, lookup: S.byId, need: S.meta.squad_by_pos,
+                               xiIds: week.starters, benchOrder });
+  box.innerHTML = pitchHTML({ layout, teams: S.snapshot?.teams, metrics: S.metrics,
+                             captain: week.captain, vice: week.vice, versus: true });
+  wireShirts(box);
+  // Rebuilt inside host.innerHTML on every render, so a fresh listener each
+  // time is correct rather than a leak.
+  box.addEventListener("click", (e) => {
+    const vs = e.target.closest("[data-vs]");
+    if (vs) return toggleVersus(+vs.dataset.vs);
+    const edit = e.target.closest("[data-edit]");
+    if (edit) openEditor(+edit.dataset.edit);
+  });
+}
+
+/** The editable pitch for the fifteen you actually own -- the anchor the
+ *  owned-squad plan solves against. Add/remove go through the same
+ *  data-add-pos / data-rm contract as the Squad tab's own pitch, because they
+ *  are the same S.squad. */
+function ownedPitchHTML() {
+  const layout = squadLayout({
+    ids: S.squad, lookup: S.byId, need: S.meta.squad_by_pos,
+    xiIds: planXI(S.squad).ids, benchOrder: benchSlots(S.squad),
+  });
+  return { html: pitchHTML({ layout, teams: S.snapshot?.teams, metrics: S.metrics,
+                             ...captaincy(S.squad), remove: true }), layout };
+}
+
+/** Pick one of your saved drafts into S.squad, or bank the current one under a
+ *  name -- both without leaving the Chips tab for the Drafts one, since the
+ *  point of editing here is to see the chip/transfer read on it immediately. */
+function ownedDraftControlsHTML() {
+  const options = S.drafts.map((d) =>
+    `<option value="${encodeURIComponent(d.name)}">${d.name}</option>`).join("");
+  return `
+  <div class="chipbar" style="margin:10px 0 4px">
+    <select id="ownedDraftPick" ${S.drafts.length ? "" : "disabled"}>
+      <option value="">${S.drafts.length ? "Load a saved draft…" : "No saved drafts yet"}</option>
+      ${options}
+    </select>
+    <input type="text" id="ownedDraftName" placeholder="Name this squad…" maxlength="40">
+    <button class="btn ghost" id="ownedDraftSave">Save as draft</button>
+  </div>`;
+}
+
+/** The owned-squad plan's own controls and, once solved, its full week-by-week
+ *  panel -- chart, week picker, pitch, moves, the lot, same as the from-scratch
+ *  plan's, generalized through renderPlanHTML's prefix/live options. */
+function renderOwnedPanelHTML() {
+  const op = S.ownedPlan;
+  const missing = 15 - S.squad.length;
+  if (missing > 0) {
+    return `<div class="sub" style="margin-top:10px">Add ${missing} more player${missing === 1 ? "" : "s"}
+      to plan a chip and transfer strategy anchored to this squad.</div>`;
+  }
+  const busy = op.state === "solving";
+  const stale = op.state === "ready" && op.key !== ownedInputKey();
+  const progress = op.progress;
+  const statusText = busy
+    ? (progress && progress.total > 1 ? `solving — ${progress.done} of ${progress.total} done…`
+        : "solving — this builds the whole horizon around your squad, it can take a while…")
+    : op.state === "error" ? op.error : "";
+  return `
+  <div class="chipbar" style="margin-top:10px">
+    <button class="btn" id="planOwnedBtn" ${busy ? "disabled" : ""}>
+      ${op.state === "ready" ? "Re-solve" : "Solve my squad"}
+    </button>
+    <span class="optstatus ${op.state === "error" ? "err" : ""}">${statusText}</span>
+  </div>
+  ${stale ? `<div class="planstale">Your squad or the settings above have changed since this
+    was solved — it answers the old ones.
+    <button class="mini" id="ownedReplanBtn">Re-solve</button></div>` : ""}
+  ${op.state === "ready" ? renderPlanHTML(op.result, { prefix: "own", weekIdx: S.ownedPlanWeek, live: false }) : ""}`;
 }
 
 function renderChips() {
@@ -3823,16 +4049,25 @@ function renderChips() {
 
   const chipRow = (chip) => {
     const mode = chipModeOf(chip);
-    const weeks = slots[chip].length;
+    const legal = slots[chip];
+    const chosen = chipCandidateWeeks(chip, legal);
+    const narrowed = chosen.length !== legal.length;
+    const weeks = chipWillSweep(chip, chosen) ? chosen.length : 0;
     return `<div class="chiprow">
       <label class="chipname" for="chipmode_${chip}">${labels[chip]}</label>
       <select id="chipmode_${chip}" data-chipmode="${chip}" ${busy ? "disabled" : ""}>
         <option value="consider" ${mode === "consider" ? "selected" : ""}>consider it (1 solve)</option>
         <option value="skip" ${mode === "skip" ? "selected" : ""}>leave it out (0 solves)</option>
-        <option value="force" ${mode === "force" ? "selected" : ""}>must play, best week (+${weeks})</option>
-        ${slots[chip].map((gw) => `<option value="at:${gw}"
-          ${mode === `at:${gw}` ? "selected" : ""}>must play in GW${gw} (+${weeks})</option>`).join("")}
+        <option value="force" ${mode === "force" ? "selected" : ""}>must play, best of these weeks${weeks ? ` (+${weeks})` : ""}</option>
       </select>
+      <div class="weekpick chipgws">${legal.map((gw) => `
+        <button type="button" class="mini ${chosen.includes(gw) ? "on" : ""}" data-chipgw="${chip}"
+                data-gw="${gw}" ${busy ? "disabled" : ""}
+                title="${chosen.includes(gw) ? "In the candidate set — click to drop it"
+                  : "Not being considered — click to add it back"}">GW${gw}</button>`).join("")}
+        ${narrowed ? `<button type="button" class="mini ghost" data-chipgwall="${chip}"
+          ${busy ? "disabled" : ""}>All weeks</button>` : ""}
+      </div>
     </div>`;
   };
 
@@ -3856,9 +4091,11 @@ function renderChips() {
           skipped ? ` · ${skipped} left out` : ""}</div>
         <span class="sub"><b>Consider</b> prices the chip: one solve that builds a fifteen
           around it. <b>Leave it out</b> drops it from the run entirely — the fastest way to
-          cut the wait. <b>Must play</b> also re-solves every gameweek it could go in, so you
-          can see what the timing is worth. Two solves are always run: the plan itself, and a
-          chip-free build to price the rest against.</span>
+          cut the wait. <b>Must play</b> also re-solves every gameweek left in its candidate set,
+          so you can see what the timing is worth. Click a <b>GW</b> button to drop it from that
+          set — the model then may not play the chip there at all — down to one week and that
+          becomes a pin, forcing the chip there regardless of the select above. Two solves are
+          always run: the plan itself, and a chip-free build to price the rest against.</span>
       </div>` : ""}
       <div class="chipopt">
         <label for="transferMode">Transfers after GW${S.gameweeks[0] ?? ""}</label>
@@ -3876,7 +4113,33 @@ function renderChips() {
     </div>
 
     ${ready ? renderChipTableHTML(tp.result) : ""}
-    ${ready ? renderPlanHTML(tp.result) : ""}`;
+
+    <div class="pitchpair" style="margin-top:16px">
+      <div class="pitchside">
+        <div class="sidehead">
+          <h2>Your squad</h2>
+          <span class="shapetag" id="ownedShapeTag"></span>
+          <span class="grow"></span>
+          <button class="btn ghost" id="addPlayerOwned">Add players</button>
+        </div>
+        <div class="sub">Anchored to the fifteen you own -- pays a transfer and a hit for every
+          move away from it, same as FPL charges you. Answers "given what I hold, when should I
+          play my chips and what do I transfer?", not "what would an ideal side do?" (that is
+          the table above).</div>
+        ${ownedDraftControlsHTML()}
+        <div id="ownedPitch"></div>
+        ${renderOwnedPanelHTML()}
+      </div>
+      <div class="pitchside">
+        <div class="sidehead">
+          <h2>Optimal</h2>
+        </div>
+        <div class="sub">Built from scratch on the settings above, ignoring what you own -- the
+          plan the Worth table's own numbers come from.</div>
+        ${ready ? renderPlanHTML(tp.result) : `<div class="sub" style="margin-top:10px">Press
+          Plan chips to see the from-scratch build.</div>`}
+      </div>
+    </div>`;
 
   $("#planBtn").addEventListener("click", planTransfersAndChips);
   $("#replanBtn")?.addEventListener("click", planTransfersAndChips);
@@ -3884,12 +4147,13 @@ function renderChips() {
 
   // The chart's toggle sits inside #chipsBody, which this function rewrites on
   // every render, so it cannot use the load-time listener the Analysis tab's
-  // three toggles share.
-  host.querySelector('.toggle[data-view="plan"]')?.addEventListener("click", () => {
+  // three toggles share. Both panels share one view setting, so a click on
+  // either toggle redraws the whole tab rather than juggling two independently.
+  host.querySelectorAll('.toggle[data-view="plan"]').forEach((btn) => btn.addEventListener("click", () => {
     setView("plan", S.views.plan === "table" ? "chart" : "table");
     saveSettings();
-    if (S.views.plan === "chart" && S.transferPlan.result) renderPlanChart(S.transferPlan.result);
-  });
+    renderChips();
+  }));
 
   // Every control here changes the answer, so each re-solves rather than
   // leaving a plan on screen that no longer matches the controls above it.
@@ -3909,43 +4173,68 @@ function renderChips() {
     changed();
   }));
 
+  host.querySelectorAll("[data-chipgw]").forEach((btn) => btn.addEventListener("click", () => {
+    toggleChipWeek(btn.dataset.chipgw, +btn.dataset.gw);
+    changed();
+  }));
+  host.querySelectorAll("[data-chipgwall]").forEach((btn) => btn.addEventListener("click", () => {
+    resetChipWeeks(btn.dataset.chipgwall);
+    changed();
+  }));
+
+  // The from-scratch plan's week buttons re-solve who nearly made that week's
+  // squad, same as before; the owned plan has no such cache and just switches
+  // the week -- a full re-render is cheap, nothing here re-solves.
   host.querySelectorAll("[data-planweek]").forEach((el) => el.addEventListener("click", () => {
-    S.planWeek = +el.dataset.planweek;
-    renderChips();
-    // Every week is a different squad problem -- different money, different
-    // chip, different points -- so selecting one asks for its rebuild. Cached,
-    // so clicking back and forth costs nothing after the first look.
-    solveWeekIdeal(S.planWeek);
+    const i = +el.dataset.planweek;
+    if (el.dataset.prefix === "own") { S.ownedPlanWeek = i; renderChips(); }
+    else { S.planWeek = i; renderChips(); solveWeekIdeal(S.planWeek); }
   }));
 
   wireWeekNearMiss();
   wireWeekIdeal();
 
+  // "Your squad" -- the editable pitch, the draft picker and the anchored
+  // solve. All of it operates on S.squad, the same fifteen the Squad tab
+  // edits, so adding a player here is exactly adding one there.
+  $("#addPlayerOwned").addEventListener("click", () => openPool());
+  const ownedBox = $("#ownedPitch");
+  if (ownedBox) {
+    const { html, layout } = ownedPitchHTML();
+    ownedBox.innerHTML = html;
+    wireShirts(ownedBox);
+    $("#ownedShapeTag").textContent = layout.complete
+      ? `${layout.shape} · ${S.squad.length}/15` : `${S.squad.length}/15 picked`;
+    ownedBox.addEventListener("click", (e) => {
+      const add = e.target.closest("[data-add-pos]");
+      if (add) return openPool(add.dataset.addPos || null);
+      const rm = e.target.closest("[data-rm]");
+      if (rm) { S.squad = S.squad.filter((id) => id !== +rm.dataset.rm); saveSquad(); renderAll(); return; }
+      const edit = e.target.closest("[data-edit]");
+      if (edit) openEditor(+edit.dataset.edit);
+    });
+  }
+  $("#ownedDraftPick")?.addEventListener("change", (e) => {
+    const name = decodeURIComponent(e.target.value || "");
+    if (name) loadDraft(name);
+  });
+  $("#ownedDraftSave")?.addEventListener("click", () => {
+    saveDraftAs($("#ownedDraftName").value);
+    $("#ownedDraftName").value = "";
+  });
+  $("#planOwnedBtn")?.addEventListener("click", planOwnedSquad);
+  $("#ownedReplanBtn")?.addEventListener("click", planOwnedSquad);
+
   if (ready) {
     // After the markup, never inside it: an SVG sized against a container that
     // is not in the document has no width to size against.
     renderPlanChart(tp.result);
-
-    const weeks = tp.result.weeks;
-    const week = weeks[Math.min(Math.max(S.planWeek, 0), weeks.length - 1)];
-    const fielded = [...week.starters, ...week.bench.map((b) => b.id)];
-    const benchOrder = Object.fromEntries(week.bench.map((b) => [b.id, b.slot]));
-    const layout = squadLayout({ ids: fielded, lookup: S.byId, need: S.meta.squad_by_pos,
-                                 xiIds: week.starters, benchOrder });
-    const box = $("#thisWeekPitch");
-    box.innerHTML = pitchHTML({ layout, teams: S.snapshot?.teams, metrics: S.metrics,
-                               captain: week.captain, vice: week.vice, versus: true });
-    wireShirts(box);
-    // The shirts here were the only ones on the board that did nothing when
-    // clicked: this pitch is rebuilt inside host.innerHTML on every render, so
-    // it never picked up one of the delegated handlers the other pitches have.
-    // A fresh element each render means a fresh listener is correct, not a leak.
-    box.addEventListener("click", (e) => {
-      const vs = e.target.closest("[data-vs]");
-      if (vs) return toggleVersus(+vs.dataset.vs);
-      const edit = e.target.closest("[data-edit]");
-      if (edit) openEditor(+edit.dataset.edit);
-    });
+    renderWeekPitchInto("", tp.result, S.planWeek);
+  }
+  if (S.ownedPlan.state === "ready") {
+    renderPlanChart(S.ownedPlan.result,
+      { prefix: "own", onWeek: (i) => { S.ownedPlanWeek = i; renderChips(); } });
+    renderWeekPitchInto("own", S.ownedPlan.result, S.ownedPlanWeek);
   }
 }
 
@@ -4109,8 +4398,12 @@ async function syncDrafts() {
   renderDrafts();
 }
 
-function saveDraft() {
-  const name = $("#draftName").value.trim();
+/** Save the squad on screen under `name`, overwriting any existing draft of
+ *  the same name. Shared by the Drafts tab's own input and the Chips tab's
+ *  "Your squad" panel, which needs the same save without living on the same
+ *  tab as #draftName. */
+function saveDraftAs(name) {
+  name = name.trim();
   if (!name) return alert("Give the draft a name first.");
   if (!S.squad.length) return alert("Nothing to save — the squad is empty.");
   S.drafts = S.drafts.filter((d) => d.name !== name);
@@ -4124,9 +4417,13 @@ function saveDraft() {
     },
   });
   S.drafts.sort((a, b) => a.name.localeCompare(b.name));
-  $("#draftName").value = "";
   persistDrafts();
   renderDrafts();
+}
+
+function saveDraft() {
+  saveDraftAs($("#draftName").value);
+  $("#draftName").value = "";
 }
 
 async function deleteDraft(name) {
@@ -5403,6 +5700,7 @@ function syncableSettings() {
     bench: Object.fromEntries(BENCH_KEYS.map((k) => [k, $(`#bw_${k}`).value])),
     benchTouched, include: [...S.include], exclude: [...S.exclude],
     chipsUsed: [...S.chipsUsed],
+    chipHold: chipHoldValues(), ftValue: ftValueSetting(), chipEconTouched,
   };
 }
 
@@ -5421,6 +5719,10 @@ function applySyncedSettings(saved) {
   if (saved.bench) {
     benchTouched = !!saved.benchTouched;
     for (const k of BENCH_KEYS) if (saved.bench[k] != null) $(`#bw_${k}`).value = saved.bench[k];
+  }
+  if (saved.chipHold || saved.ftValue != null) {
+    chipEconTouched = !!saved.chipEconTouched;
+    setChipEconDefaults(saved.chipHold, saved.ftValue);
   }
   if (Array.isArray(saved.include)) S.include = saved.include.map(Number);
   if (Array.isArray(saved.exclude)) S.exclude = saved.exclude.map(Number);
@@ -5737,6 +6039,7 @@ function rebuildPool(keepSquad = true) {
       if (m.bench_slot_weights[k] != null) $(`#bw_${k}`).value = m.bench_slot_weights[k];
     }
   }
+  if (!chipEconTouched) setChipEconDefaults(S.snapshot.rules.CHIP_HOLD_VALUE, S.snapshot.rules.FT_VALUE);
   renderControlValues();
   renderEditBanner();
 }
@@ -6348,18 +6651,28 @@ function transferInputKey() {
     S.transferMode, $("#budget").value, $("#maxclub").value,
     $("#minstart").value, $("#formation").value, benchWeights(),
     transferGwCount(), noDecay(), S.gameweeks[0] ?? null,
-    S.snapshot?.generated_at ?? null, S.edits,
+    S.snapshot?.generated_at ?? null, S.edits, chipHoldValues(), ftValueSetting(),
   ]);
 }
 
 /** Reduce the pool, build the ownership facts and the rule constants into
  *  exactly what transfers.js needs — the same "prep vs solve" split as
  *  chips.mjs's own docstring describes. Returns `null` (nothing to plan)
- *  if the squad isn't complete. */
-function buildTransferPayload() {
-  // No squad requirement any more: the plan builds its own fifteen, so it has
-  // an answer on an empty board.
+ *  if an owned squad was asked for but isn't complete.
+ *
+ *  `squad` is empty by default -- the LP's own preseason mode, where the
+ *  opening fifteen is a free choice and the tab answers "what is each chip
+ *  worth to a side built for it?". Pass your own fifteen (must be complete)
+ *  to anchor the solve instead: the plan then pays a transfer and a hit for
+ *  every move away from what you hold, and answers the different, more
+ *  practical question "given what I own, when should I play my chips and
+ *  what do I transfer?" -- see planOwnedSquad(). */
+function buildTransferPayload(squad = []) {
+  // No squad requirement in the default (preseason) mode: the plan builds its
+  // own fifteen, so it has an answer on an empty board. Anchored mode needs a
+  // complete squad or there is nothing to hold the rest against.
   if (!S.meta || !S.snapshot) return null;
+  if (squad.length && squad.length !== 15) return null;
   const rules = S.snapshot.rules;
   const gwCount = transferGwCount();
   const gameweeks = S.gameweeks.slice(0, gwCount);
@@ -6374,12 +6687,12 @@ function buildTransferPayload() {
   // in Settings driving the squad optimiser -- so the two halves of the board
   // answered different questions and neither said so. The plan now reads the
   // same knobs the pitch does.
-  // Only the players you have *required*, not the ones you happen to own. The
-  // ownership-anchored version had to keep your fifteen in the pool or the plan
-  // could not represent selling them; a from-scratch build has nothing to sell,
-  // and forcing them in would quietly widen the candidate set by fifteen on the
-  // strength of a squad this model does not read.
-  const keep = [...S.include];
+  // Only the players you have *required*, not everyone you happen to own. A
+  // from-scratch build has nothing to sell, and forcing them in would quietly
+  // widen the candidate set by fifteen on the strength of a squad this model
+  // does not read. Anchored mode is the exception: it has to keep your own
+  // fifteen in the pool or the plan could not represent selling them.
+  const keep = [...new Set([...squad, ...S.include])];
   const pool = candidatePool(players, pointsByPlayer,
     { keep, minMinutesProb: +$("#minstart").value, exclude: S.exclude, caps: rules.POOL_BY_POS });
   const cPool = captainPool(pool, pointsByPlayer, rules.CAPTAIN_CANDIDATES);
@@ -6394,20 +6707,28 @@ function buildTransferPayload() {
 
   const variation = fixtureVariation(S.snapshot.fixtures, gameweeks);
   const chips = chipSlots(S.meta.chip_windows || {}, gameweeks, S.chipsUsed, rules.CHIPS);
-  // The full legal set, kept aside before any pinning: the sweep compares a
-  // chip's weeks, so it has to see every week the chip could have gone in, not
-  // just the one week you told it to use.
-  const sweepSlots = Object.fromEntries(Object.entries(chips).map(([c, gws]) => [c, [...gws]]));
 
-  // Choosing a gameweek for a chip is a stronger statement than "must play" —
-  // you cannot pin a week for a chip you are not playing — so it implies the
-  // force rather than requiring both boxes.
+  // Narrow each chip's legal window to whatever candidate set you have chosen
+  // below, before anything else reads it -- the sweep, the solve count and the
+  // LP itself all have to agree on what "legal" means here. Narrowing to
+  // exactly one week is a stronger statement than "must play" -- you cannot
+  // pin a week for a chip you are not playing -- so it implies the force
+  // rather than requiring both controls.
   const pinned = {};
-  for (const [chip, gw] of Object.entries(S.chipWeek || {})) {
-    if (gw && chips[chip]?.includes(gw)) { chips[chip] = [gw]; pinned[chip] = gw; }
+  for (const [chip, chosen] of Object.entries(S.chipWeek || {})) {
+    if (!Array.isArray(chosen) || !chosen.length || !chips[chip]) continue;
+    const narrowed = chips[chip].filter((gw) => chosen.includes(gw));
+    if (!narrowed.length) continue; // nothing legal left in the chosen set -- ignore it
+    chips[chip] = narrowed;
+    if (narrowed.length === 1) pinned[chip] = narrowed[0];
   }
   const forceChips = [...new Set([...S.forceChips, ...Object.keys(pinned)])]
     .filter((chip) => chip in chips);
+
+  // The (possibly narrowed) legal set, kept aside: the sweep compares a chip's
+  // candidate weeks, so it has to see every one of those, not just whichever
+  // it settles on.
+  const sweepSlots = Object.fromEntries(Object.entries(chips).map(([c, gws]) => [c, [...gws]]));
 
   const skipped = {};
   // Chips you have excluded, dropped before anything is priced. Each one left in
@@ -6430,25 +6751,16 @@ function buildTransferPayload() {
     skipped.freehit = "no blank or double to hit";
   }
 
-  const ftWorth = freeTransferValue(rules.FT_VALUE, rules.FT_VALUE_BY_STATE, rules.MAX_FREE_TRANSFERS);
+  const ftWorth = freeTransferValue(ftValueSetting(), rules.FT_VALUE_BY_STATE, rules.MAX_FREE_TRANSFERS);
   const budget = +$("#budget").value;
-  // Built from scratch, not from the fifteen you own -- `squad: []` is the LP's
-  // own preseason mode, where the opening fifteen is a free choice out of the
-  // whole budget and no transfer is charged for reaching it.
-  //
-  // This is the question the tab exists to answer and it was answering a
-  // different one. Anchored to your squad, a chip is priced at whatever it pays
-  // over a side assembled for other reasons, and every route to a better one is
-  // charged a transfer and a hit -- so a bench boost gets scored against the
-  // cheap bench you happen to own rather than against the bench you would buy
-  // knowing the chip was coming, which is the entire decision. Freed of the
-  // ownership, the squad, the bench spend, the captain and the chip's week are
-  // all chosen together over the horizon.
-  //
-  // What that costs: the plan no longer tells you what to do *next*, because it
-  // does not know what you hold. It tells you what the chip is worth to a side
-  // built for it, which is the number the tab's own table was pretending to be.
-  const bank = 0;
+  // `squad: []` is the LP's own preseason mode, where the opening fifteen is a
+  // free choice out of the whole budget and no transfer is charged for
+  // reaching it -- the question the Worth table asks. Anchored to your squad,
+  // a chip is priced at whatever it pays over the side you actually hold, and
+  // every route to a better one is charged a transfer and a hit, same as FPL
+  // itself charges you -- the question "what do I do next" asks instead.
+  const bank = squad.length ? Math.max(0, budget - squadCost(squad)) : 0;
+  const freeTransfers = squad.length ? +$("#freetransfers").value : 0;
 
   // "No transfers" bans every purchase, which the squad-size constraint turns
   // into no sales either. A free hit is untouched by it on purpose: that chip
@@ -6461,16 +6773,13 @@ function buildTransferPayload() {
   const poolPayload = pool.map((p) => ({ id: p.id, pos: p.pos, team: p.team, price: p.price,
                                          pts: pointsByPlayer.get(p.id) }));
   const opt = {
-    // `squad: []` and `freeTransfers: 0` are what put the LP in preseason mode.
-    // Both are deliberate rather than defaulted: an opening fifteen chosen for
-    // free cannot also have banked transfers to spend on it.
-    gameweeks, budget, squad: [], bank, freeTransfers: 0,
+    gameweeks, budget, squad: [...squad], bank, freeTransfers,
     chips, forceChips, captainPool: cPool,
     slotWeight,
     squadByPos: rules.SQUAD_BY_POS, xiMinByPos, xiMaxByPos,
     squadSize: rules.SQUAD_SIZE, xiSize: rules.XI_SIZE, maxPerClub: +$("#maxclub").value,
     include: [...S.include], exclude: [...S.exclude],
-    halfLife: transferHalfLife(), holdValue: rules.CHIP_HOLD_VALUE,
+    halfLife: transferHalfLife(), holdValue: chipHoldValues(),
     friction: rules.TRANSFER_FRICTION, ftWorth, maxFreeTransfers: rules.MAX_FREE_TRANSFERS,
     hitCost: rules.HIT_COST, bankValue: rules.BANK_VALUE, freeTransfersPerGw: rules.FREE_TRANSFERS_PER_GW,
     idleMovePenalty: rules.IDLE_MOVE_PENALTY,
@@ -6673,6 +6982,124 @@ async function planTransfersAndChips() {
   // making it a second click leaves the plan's own compromise looking like the
   // answer. One solve, on the week already on screen.
   solveWeekIdeal(S.planWeek);
+}
+
+/** Everything the owned-squad plan is an answer to. Same idea as
+ *  transferInputKey, plus the one thing that key deliberately leaves out: the
+ *  fifteen you own, which this plan is anchored to. */
+function ownedInputKey() {
+  return JSON.stringify([
+    S.squad, S.include, S.exclude, S.chipsUsed, S.forceChips, S.chipWeek, S.chipSkip,
+    S.transferMode, $("#budget").value, $("#maxclub").value, $("#freetransfers").value,
+    $("#minstart").value, $("#formation").value, benchWeights(),
+    transferGwCount(), noDecay(), S.gameweeks[0] ?? null,
+    S.snapshot?.generated_at ?? null, S.edits, chipHoldValues(), ftValueSetting(),
+  ]);
+}
+
+/** The owned-squad plan's own jobs: the plan itself, anchored to your fifteen,
+ *  plus a per-week sweep for any chip you have committed to. No baseline and no
+ *  per-chip solve -- there is no "worth against a from-scratch build" question
+ *  here, only "what should this squad do", so it costs one solve instead of
+ *  the Worth table's 2-plus-one-per-chip. */
+function buildPlanOnlyJobs(payload) {
+  const { pool, opt } = payload;
+  const jobs = [{ tag: { kind: "plan" }, pool, opt }];
+  for (const chip of payload.forceChips) {
+    for (const gw of payload.sweepSlots[chip] || []) {
+      jobs.push({
+        tag: { kind: "pin", chip, gw }, pool,
+        opt: { ...opt, chips: { [chip]: [gw] }, forceChips: [chip] },
+      });
+    }
+  }
+  return jobs;
+}
+
+/** A second, independent instance of the same worker transfer-worker.js runs
+ *  on. The worker only ever answers its newest request and abandons anything
+ *  still in flight the moment a fresher one arrives (see its own comment) --
+ *  fine when there is one plan on the tab, wrong the moment there are two:
+ *  posting the owned-squad plan would silently cut off the from-scratch one
+ *  mid-solve and vice versa. A dedicated worker per plan is what keeps them
+ *  from racing each other. */
+let ownedWorker = null;
+const ownedWaiters = new Map();
+let ownedSeq = 0;
+
+function ensureOwnedWorker() {
+  if (ownedWorker) return ownedWorker;
+  ownedWorker = new Worker("/assets/transfer-worker.js");
+  ownedWorker.onmessage = (event) => {
+    const { seq, kind } = event.data;
+    const waiter = ownedWaiters.get(seq);
+    if (!waiter) return;
+    if (kind === "progress") { waiter.progress(event.data); return; }
+    ownedWaiters.delete(seq);
+    waiter.resolve(event.data);
+  };
+  ownedWorker.onerror = (event) => {
+    for (const [, waiter] of ownedWaiters) waiter.reject(new Error(event.message || "the planner failed to start"));
+    ownedWaiters.clear();
+    ownedWorker.terminate();
+    ownedWorker = null;
+  };
+  return ownedWorker;
+}
+
+/** Solve the transfer-and-chip plan anchored to the fifteen you actually own
+ *  (S.squad), so the tab can answer "given what I hold, what do I do" beside
+ *  the from-scratch "what would an ideal side do". Manual, not automatic: like
+ *  the from-scratch plan, this is minutes of work, so editing your squad marks
+ *  the plan stale (see ownedInputKey) rather than kicking off a re-solve on
+ *  every shirt clicked. */
+async function planOwnedSquad() {
+  const payload = buildTransferPayload(S.squad);
+  if (!payload) return;
+  const jobs = buildPlanOnlyJobs(payload);
+  const key = ownedInputKey();
+  const seq = ++ownedSeq;
+  ownedWaiters.clear();
+  S.ownedPlanWeek = 0;
+  S.ownedPlan = { state: "solving", result: null, error: "", key,
+                 progress: { done: 0, total: jobs.length } };
+  renderChips();
+
+  let data;
+  try {
+    data = await new Promise((resolve, reject) => {
+      ownedWaiters.set(seq, {
+        resolve, reject,
+        progress: ({ done, total }) => {
+          if (seq !== ownedSeq) return;
+          S.ownedPlan.progress = { done, total };
+          renderChips();
+        },
+      });
+      ensureOwnedWorker().postMessage({ seq, jobs });
+    });
+  } catch (error) {
+    if (seq !== ownedSeq) return;
+    S.ownedPlan = { state: "error", result: null, error: String(error.message || error), key };
+    renderChips();
+    return;
+  }
+  if (seq !== ownedSeq) return;
+
+  const plan = data.results.find((r) => r.tag.kind === "plan");
+  if (!plan || !plan.ok) {
+    S.ownedPlan = { state: "error", result: null, key,
+                   error: plan?.error || "the planner returned nothing" };
+    renderChips();
+    return;
+  }
+
+  const study = resolveChipStudy(data.results, payload);
+  const chipWeek = plan.result.weeks.findIndex((w) => w.chip);
+  S.ownedPlanWeek = chipWeek === -1 ? 0 : chipWeek;
+  S.ownedPlan = { state: "ready", key, error: "",
+                 result: { ...plan.result, ...payload, ...study, ms: data.ms } };
+  renderChips();
 }
 
 const optDiff = () => {
@@ -7263,6 +7690,30 @@ $("#benchReset").addEventListener("click", () => {
   const defaults = S.meta?.bench_slot_weights || DEFAULT_BENCH;
   for (const k of BENCH_KEYS) $(`#bw_${k}`).value = defaults[k];
   renderBenchWeights();
+  saveSettings();
+  scheduleSolve();
+});
+
+// Chip economics. A slider drag only updates its own label and marks the plan
+// stale through the same debounce as every other setting -- renderChips()
+// (fired from scheduleSolve) is what shows the "settings changed" banner; a
+// full re-solve is minutes of work and stays behind the Re-plan button.
+for (const k of HOLD_KEYS) {
+  $(`#${HOLD_INPUT_ID[k]}`).addEventListener("input", () => {
+    chipEconTouched = true;
+    renderChipEconValues();
+    scheduleSolve();
+  });
+}
+$("#ftValue").addEventListener("input", () => {
+  chipEconTouched = true;
+  renderChipEconValues();
+  scheduleSolve();
+});
+$("#chipEconReset").addEventListener("click", () => {
+  chipEconTouched = false;
+  const rules = S.snapshot?.rules;
+  setChipEconDefaults(rules?.CHIP_HOLD_VALUE || DEFAULT_CHIP_HOLD, rules?.FT_VALUE ?? DEFAULT_FT_VALUE);
   saveSettings();
   scheduleSolve();
 });
