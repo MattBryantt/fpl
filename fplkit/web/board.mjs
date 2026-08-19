@@ -25,6 +25,30 @@ export function truncate(snap, horizon) {
   return { ...snap, gameweeks, fixtures: snap.fixtures.filter((f) => keep.has(f.gw)) };
 }
 
+/** Stable identity for one fixture: gw plus the two clubs. The snapshot carries
+ *  no fixture id, and a pair of clubs meeting twice in the same gameweek is not
+ *  a case the FPL calendar produces, so the triple is unique on its own. */
+export const fixtureKey = (f) => `${f.gw}|${f.home_team}|${f.away_team}`;
+
+/** A fixtures list with any user-set lam_home/lam_away swapped in. Everything
+ *  else about the fixture -- who plays whom, when -- is left alone; only the
+ *  expected goals a match is scored with can be overridden. */
+function applyFixtureEdits(fixtures, fixtureEdits) {
+  if (!fixtureEdits || !Object.keys(fixtureEdits).length) return fixtures;
+  let changed = false;
+  const next = fixtures.map((f) => {
+    const edit = fixtureEdits[fixtureKey(f)];
+    if (!edit) return f;
+    changed = true;
+    return {
+      ...f,
+      lam_home: edit.lam_home ?? f.lam_home,
+      lam_away: edit.lam_away ?? f.lam_away,
+    };
+  });
+  return changed ? next : fixtures;
+}
+
 const sum = (xs, upTo) => {
   let total = 0;
   for (let i = 0; i < Math.min(upTo, xs.length); i++) total += xs[i];
@@ -191,8 +215,11 @@ export function effectiveEdits(snap, edits) {
 const hazardOf = (raw, dropout) => (dropout === false ? 0 : raw.hazard || 0);
 
 /** The player pool as the board renders it, for one set of settings.
- *  `edits` maps fpl_id -> {field: value}. */
-export function derivePool(snap, edits, { horizon, halfLife, dropout = true }) {
+ *  `edits` maps fpl_id -> {field: value}. `fixtureEdits` maps a fixture key
+ *  (see `fixtureKey`) to {lam_home, lam_away} -- an opinion about a match
+ *  rather than about any one player, so it is scored the same way for every
+ *  player of both clubs involved rather than requiring one override each. */
+export function derivePool(snap, edits, { horizon, halfLife, dropout = true }, fixtureEdits) {
   const view = truncate(snap, horizon);
   const count = view.gameweeks.length;
   const overridable = Object.keys(snap.rules.OVERRIDABLE);
@@ -207,6 +234,20 @@ export function derivePool(snap, edits, { horizon, halfLife, dropout = true }) {
     games[f.away_team] = (games[f.away_team] || 0) + 1;
   }
 
+  // Fixture overrides only ever change the fixtures list, never a club's
+  // season-level strength -- npxg_per_match/xgc_per_match stay put, exactly as
+  // they do server-side when odds override a fixture's lambdas without moving
+  // the ratings underneath. `fixturesView` is only distinct from `view` when
+  // something is actually overridden, so the common case pays nothing extra.
+  const patchedFixtures = applyFixtureEdits(view.fixtures, fixtureEdits);
+  const fixturesView = patchedFixtures === view.fixtures ? view : { ...view, fixtures: patchedFixtures };
+  const fixtureAffectedTeams = new Set();
+  if (patchedFixtures !== view.fixtures) {
+    for (const f of patchedFixtures) {
+      if (fixtureEdits[fixtureKey(f)]) { fixtureAffectedTeams.add(f.home_team); fixtureAffectedTeams.add(f.away_team); }
+    }
+  }
+
   const rows = [];
 
   // The user's edits, plus whatever rebalancing his clubs owe. A player moved
@@ -219,12 +260,14 @@ export function derivePool(snap, edits, { horizon, halfLife, dropout = true }) {
 
   for (const raw of snap.players) {
     const edit = applied[raw.id];
-    const edited = !!(edit && Object.keys(edit).length);
+    const personalEdit = !!(edit && Object.keys(edit).length);
+    const fixtureAffected = fixtureAffectedTeams.has(raw.team);
+    const edited = personalEdit || fixtureAffected;
     const byUser = !!(userEdits[raw.id] && Object.keys(userEdits[raw.id]).length);
     let gw, cs, price, pStart, pPlay, expMinutes;
 
     if (edited) {
-      const out = reprojectPlayer(view, raw, edit);
+      const out = reprojectPlayer(fixturesView, raw, edit);
       gw = out.gw;
       cs = out.breakdown.exp_clean_sheets || 0;
       price = out.inputs.price;
@@ -303,7 +346,10 @@ export function derivePool(snap, edits, { horizon, halfLife, dropout = true }) {
       raw_inputs: rawInputs,
       edited: byUser,
       // Moved to keep his club at eleven starters, not by an opinion of yours.
-      adjusted: edited && !byUser,
+      adjusted: personalEdit && !byUser,
+      // Rescored because a fixture he plays in was overridden -- a fact about
+      // his match, not about him, so it is tracked apart from `adjusted`.
+      fixture_edited: fixtureAffected,
     });
   }
 
@@ -359,10 +405,12 @@ export const POINT_SOURCES = [
  *  discounted and the chance he is still available is priced in. The board ranks
  *  on the second and people read the first, which is most of the confusion.
  */
-export function explainPlayer(snap, raw, edit, { horizon, halfLife, dropout = true }) {
+export function explainPlayer(snap, raw, edit, { horizon, halfLife, dropout = true }, fixtureEdits) {
   const view = truncate(snap, horizon);
+  const patchedFixtures = applyFixtureEdits(view.fixtures, fixtureEdits);
+  const fixturesView = patchedFixtures === view.fixtures ? view : { ...view, fixtures: patchedFixtures };
   const applied = edit && Object.keys(edit).length ? edit : null;
-  const out = reprojectPlayer(view, raw, applied);
+  const out = reprojectPlayer(fixturesView, raw, applied);
   const hazard = hazardOf(raw, dropout);
 
   const rows = view.gameweeks.map((gw, i) => {

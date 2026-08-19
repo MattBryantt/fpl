@@ -285,7 +285,8 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
         {"gw": int(f["gw"]),
          "home_team": str(f["home_team"]), "away_team": str(f["away_team"]),
          "lam_home": _num(f["lam_home"], dp=INPUT_DP),
-         "lam_away": _num(f["lam_away"], dp=INPUT_DP)}
+         "lam_away": _num(f["lam_away"], dp=INPUT_DP),
+         "source": str(f["lam_source"])}
         for _, f in projection.fixtures.iterrows()
         if int(f["gw"]) in gameweeks
     ]

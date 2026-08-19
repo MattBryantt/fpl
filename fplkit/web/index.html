@@ -505,6 +505,13 @@ body.noserver .needs-server { display: none !important; }
 .lineupfoot { font-size: 11.5px; color: var(--muted); margin-top: 9px; line-height: 1.45; }
 .tlstrip { overflow-x: auto; margin-top: 6px; }
 .lineup.nowrap td, .lineup.nowrap th { white-space: nowrap; }
+.fixtable tr.fixgrp td {
+  text-align: left; font-size: 11px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.03em; padding: 10px 6px 4px; border-bottom: none;
+}
+.fixtable tr.fixgrp:first-child td { padding-top: 0; }
+.fixtable tr.fixedited { box-shadow: inset 3px 0 0 var(--series-2); }
+.fixtable .editbtn { width: 22px; height: 22px; font-size: 12px; line-height: 1; padding: 0; }
 
 /* --- ask ------------------------------------------------------------------ */
 .asklog { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
@@ -1397,6 +1404,22 @@ gameweek of the transfer-and-chip plan.">Free transfers</label>
 <div class="card" style="margin-top:16px">
   <div class="cardhead">
     <div>
+      <h2 style="margin:0 0 3px">Fixtures &amp; team strength</h2>
+      <div class="sub">Every match in the horizon, with the expected goals each side is scored
+        against and the clean sheet chance that implies. <b>Priced</b> fixtures come from a
+        bookmaker's odds; <b>modelled</b> ones are estimated from attack/defence ratings because
+        no market was found for that match. Type over either xG figure to try your own view —
+        new signing, a manager sacked, a keeper injured — and every player in that match rescores
+        immediately, everywhere on the board.</div>
+    </div>
+    <button class="btn ghost hidden" id="fixResetAll" type="button">Reset all overrides</button>
+  </div>
+  <div class="scroll" id="fixturesBox"></div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <div class="cardhead">
+    <div>
       <h2 style="margin:0 0 3px">Nearly in</h2>
       <div class="sub">Who the optimal squad leaves out by the smallest margin. Each
         candidate is forced in and the other fourteen are rebuilt around him, so the
@@ -1644,7 +1667,8 @@ every one the moment it has it; raising it makes banking more attractive.">Trans
 <script type="module">
 "use strict";
 import { derivePool, editPlayer, explainPlayer, clubLineup, checkOverridable,
-         age, POINT_SOURCES } from "/assets/board.mjs";
+         age, POINT_SOURCES, fixtureKey } from "/assets/board.mjs";
+import { cleanSheetProb } from "/assets/poisson.mjs";
 import { pitchHTML, cardsHTML, squadLayout, wireShirts, shirtUrl,
          METRICS, METRIC_KEYS, MAX_METRICS, cleanMetrics } from "/assets/pitch.mjs";
 import { POSITION_TAGS, POSITION_TAG_LABELS, SEED_TAGS } from "/assets/position-tags.mjs";
@@ -1694,7 +1718,7 @@ const SVGNS = "http://www.w3.org/2000/svg";
 const STORE = { drafts: "fpl.drafts", edits: "fpl.edits", editsAt: "fpl.editsAt",
                 editsHistory: "fpl.edits.history", squad: "fpl.squad",
                 settings: "fpl.settings", posTags: "fpl.postags",
-                lineupOrder: "fpl.lineuporder" };
+                lineupOrder: "fpl.lineuporder", fixtureEdits: "fpl.fixtureedits" };
 
 function loadLocal(key, fallback) {
   try {
@@ -1787,6 +1811,11 @@ const S = {
   pos: "ALL", search: "", sort: "xpts_plan", dir: -1,
   edits: loadLocal(STORE.edits, {}), editsAt: loadLocal(STORE.editsAt, {}),
   drafts: loadLocal(STORE.drafts, []),
+  // Opinions about a match rather than about a player -- an overridden xG for
+  // one or both sides of a fixture. Device-local like posTags/lineupOrder
+  // below, not part of the edits sync: it is a "what if" you are trying, not a
+  // fact about a player worth reconciling across devices.
+  fixtureEdits: loadLocal(STORE.fixtureEdits, {}),
   // Detailed positions (LW, CB, and the rest) FPL itself does not carry --
   // see position-tags.mjs. Keyed by id here, unlike the seed it starts from,
   // because this is a browser preference rather than something meant to
@@ -2058,7 +2087,7 @@ function setTab(name) {
   // Guarded on the pool, because tabs are restored from settings before the
   // snapshot has landed and there is nothing to draw yet.
   if (name === "analysis" && S.meta) {
-    renderGwChart(); renderExposure(); renderTimeline(); renderNearMisses();
+    renderGwChart(); renderExposure(); renderTimeline(); renderFixtures(); renderNearMisses();
   }
   if (name === "chips" && S.meta) { renderChips(); }
 }
@@ -2914,6 +2943,111 @@ function renderLineupStrip(gws) {
         <td>${fmt(lu.total, 1)}</td>
       </tr>`).join("")}</tbody>
     </table></div>`;
+}
+
+/* ------------------------------------------------------------------ fixtures
+   The model's own view of every match in the horizon -- what each side is
+   expected to score, and the clean sheet chance that implies -- with the two
+   xG figures editable in place. An override here is an opinion about a match,
+   not about any one player, so it is applied in derivePool() and reaches every
+   player of both clubs the moment it lands, the same way a bookmaker's price
+   would have. See board.mjs's fixtureKey/applyFixtureEdits for the mechanism. */
+function fixtureOverrideCount() { return Object.keys(S.fixtureEdits || {}).length; }
+
+function renderFixtures() {
+  const host = $("#fixturesBox");
+  const resetAll = $("#fixResetAll");
+  if (!host) return;
+  if (!S.snapshot || !S.gameweeks.length) { host.innerHTML = ""; resetAll.classList.add("hidden"); return; }
+
+  const n = fixtureOverrideCount();
+  resetAll.classList.toggle("hidden", n === 0);
+  resetAll.textContent = n === 1 ? "Reset 1 override" : `Reset ${n} overrides`;
+
+  const teamShort = (t) => S.snapshot.teams?.[t]?.short || t;
+  const inHorizon = new Set(S.gameweeks);
+  const byGw = new Map();
+  for (const f of S.snapshot.fixtures) {
+    if (!inHorizon.has(f.gw)) continue;
+    if (!byGw.has(f.gw)) byGw.set(f.gw, []);
+    byGw.get(f.gw).push(f);
+  }
+  if (!byGw.size) { host.innerHTML = `<div class="empty-note">No fixtures in this horizon.</div>`; return; }
+
+  const rows = [];
+  for (const gw of S.gameweeks) {
+    const fixtures = byGw.get(gw);
+    if (!fixtures?.length) continue;
+    rows.push(`<tr class="fixgrp"><td colspan="7">GW${gw}</td></tr>`);
+    for (const f of fixtures) {
+      const key = fixtureKey(f);
+      const override = S.fixtureEdits[key];
+      const lamHome = override?.lam_home ?? f.lam_home;
+      const lamAway = override?.lam_away ?? f.lam_away;
+      const csHome = cleanSheetProb(lamAway), csAway = cleanSheetProb(lamHome);
+      rows.push(`<tr${override ? ' class="fixedited"' : ""}>
+        <td>${teamShort(f.home_team)} vs ${teamShort(f.away_team)}</td>
+        <td><span class="pill${f.source === "odds" ? " ok" : ""}">${f.source === "odds" ? "priced" : "modelled"}</span></td>
+        <td><input class="mininput" type="number" inputmode="decimal" min="0" max="6" step="0.05"
+            data-fixkey="${key}" data-fixfield="lam_home" value="${lamHome.toFixed(2)}"
+            aria-label="${teamShort(f.home_team)} expected goals"></td>
+        <td>${(csHome * 100).toFixed(0)}%</td>
+        <td><input class="mininput" type="number" inputmode="decimal" min="0" max="6" step="0.05"
+            data-fixkey="${key}" data-fixfield="lam_away" value="${lamAway.toFixed(2)}"
+            aria-label="${teamShort(f.away_team)} expected goals"></td>
+        <td>${(csAway * 100).toFixed(0)}%</td>
+        <td>${override ? `<button class="editbtn" data-fixreset="${key}" title="Reset to the model's own figures">×</button>` : ""}</td>
+      </tr>`);
+    }
+  }
+
+  host.innerHTML = `<table class="lineup fixtable">
+    <thead><tr>
+      <th>Match</th><th>Source</th><th>Home xG</th><th>Home CS%</th><th>Away xG</th><th>Away CS%</th><th></th>
+    </tr></thead>
+    <tbody>${rows.join("")}</tbody>
+  </table>`;
+}
+
+/** One fixture's xG typed over, in either direction. Rebuilds the whole pool --
+ *  every player of both clubs is affected, not just one row -- the same way
+ *  committing a player override does. */
+async function setFixtureLambda(key, field, raw) {
+  if (raw === "" || Number.isNaN(+raw)) { renderFixtures(); return; }
+  const value = Math.min(6, Math.max(0, +raw));
+  const f = S.snapshot.fixtures.find((x) => fixtureKey(x) === key);
+  if (!f) return;
+  const model = field === "lam_home" ? f.lam_home : f.lam_away;
+  const entry = { ...(S.fixtureEdits[key] || {}) };
+  if (Math.abs(value - model) < 1e-9) delete entry[field];
+  else entry[field] = value;
+  if (Object.keys(entry).length) S.fixtureEdits[key] = entry;
+  else delete S.fixtureEdits[key];
+  saveLocal(STORE.fixtureEdits, S.fixtureEdits);
+  rebuildPool();
+  S.optimal = []; S.optimalPts = null; S.optimalCost = null; S.optimalBench = {};
+  renderAll();
+  scheduleSolve(400);
+}
+
+function resetFixtureOverride(key) {
+  if (!(key in S.fixtureEdits)) return;
+  delete S.fixtureEdits[key];
+  saveLocal(STORE.fixtureEdits, S.fixtureEdits);
+  rebuildPool();
+  S.optimal = []; S.optimalPts = null; S.optimalCost = null; S.optimalBench = {};
+  renderAll();
+  scheduleSolve(400);
+}
+
+function resetAllFixtureOverrides() {
+  if (!fixtureOverrideCount()) return;
+  S.fixtureEdits = {};
+  saveLocal(STORE.fixtureEdits, S.fixtureEdits);
+  rebuildPool();
+  S.optimal = []; S.optimalPts = null; S.optimalCost = null; S.optimalBench = {};
+  renderAll();
+  scheduleSolve(400);
 }
 
 /* ------------------------------------------------------------------ nearly in
@@ -4278,7 +4412,7 @@ function renderAll() {
   // against a hidden container has no width to size against. setTab draws them
   // when the tab appears, so here they are drawn only if it already has.
   if (S.tab === "analysis") {
-    renderGwChart(); renderExposure(); renderTimeline(); renderNearMisses();
+    renderGwChart(); renderExposure(); renderTimeline(); renderFixtures(); renderNearMisses();
   }
   if (S.tab === "chips") { renderChips(); }
 }
@@ -4698,7 +4832,7 @@ function renderExplain() {
   let x;
   try {
     x = explainPlayer(S.snapshot, S.snapshot.players.find((r) => r.id === editingId),
-      scoringEdit(p, editBuffer), planOpts());
+      scoringEdit(p, editBuffer), planOpts(), S.fixtureEdits);
   } catch {
     box.innerHTML = `<p class="exnote">Cannot break these points down right now.</p>`;
     return;
@@ -4987,7 +5121,7 @@ function renderDrawerClub() {
   let after;
   try {
     const pending = { ...S.edits, [editingId]: tidy(editBuffer) };
-    after = derivePool(S.snapshot, pending, planOpts()).players;
+    after = derivePool(S.snapshot, pending, planOpts(), S.fixtureEdits).players;
   } catch {
     box.innerHTML = ""; label.textContent = ""; return;
   }
@@ -6031,7 +6165,7 @@ async function loadSnapshot() {
     Pure and fast -- a few milliseconds for 573 players -- so it runs on every
     horizon or half-life change instead of a two-second round trip. */
 function rebuildPool(keepSquad = true) {
-  const data = derivePool(S.snapshot, S.edits, planOpts());
+  const data = derivePool(S.snapshot, S.edits, planOpts(), S.fixtureEdits);
 
   S.players = data.players; S.gameweeks = data.gameweeks; S.meta = data.meta;
   S.byId = new Map(data.players.map((p) => [p.id, p]));
@@ -7651,6 +7785,18 @@ $("#lineupBox").addEventListener("change", (e) => {
 $("#lineupBox").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && e.target.closest("[data-mininput]")) e.target.blur();
 });
+$("#fixturesBox").addEventListener("change", (e) => {
+  const input = e.target.closest("[data-fixkey]");
+  if (input) setFixtureLambda(input.dataset.fixkey, input.dataset.fixfield, input.value);
+});
+$("#fixturesBox").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.closest("[data-fixkey]")) e.target.blur();
+});
+$("#fixturesBox").addEventListener("click", (e) => {
+  const reset = e.target.closest("[data-fixreset]");
+  if (reset) resetFixtureOverride(reset.dataset.fixreset);
+});
+$("#fixResetAll").addEventListener("click", resetAllFixtureOverrides);
 $("#edExToggle").addEventListener("click", (e) => {
   explainOpen = !explainOpen;
   e.target.textContent = explainOpen ? "hide" : "show";
