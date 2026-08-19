@@ -3457,85 +3457,79 @@ function renderChipNoteHTML(plan) {
     lines.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl></div>`;
 }
 
-/* ------------------------------------------------- the plan's weekly profile
-   The headline of the tab: a plan is six gameweeks of decisions and the tab only
-   ever showed totals, so "when does this actually pay?" could not be read off it.
-
-   Two lines, both from-scratch builds on the same budget and both scored on the
-   plan's own per-gameweek numbers, so the gap between them is the chips and
-   nothing else:
-
-   - what the plan scores each week, with whichever chips it chose to play;
-   - what the same money scores with no chip at all.
-
-   The second used to be "your squad, held" — which stopped meaning anything the
-   moment the tab stopped reading your squad. The chip-free build is the better
-   baseline anyway: it isolates exactly the thing the tab is about, and it costs
-   nothing extra because the chip table already needs that solve. Chip weeks are
-   marked with a band and a label rather than by colour, so the mark survives a
-   greyscale print and a colourblind reader both. */
-
-/** The two series the chart and its table view both read from. The baseline is
- *  absent (and the chart falls back to one line) when the chip-free solve failed
- *  or when nothing legal was left to compare against. */
-function planChartSeries(plan) {
-  const mine = { name: "This plan", color: slotColor(0),
-                 data: plan.weeks.map((w) => w.xiPoints) };
-  const base = plan.baseline?.weeks;
-  if (!base || base.length !== plan.weeks.length) return [mine];
-  return [mine, { name: "No chips at all", color: slotColor(1),
-                  data: base.map((w) => w.xiPoints) }];
+/* ---------------------------------------------------- Your squad vs Optimal
+   One chart for both plans, rather than one each: what a reader opens this tab
+   to compare is the two totals side by side, and two separate charts made that
+   a subtraction the eye had to do across a scroll. Keyed by gameweek rather
+   than array index, so the two plans can be overlaid even if one was solved
+   under a since-changed horizon and no longer shares the other's week count. */
+function compareChartSeries() {
+  const series = [];
+  if (S.ownedPlan.state === "ready" && S.ownedPlan.result) {
+    series.push({ name: "Your squad", color: slotColor(0), plan: S.ownedPlan.result });
+  }
+  if (S.transferPlan.state === "ready" && S.transferPlan.result) {
+    series.push({ name: "Optimal", color: slotColor(1), plan: S.transferPlan.result });
+  }
+  const gws = [...new Set(series.flatMap((s) => s.plan.weeks.map((w) => w.gw)))].sort((a, b) => a - b);
+  for (const s of series) {
+    const byGw = new Map(s.plan.weeks.map((w) => [w.gw, w]));
+    s.data = gws.map((gw) => byGw.get(gw)?.xiPoints ?? null);
+    s.chipAt = (gw) => s.plan.chipByGw.get(gw) || null;
+  }
+  return { series, gws };
 }
 
-/** True when the plan plays no chip, so the two series are one line drawn twice.
- *  Compared at the printed precision, because a line that differs in the fourth
- *  decimal is still one line on screen. */
-const planIsHold = (series) =>
-  series.length < 2 || series[0].data.every((v, i) => v.toFixed(1) === series[1].data[i].toFixed(1));
+/** What each plan is worth over the window, and where it spends a chip -- the
+ *  one sentence a reader wants under a chart with two lines on it. */
+function compareChartNoteHTML(series) {
+  if (!series.length) {
+    return `<div class="sub" style="margin-top:8px">Solve "Your squad" or "Optimal" below to see
+      their weekly points here.</div>`;
+  }
+  const totals = series.map((s) => s.data.reduce((a, v) => a + (v || 0), 0));
+  const totalBits = series.map((s, i) => `<b>${s.name}</b> ${fmt(totals[i], 1)}`).join(" · ");
+  const chipBits = series.map((s) => {
+    const weeks = [...s.plan.chipByGw.entries()];
+    return weeks.length
+      ? `${s.name} plays ${weeks.map(([gw, c]) => `${s.plan.chipLabels[c]} in GW${gw}`).join(", ")}`
+      : `${s.name} plays no chip`;
+  }).join("; ");
+  return `<div class="sub" style="margin-top:8px">Undecayed totals over the window: ${totalBits}.
+    ${chipBits}. Each plan is ranked by the solver on its own discounted objective, which also
+    credits a chip held back at its reserve price and reserves against future transfers -- so this
+    raw total is not what either was actually maximising, and is not itself proof one plan beats the
+    other. Click a gameweek to put that week on the pitch${series.length > 1 ? "es" : ""} below.</div>`;
+}
 
-/** What a gameweek click does for the from-scratch plan: switch the pitch to
- *  that week and refresh who nearly made its squad. The owned plan's click
- *  handler is supplied separately (see renderOwnedPanel) since it has no
- *  near-miss cache to refresh. */
-const defaultOnWeek = (i) => { S.planWeek = i; renderChips(); solveWeekIdeal(i); };
-
-/** Points per gameweek, drawn the way the Analysis tab draws them. Called after
- *  `renderChips` has written its HTML, because an SVG sized against a container
- *  that is not in the document yet has no width to size against.
- *
- *  `prefix` namespaces every element id so the from-scratch plan and the
- *  owned-squad plan can each have their own chart on screen at once. `onWeek`
- *  is what a click on a gameweek does -- the from-scratch plan also re-solves
- *  who nearly made that week's squad; the owned plan has no such cache to
- *  refresh, so it just switches the week. */
-function renderPlanChart(plan, { prefix = "", onWeek } = {}) {
-  const host = $(`#${prefix}planChart`);
+function renderComparePlanChart() {
+  const host = $("#cmpPlanChart");
   if (!host) return;
   host.innerHTML = "";
+  const { series, gws } = compareChartSeries();
 
-  const gws = plan.gameweeks;
-  const both = planChartSeries(plan);
-  const hold = planIsHold(both);
-  // One line when the plan plays no chip: the second would sit exactly under the
-  // first, and two keys over one visible line reads as a bug, not a finding.
-  const series = hold ? [{ ...both[0], name: "This plan" }] : both;
-  const chipAt = (gw) => plan.chipByGw.get(gw) || null;
-
-  $(`#${prefix}planLegend`).innerHTML = series.length > 1
+  $("#cmpPlanLegend").innerHTML = series.length
     ? series.map((s) => `<span class="key"><i style="background:${s.color}"></i>${s.name}</span>`).join("")
-    : `<span class="sub">This plan plays no chip, so it is the same build as the chip-free
-        one — one line, not two.</span>`;
+    : "";
+  $("#cmpPlanNote").innerHTML = compareChartNoteHTML(series);
+
+  if (!series.length || !gws.length) {
+    host.innerHTML = `<div class="empty-note">Solve "Your squad" or "Optimal" below to see their
+      weekly points here.</div>`;
+    $("#cmpPlanChartTable").innerHTML = "";
+    return;
+  }
 
   const W = Math.max(300, host.clientWidth || 460), H = 250;
   const M = { t: 22, r: 58, b: 30, l: 40 };
-  const all = series.flatMap((s) => s.data);
+  const all = series.flatMap((s) => s.data.filter((v) => v != null));
   const lo = Math.min(...all) * 0.94, hi = Math.max(...all) * 1.04;
   const x = (i) => M.l + (i * (W - M.l - M.r)) / Math.max(1, gws.length - 1);
   const y = (v) => H - M.b - ((v - lo) / (hi - lo || 1)) * (H - M.t - M.b);
 
   const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img" }, host);
   el("title", {}, svg).textContent =
-    "Projected points for each gameweek of the plan, against the same build with no chip";
+    "Projected points for each gameweek, your squad's plan against the from-scratch optimum";
 
   const step = Math.max(1, Math.round((hi - lo) / 4));
   for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) {
@@ -3544,112 +3538,89 @@ function renderPlanChart(plan, { prefix = "", onWeek } = {}) {
       "font-size": 11, style: "font-variant-numeric:tabular-nums" }, svg);
     t.textContent = v;
   }
-
-  // Chip weeks, behind the lines: a recessive band and a label at the top, so
-  // the week a chip lands in is legible without reading the numbers off it.
-  const half = (W - M.l - M.r) / Math.max(1, gws.length - 1) / 2;
-  gws.forEach((gw, i) => {
-    const chip = chipAt(gw);
-    if (!chip) return;
-    el("rect", { x: x(i) - half * 0.62, y: M.t, width: half * 1.24, height: H - M.t - M.b,
-      fill: css("--hover") }, svg);
-    const t = el("text", { x: x(i), y: M.t - 7, "text-anchor": "middle",
-      fill: css("--text-secondary"), "font-size": 10, "font-weight": 700,
-      style: "letter-spacing:0.04em" }, svg);
-    t.textContent = CHIP_SHORT[chip] || "chip";
-  });
-
   gws.forEach((gw, i) => {
     const t = el("text", { x: x(i), y: H - 10, "text-anchor": "middle", fill: css("--muted"), "font-size": 11 }, svg);
     t.textContent = "GW" + gw;
   });
   el("line", { x1: M.l, x2: W - M.r, y1: H - M.b, y2: H - M.b, stroke: css("--axis"), "stroke-width": 1 }, svg);
 
-  // Direct end-labels, nudged apart when they collide. A plan that makes no
-  // transfers scores exactly what holding scores, so the two lines finish on top
-  // of each other far more often here than on the Analysis tab -- and two labels
-  // stacked in one place is how a chart says "one series" when there are two.
   const last = gws.length - 1;
   const placed = [];
   for (const s of series) {
-    el("path", {
-      d: s.data.map((v, i) => `${i ? "L" : "M"}${x(i)},${y(v)}`).join(" "),
-      fill: "none", stroke: s.color, "stroke-width": 2,
-      "stroke-linejoin": "round", "stroke-linecap": "round",
-    }, svg);
-    el("circle", { cx: x(last), cy: y(s.data[last]), r: 4.5, fill: s.color,
+    // Broken at any gap -- a gameweek one plan has no answer for should read as
+    // a gap in its line, not a lie drawn straight through it.
+    let d = "";
+    s.data.forEach((v, i) => { if (v != null) d += (d ? "L" : "M") + x(i) + "," + y(v) + " "; });
+    el("path", { d: d.trim(), fill: "none", stroke: s.color, "stroke-width": 2,
+      "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+    let li = last;
+    while (li >= 0 && s.data[li] == null) li--;
+    if (li < 0) continue;
+    el("circle", { cx: x(li), cy: y(s.data[li]), r: 4.5, fill: s.color,
       stroke: css("--surface-1"), "stroke-width": 2 }, svg);
-    let ly = y(s.data[last]) + 4;
+    let ly = y(s.data[li]) + 4;
     while (placed.some((p) => Math.abs(p - ly) < 12)) ly += 12;
     placed.push(ly);
-    const lab = el("text", { x: x(last) + 9, y: ly, fill: css("--text-secondary"),
+    const lab = el("text", { x: x(li) + 9, y: ly, fill: css("--text-secondary"),
       "font-size": 11.5, style: "font-variant-numeric:tabular-nums" }, svg);
-    lab.textContent = s.data[last].toFixed(1);
+    lab.textContent = s.data[li].toFixed(1);
   }
 
   const cross = el("line", { y1: M.t, y2: H - M.b, stroke: css("--axis"), "stroke-width": 1, opacity: 0 }, svg);
+  const half = (W - M.l - M.r) / Math.max(1, gws.length - 1) / 2;
   gws.forEach((gw, i) => {
     const band = el("rect", { x: x(i) - half, y: M.t, width: half * 2, height: H - M.t - M.b,
       fill: "transparent", style: "cursor:crosshair" }, svg);
     band.addEventListener("mousemove", (e) => {
       cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("opacity", 1);
-      const chip = chipAt(gw);
-      showTip(e, `<b>GW${gw}</b>${chip ? ` — ${plan.chipLabels[chip]}` : ""}<br>`
-        + series.map((s) => `<span class="key"><i style="background:${s.color};width:9px;height:9px;border-radius:50%"></i>${s.name} <span class="r">${s.data[i].toFixed(1)}</span></span>`).join("<br>"));
+      showTip(e, `<b>GW${gw}</b><br>` + series.map((s) => {
+        const chip = s.chipAt(gw);
+        const v = s.data[i];
+        return `<span class="key"><i style="background:${s.color};width:9px;height:9px;border-radius:50%"></i>${s.name}${
+          chip ? ` (${s.plan.chipLabels[chip]})` : ""} <span class="r">${v == null ? "—" : v.toFixed(1)}</span></span>`;
+      }).join("<br>"));
     });
     band.addEventListener("mouseleave", () => { cross.setAttribute("opacity", 0); hideTip(); });
-    // Clicking a gameweek in the chart puts that week on the pitch below, which
-    // is the question the chart provokes and the selector answered on its own.
-    band.addEventListener("click", () => (onWeek || defaultOnWeek)(i));
+    // Puts that gameweek on whichever pitch(es) below actually have it.
+    band.addEventListener("click", () => {
+      const ownIdx = S.ownedPlan.result?.weeks.findIndex((w) => w.gw === gw);
+      if (ownIdx != null && ownIdx !== -1) S.ownedPlanWeek = ownIdx;
+      const optIdx = S.transferPlan.result?.weeks.findIndex((w) => w.gw === gw);
+      const hadOpt = optIdx != null && optIdx !== -1;
+      if (hadOpt) S.planWeek = optIdx;
+      renderChips();
+      if (hadOpt) solveWeekIdeal(optIdx);
+    });
   });
 
-  // The table keeps both columns even when the chart folds them into one line: a
-  // column of +0.0 differences is the precise statement of "the chip changed
-  // nothing here", which is exactly what a reader opens the table for. With no
-  // baseline solve there is only one column and no difference to take.
-  const totals = both.map((s) => s.data.reduce((a, b) => a + b, 0));
-  const signed = (v) => (v >= 0 ? "+" : "\u2212") + Math.abs(v).toFixed(1);
-  const paired = both.length > 1;
-  $(`#${prefix}planChartTable`).innerHTML = `<table><thead><tr><th>GW</th><th>Chip</th>${
-      both.map((s) => `<th>${s.name}</th>`).join("")}${
-      paired ? "<th>Difference</th>" : ""}</tr></thead>
+  const paired = series.length > 1;
+  $("#cmpPlanChartTable").innerHTML = `<table><thead><tr><th>GW</th>${
+      series.map((s) => `<th>${s.name}</th>`).join("")}${paired ? "<th>Difference</th>" : ""}</tr></thead>
     <tbody>${gws.map((gw, i) => `<tr><td>GW${gw}</td>
-      <td>${chipAt(gw) ? plan.chipLabels[chipAt(gw)] : "—"}</td>
-      ${both.map((s) => `<td>${s.data[i].toFixed(1)}</td>`).join("")}
-      ${paired ? `<td>${signed(both[0].data[i] - both[1].data[i])}</td>` : ""}</tr>`).join("")}</tbody>
-    <tfoot><tr><td colspan="2">Over the window</td>${
-      totals.map((t) => `<td>${t.toFixed(1)}</td>`).join("")}
-      ${paired ? `<td>${signed(totals[0] - totals[1])}</td>` : ""}
-    </tr></tfoot></table>`;
+      ${series.map((s) => `<td>${s.data[i] == null ? "—" : fmt(s.data[i], 1)}</td>`).join("")}
+      ${paired ? `<td>${series[0].data[i] == null || series[1].data[i] == null ? "—"
+        : (series[0].data[i] - series[1].data[i] >= 0 ? "+" : "−")
+          + fmt(Math.abs(series[0].data[i] - series[1].data[i]), 1)}</td>` : ""}
+    </tr>`).join("")}</tbody></table>`;
 }
 
-/** One sentence under the chart: what the chips are worth over the window, and
- *  where. The answer to "was any of this worth it?". */
-function planChartNoteHTML(plan) {
-  const series = planChartSeries(plan);
-  const gain = series.length > 1
-    ? series[0].data.reduce((a, b) => a + b, 0) - series[1].data.reduce((a, b) => a + b, 0)
-    : null;
-  const chipWeeks = plan.gameweeks.filter((gw) => plan.chipByGw.get(gw));
-  const span = `GW${plan.gameweeks[0]}–GW${plan.gameweeks[plan.gameweeks.length - 1]}`;
-  const names = chipWeeks
-    .map((gw) => `${plan.chipLabels[plan.chipByGw.get(gw)]} in GW${gw}`).join(", ");
-
-  const verdict = !chipWeeks.length
-    ? `Over ${span} the best build plays no chip at all — every one of them is worth more
-       kept for a double or a blank later than played in this window.`
-    : gain == null
-      ? `Over ${span} the best build plays ${names}.`
-      : `Over ${span} the best build plays ${names}, worth
-         <b>${gain >= 0 ? "+" : "\u2212"}${fmt(Math.abs(gain), 1)}</b> raw points against the
-         same money spent with no chip at all.`;
-
-  return `<div class="sub" style="margin-top:8px">${verdict}
-    ${chipWeeks.length ? `Chip weeks are banded. Both lines are built from scratch on the same
-      budget, so the gap between them is the chip and the squad it bought — not a transfer.` : ""}
-    Figures are undecayed and scored on the plan's own per-gameweek numbers; the solver ranks
-    plans on a discounted objective, so this is the raw profile rather than the thing being
-    maximised. Click a gameweek to put that week's eleven on the pitch below.</div>`;
+/** The card that holds the merged chart -- static except for its toggle, so it
+ *  is written once here rather than duplicated at both call sites in
+ *  renderChips(). */
+function renderCompareChartHTML() {
+  return `
+  <div class="card" style="margin-top:16px">
+    <div class="cardhead">
+      <div>
+        <h3 style="margin:0 0 3px">Projected points by gameweek</h3>
+        <div class="legend" id="cmpPlanLegend"></div>
+      </div>
+      <button class="toggle" data-view="plan" data-prefix="cmp">${S.views.plan === "table" ? "Chart" : "Table"}</button>
+    </div>
+    <div class="chartbox${S.views.plan === "table" ? " hidden" : ""}" id="cmpPlanChart"></div>
+    <div class="${S.views.plan === "table" ? "" : "hidden"}" id="cmpPlanChartTable"></div>
+    <div id="cmpPlanNote"></div>
+  </div>`;
 }
 
 /** The whole plan, one gameweek at a time, with the pitch for whichever week
@@ -3671,7 +3642,7 @@ function planChartNoteHTML(plan) {
  *  S.planWeek for whichever plan is not the live one, and `live` gates the
  *  near-miss / ideal-squad boxes, which only exist for the plan actually
  *  being solved on this worker cycle (see weekIdealHTML's own note). */
-function renderPlanHTML(plan, { prefix = "", weekIdx = null, live = true } = {}) {
+function renderPlanHTML(plan, { prefix = "", weekIdx = null, live = true, showPitch = true } = {}) {
   const owned = (plan.opt.squad || []).length === 15;
   const weeks = plan.weeks;
   const idx = Math.min(Math.max(weekIdx ?? S.planWeek, 0), weeks.length - 1);
@@ -3706,18 +3677,7 @@ function renderPlanHTML(plan, { prefix = "", weekIdx = null, live = true } = {})
 
   return `
   <div class="card" style="margin-top:14px">
-    <div class="cardhead">
-      <div>
-        <h3 style="margin:0 0 3px">Projected points by gameweek</h3>
-        <div class="legend" id="${prefix}planLegend"></div>
-      </div>
-      <button class="toggle" data-view="plan" data-prefix="${prefix}">${S.views.plan === "table" ? "Chart" : "Table"}</button>
-    </div>
-    <div class="chartbox${S.views.plan === "table" ? " hidden" : ""}" id="${prefix}planChart"></div>
-    <div class="${S.views.plan === "table" ? "" : "hidden"}" id="${prefix}planChartTable"></div>
-    ${planChartNoteHTML(plan)}
-
-    <h4 style="margin:20px 0 6px">Week by week</h4>
+    <h4 style="margin:0 0 6px">Week by week</h4>
     <div class="weekpick">${weeks.map((w, i) => `
       <button class="mini ${i === idx ? "on" : ""} ${w.chip ? "haschip" : ""}" data-planweek="${i}" data-prefix="${prefix}">
         GW${w.gw}${w.chip ? `<span class="wtag">${chipTag(w)}</span>` : ""}
@@ -3729,7 +3689,7 @@ function renderPlanHTML(plan, { prefix = "", weekIdx = null, live = true } = {})
         <div class="sub">${week.hits ? `${week.hits} hit${week.hits > 1 ? "s" : ""} (−${week.hits * 4}) · ` : ""}${week.freeTransfers} FT banked · £${fmt(week.bank, 1)}m in the bank · ${fmt(week.xiPoints, 1)} xI points${week.chip === "bboost" ? " · all 15 score" : ""}</div>
       </div>
     </div>
-    <div id="${prefix}thisWeekPitch"></div>
+    ${showPitch ? `<div id="${prefix}thisWeekPitch"></div>` : ""}
     <h4 style="margin:14px 0 6px">${opening ? `The opening fifteen`
       : `Transfers in GW${week.gw}`}</h4>
     ${opening
@@ -4016,7 +3976,8 @@ function renderOwnedPanelHTML() {
   ${stale ? `<div class="planstale">Your squad or the settings above have changed since this
     was solved — it answers the old ones.
     <button class="mini" id="ownedReplanBtn">Re-solve</button></div>` : ""}
-  ${op.state === "ready" ? renderPlanHTML(op.result, { prefix: "own", weekIdx: S.ownedPlanWeek, live: false }) : ""}`;
+  ${op.state === "ready" ? renderPlanHTML(op.result,
+      { prefix: "own", weekIdx: S.ownedPlanWeek, live: false, showChart: false, showPitch: false }) : ""}`;
 }
 
 function renderChips() {
@@ -4114,6 +4075,21 @@ function renderChips() {
 
     ${ready ? renderChipTableHTML(tp.result) : ""}
 
+    ${(() => {
+      // "Optimal" is capped at Budget; your own squad is not -- it is whatever
+      // it is worth. If the two disagree, Optimal is playing on less money and
+      // a gap between the lines can be entirely that, not chips or transfers.
+      const budget = +$("#budget").value;
+      const ownedCost = S.squad.length ? squadCost(S.squad) : 0;
+      return ownedCost > budget + 0.05 ? `<div class="planstale">Your squad costs
+        £${fmt(ownedCost, 1)}m, more than the £${fmt(budget, 1)}m Budget below — "Optimal" is
+        capped at that budget, so it is playing on less money than you actually have. Raise
+        Budget to at least £${fmt(ownedCost, 1)}m for the two lines to mean the same thing.
+        </div>` : "";
+    })()}
+
+    ${renderCompareChartHTML()}
+
     <div class="pitchpair" style="margin-top:16px">
       <div class="pitchside">
         <div class="sidehead">
@@ -4125,7 +4101,7 @@ function renderChips() {
         <div class="sub">Anchored to the fifteen you own -- pays a transfer and a hit for every
           move away from it, same as FPL charges you. Answers "given what I hold, when should I
           play my chips and what do I transfer?", not "what would an ideal side do?" (that is
-          the table above).</div>
+          the table above). Edit it here; its plan is the "Your squad" line above.</div>
         ${ownedDraftControlsHTML()}
         <div id="ownedPitch"></div>
         ${renderOwnedPanelHTML()}
@@ -4135,7 +4111,7 @@ function renderChips() {
           <h2>Optimal</h2>
         </div>
         <div class="sub">Built from scratch on the settings above, ignoring what you own -- the
-          plan the Worth table's own numbers come from.</div>
+          plan the Worth table's own numbers, and the "Optimal" line above, come from.</div>
         ${ready ? renderPlanHTML(tp.result) : `<div class="sub" style="margin-top:10px">Press
           Plan chips to see the from-scratch build.</div>`}
       </div>
@@ -4145,15 +4121,14 @@ function renderChips() {
   $("#replanBtn")?.addEventListener("click", planTransfersAndChips);
   renderChipConstraints();
 
-  // The chart's toggle sits inside #chipsBody, which this function rewrites on
-  // every render, so it cannot use the load-time listener the Analysis tab's
-  // three toggles share. Both panels share one view setting, so a click on
-  // either toggle redraws the whole tab rather than juggling two independently.
-  host.querySelectorAll('.toggle[data-view="plan"]').forEach((btn) => btn.addEventListener("click", () => {
+  // The one chart's toggle sits inside #chipsBody, which this function
+  // rewrites on every render, so it cannot use the load-time listener the
+  // Analysis tab's three toggles share.
+  host.querySelector('.toggle[data-view="plan"]')?.addEventListener("click", () => {
     setView("plan", S.views.plan === "table" ? "chart" : "table");
     saveSettings();
     renderChips();
-  }));
+  });
 
   // Every control here changes the answer, so each re-solves rather than
   // leaving a plan on screen that no longer matches the controls above it.
@@ -4225,17 +4200,11 @@ function renderChips() {
   $("#planOwnedBtn")?.addEventListener("click", planOwnedSquad);
   $("#ownedReplanBtn")?.addEventListener("click", planOwnedSquad);
 
-  if (ready) {
-    // After the markup, never inside it: an SVG sized against a container that
-    // is not in the document has no width to size against.
-    renderPlanChart(tp.result);
-    renderWeekPitchInto("", tp.result, S.planWeek);
-  }
-  if (S.ownedPlan.state === "ready") {
-    renderPlanChart(S.ownedPlan.result,
-      { prefix: "own", onWeek: (i) => { S.ownedPlanWeek = i; renderChips(); } });
-    renderWeekPitchInto("own", S.ownedPlan.result, S.ownedPlanWeek);
-  }
+  // After the markup, never inside it: an SVG sized against a container that
+  // is not in the document has no width to size against. One chart for both
+  // plans (see renderCompareChartHTML), drawn whenever either has an answer.
+  renderComparePlanChart();
+  if (ready) renderWeekPitchInto("", tp.result, S.planWeek);
 }
 
 function renderAll() {
@@ -7827,7 +7796,7 @@ addEventListener("resize", () => {
   renderGwChart(); renderExposure();
   // Only when it is on screen and has something to draw -- the plan chart lives
   // behind a solve, and re-drawing an SVG in a hidden panel sizes it to zero.
-  if (S.tab === "chips" && S.transferPlan.result) renderPlanChart(S.transferPlan.result);
+  if (S.tab === "chips" && (S.transferPlan.result || S.ownedPlan.result)) renderComparePlanChart();
 });
 
 if (TOKEN) $("#dataLink").href = "/data?t=" + encodeURIComponent(TOKEN);
