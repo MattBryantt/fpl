@@ -62,6 +62,7 @@ from .transfers import (
     FT_VALUE_BY_STATE,
     IDLE_MOVE_PENALTY,
     POOL_BY_POS,
+    PRICE_POINT_CANDIDATES,
     TRANSFER_HALF_LIFE,
 )
 
@@ -143,6 +144,7 @@ def _rules() -> dict[str, Any]:
         # module docstring for why each exists. Carried the same way as every
         # other rule here: nothing hand-copied into transfers.js.
         "POOL_BY_POS": dict(POOL_BY_POS),
+        "PRICE_POINT_CANDIDATES": PRICE_POINT_CANDIDATES,
         "CAPTAIN_CANDIDATES": CAPTAIN_CANDIDATES,
         "FT_VALUE": FT_VALUE,
         "FT_VALUE_BY_STATE": {str(k): v for k, v in FT_VALUE_BY_STATE.items()},

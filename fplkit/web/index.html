@@ -6727,7 +6727,8 @@ function buildTransferPayload(squad = []) {
   // fifteen in the pool or the plan could not represent selling them.
   const keep = [...new Set([...squad, ...S.include])];
   const pool = candidatePool(players, pointsByPlayer,
-    { keep, minMinutesProb: +$("#minstart").value, exclude: S.exclude, caps: rules.POOL_BY_POS });
+    { keep, minMinutesProb: +$("#minstart").value, exclude: S.exclude, caps: rules.POOL_BY_POS,
+      pricePointCandidates: rules.PRICE_POINT_CANDIDATES });
   const cPool = captainPool(pool, pointsByPlayer, rules.CAPTAIN_CANDIDATES);
 
   // A pinned formation is a floor and a ceiling at once. The keeper is always

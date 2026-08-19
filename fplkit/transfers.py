@@ -119,6 +119,14 @@ DEFAULT_TRANSFER_HORIZON = 6
 # points, which is why the pool is a union of two rankings.
 POOL_BY_POS = {"GKP": 12, "DEF": 45, "MID": 45, "FWD": 25}
 
+# A third ranking, per exact price rather than per position: the best player
+# at a specific price tag can rank outside the top-points and top-value cuts
+# above (beaten on points by pricier options, beaten on value by a cheaper
+# one) and still be the correct budget enabler at that price -- the plan
+# cannot buy a cheaper option than exists in its pool, so pruning him out can
+# make a squad the model builds provably worse than one built by hand.
+PRICE_POINT_CANDIDATES = 3
+
 # Captaincy is not a free choice in practice -- it goes to a premium attacker
 # almost every week -- so only the best players get a captain binary. Generous
 # enough that the constraint never binds on anything the model would pick.
@@ -193,13 +201,17 @@ def candidate_pool(players: pd.DataFrame, points: pd.DataFrame,
                    keep: list[int] | None = None,
                    min_minutes_prob: float = 0.0,
                    exclude: list[int] | None = None,
-                   caps: dict[str, int] | None = None) -> pd.DataFrame:
+                   caps: dict[str, int] | None = None,
+                   price_point_candidates: int = PRICE_POINT_CANDIDATES) -> pd.DataFrame:
     """Shrink the league to the players a plan could plausibly want.
 
-    Two rankings, unioned: total points over the window, and points per million.
-    The first finds the players you build around, the second finds the £4.0m
-    defender who never plays but has to be somewhere. Ranking on either alone
-    produces a pool that cannot field a legal squad inside the budget.
+    Three rankings, unioned: total points over the window, points per million,
+    and points within each exact price. The first finds the players you build
+    around, the second finds the £4.0m defender who never plays but has to be
+    somewhere, and the third catches the specific price-point enabler that
+    the first two can each individually miss -- outscored on points by
+    pricier options and out-valued by a cheaper one, yet still the best
+    player available at his own price tag.
 
     Anyone already owned is kept unconditionally, whatever he now looks like --
     a plan that cannot see your own squad cannot tell you to sell it.
@@ -225,8 +237,11 @@ def candidate_pool(players: pd.DataFrame, points: pd.DataFrame,
         block = pool[pool["pos"] == position]
         by_points = block.nlargest(cap, "window_points")
         by_value = block.nlargest(max(cap // 2, 6), "window_value")
+        by_price = (block.sort_values("window_points", ascending=False)
+                         .groupby("price", group_keys=False)
+                         .head(price_point_candidates))
         forced = block[block["fpl_id"].isin(keep)]
-        chosen.append(pd.concat([by_points, by_value, forced]))
+        chosen.append(pd.concat([by_points, by_value, by_price, forced]))
 
     return (pd.concat(chosen)
             .drop_duplicates(subset="fpl_id")

@@ -64,12 +64,15 @@ const sum = (arr) => arr.reduce((a, b) => a + b, 0);
 
 /** Shrink the full player list to what the transfer planner can afford to
  *  consider. Port of `transfers.candidate_pool`: per position, the union of
- *  the top `cap` players by total points over the window and the top
- *  `max(cap/2, 6)` by points-per-million, plus anyone in `keep`
- *  unconditionally — a plan that cannot see your own squad cannot tell you to
- *  sell it. `caps` is `rules.POOL_BY_POS`. */
+ *  the top `cap` players by total points over the window, the top
+ *  `max(cap/2, 6)` by points-per-million, and the top `pricePointCandidates`
+ *  by points within each exact price (the specific budget enabler that the
+ *  other two rankings can each miss), plus anyone in `keep` unconditionally
+ *  — a plan that cannot see your own squad cannot tell you to sell it. `caps`
+ *  is `rules.POOL_BY_POS`, `pricePointCandidates` is `rules.PRICE_POINT_CANDIDATES`. */
 export function candidatePool(players, pointsByPlayer, { keep = [], minMinutesProb = 0,
-                                                          exclude = [], caps } = {}) {
+                                                          exclude = [], caps,
+                                                          pricePointCandidates = 3 } = {}) {
   const keepSet = new Set(keep);
   const excludeSet = new Set(exclude);
   const windowPoints = new Map();
@@ -89,8 +92,18 @@ export function candidatePool(players, pointsByPlayer, { keep = [], minMinutesPr
     const byValue = block.slice()
       .sort((a, b) => value(b) - value(a))
       .slice(0, Math.max(Math.floor(cap / 2), 6));
+    const byPriceGroups = new Map();
+    for (const p of block) {
+      if (!byPriceGroups.has(p.price)) byPriceGroups.set(p.price, []);
+      byPriceGroups.get(p.price).push(p);
+    }
+    const byPrice = [];
+    for (const group of byPriceGroups.values()) {
+      group.sort((a, b) => windowPoints.get(b.id) - windowPoints.get(a.id));
+      byPrice.push(...group.slice(0, pricePointCandidates));
+    }
     const forced = block.filter((p) => keepSet.has(p.id));
-    for (const p of [...byPoints, ...byValue, ...forced]) chosen.set(p.id, p);
+    for (const p of [...byPoints, ...byValue, ...byPrice, ...forced]) chosen.set(p.id, p);
   }
   return [...chosen.values()];
 }
