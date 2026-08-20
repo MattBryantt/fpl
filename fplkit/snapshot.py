@@ -286,6 +286,12 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
          "home_team": str(f["home_team"]), "away_team": str(f["away_team"]),
          "lam_home": _num(f["lam_home"], dp=INPUT_DP),
          "lam_away": _num(f["lam_away"], dp=INPUT_DP),
+         # The xG-ratings figure before odds-calibration nudged it -- equal to
+         # lam_home/lam_away on a priced fixture (odds already override the
+         # ratings entirely there) and to what the board falls back to when its
+         # "calibrate to odds" toggle is off.
+         "lam_home_uncalibrated": _num(f["lam_home_uncalibrated"], dp=INPUT_DP),
+         "lam_away_uncalibrated": _num(f["lam_away_uncalibrated"], dp=INPUT_DP),
          "source": str(f["lam_source"])}
         for _, f in projection.fixtures.iterrows()
         if int(f["gw"]) in gameweeks

@@ -1410,8 +1410,18 @@ gameweek of the transfer-and-chip plan.">Free transfers</label>
         bookmaker's odds; <b>modelled</b> ones are estimated from attack/defence ratings because
         no market was found for that match. Type over either xG figure to try your own view —
         new signing, a manager sacked, a keeper injured — and every player in that match rescores
-        immediately, everywhere on the board.</div>
+        immediately, everywhere on the board. <b>Calibrate to odds</b> nudges a
+        modelled fixture's own club toward what the books said about that
+        same club's <i>priced</i> fixtures elsewhere in the horizon -- a
+        transfer or a managerial change the ratings cannot see yet. It never
+        touches a fixture that is itself priced.</div>
     </div>
+    <label class="btn ghost chk on" id="oddscalibWrap"
+           title="A priced fixture is scored from the odds either way. This only affects a
+modelled one: on, its club's rating is nudged by the gap between the model and the odds on
+that same club's other, priced fixtures; off, it is the xG ratings with no such nudge.">
+      <input type="checkbox" id="oddscalib" checked> Calibrate to odds
+    </label>
     <button class="btn ghost hidden" id="fixResetAll" type="button">Reset all overrides</button>
   </div>
   <div class="scroll" id="fixturesBox"></div>
@@ -1667,7 +1677,7 @@ every one the moment it has it; raising it makes banking more attractive.">Trans
 <script type="module">
 "use strict";
 import { derivePool, editPlayer, explainPlayer, clubLineup, checkOverridable,
-         age, POINT_SOURCES, fixtureKey } from "/assets/board.mjs";
+         age, POINT_SOURCES, fixtureKey, withOddsCalibration } from "/assets/board.mjs";
 import { cleanSheetProb } from "/assets/poisson.mjs";
 import { pitchHTML, cardsHTML, squadLayout, wireShirts, shirtUrl,
          METRICS, METRIC_KEYS, MAX_METRICS, cleanMetrics } from "/assets/pitch.mjs";
@@ -2005,8 +2015,9 @@ const transferHalfLife = () =>
  *  new weighting knob cannot reach three of the four call sites and be missing
  *  from the fourth -- which is how the pool, the editor and the club panel come
  *  to disagree about what a player is worth. */
+const calibrateOdds = () => $("#oddscalib")?.checked !== false;
 const planOpts = () => ({ horizon: +$("#horizon").value, halfLife: halfLife(),
-                          dropout: !noDecay() });
+                          dropout: !noDecay(), calibrateOdds: calibrateOdds() });
 
 /** The decay setting as a sentence fragment. */
 function decayText(perGw) {
@@ -2150,6 +2161,7 @@ function renderControlValues() {
   const off = noDecay();
   $("#gwdecay").disabled = off;
   $("#nodecayWrap").classList.toggle("on", off);
+  $("#oddscalibWrap").classList.toggle("on", calibrateOdds());
   $("#hlval").textContent = off
     ? `off — 1.00×, no dropout (slider: ${(+$("#gwdecay").value).toFixed(2)}×)`
     : decayLabel(gwDecay());
@@ -2169,7 +2181,7 @@ function readSettings() {
     controls: Object.fromEntries(SETTING_IDS.map((id) => [id, $("#" + id).value])),
     // Not in SETTING_IDS: every id there is read and written through `.value`,
     // and a checkbox's `.value` is the string "on" whether or not it is ticked.
-    noDecay: noDecay(),
+    noDecay: noDecay(), calibrateOdds: calibrateOdds(),
     // Likewise not a Settings control -- it lives on the Chips tab, which is
     // rebuilt from state on every render rather than read back from the DOM.
     chipPlan: persistableChipPlan(),
@@ -2234,6 +2246,7 @@ function applySettings(saved) {
     $("#gwdecay").value = Math.pow(0.5, 1 / legacyHl).toFixed(2);
   }
   $("#nodecay").checked = !!saved.noDecay;
+  if (saved.calibrateOdds !== undefined) $("#oddscalib").checked = !!saved.calibrateOdds;
   // chipPlan is the current shape; a blob saved before the two sides split
   // apart has transferMode/chipSkip flat, which only ever meant the
   // from-scratch side -- carried across the same way the old half-life
@@ -2271,6 +2284,7 @@ function applySettings(saved) {
 function restoreDefaults() {
   for (const [id, value] of Object.entries(DEFAULT_SETTINGS)) $("#" + id).value = value;
   $("#nodecay").checked = false;
+  $("#oddscalib").checked = true;
   S.chipPlan = { opt: newChipPlanState(), own: newChipPlanState() };
   // Recency's default is whatever the loaded snapshot was projected with --
   // zeroing it would flag a sync the board does not actually need.
@@ -2967,7 +2981,7 @@ function renderFixtures() {
   const teamShort = (t) => S.snapshot.teams?.[t]?.short || t;
   const inHorizon = new Set(S.gameweeks);
   const byGw = new Map();
-  for (const f of S.snapshot.fixtures) {
+  for (const f of withOddsCalibration(S.snapshot.fixtures, calibrateOdds())) {
     if (!inHorizon.has(f.gw)) continue;
     if (!byGw.has(f.gw)) byGw.set(f.gw, []);
     byGw.get(f.gw).push(f);
@@ -3015,8 +3029,9 @@ function renderFixtures() {
 async function setFixtureLambda(key, field, raw) {
   if (raw === "" || Number.isNaN(+raw)) { renderFixtures(); return; }
   const value = Math.min(6, Math.max(0, +raw));
-  const f = S.snapshot.fixtures.find((x) => fixtureKey(x) === key);
-  if (!f) return;
+  const raw_f = S.snapshot.fixtures.find((x) => fixtureKey(x) === key);
+  if (!raw_f) return;
+  const f = withOddsCalibration([raw_f], calibrateOdds())[0];
   const model = field === "lam_home" ? f.lam_home : f.lam_away;
   const entry = { ...(S.fixtureEdits[key] || {}) };
   if (Math.abs(value - model) < 1e-9) delete entry[field];
@@ -5858,7 +5873,7 @@ addEventListener("pagehide", () => {
 function syncableSettings() {
   return {
     controls: Object.fromEntries(SETTING_IDS.map((id) => [id, $("#" + id).value])),
-    noDecay: noDecay(), chipPlan: persistableChipPlan(),
+    noDecay: noDecay(), calibrateOdds: calibrateOdds(), chipPlan: persistableChipPlan(),
     bench: Object.fromEntries(BENCH_KEYS.map((k) => [k, $(`#bw_${k}`).value])),
     benchTouched, include: [...S.include], exclude: [...S.exclude],
     chipsUsed: [...S.chipsUsed],
@@ -5876,6 +5891,7 @@ function applySyncedSettings(saved) {
     if (value !== undefined && value !== null) $("#" + id).value = value;
   }
   if (saved.noDecay !== undefined) $("#nodecay").checked = !!saved.noDecay;
+  if (saved.calibrateOdds !== undefined) $("#oddscalib").checked = !!saved.calibrateOdds;
   if (saved.chipPlan) applyChipPlanSettings(saved.chipPlan);
   else applyChipPlanSettings({ opt: { transferMode: saved.transferMode, chipSkip: saved.chipSkip } });
   if (saved.bench) {
@@ -7988,6 +8004,11 @@ $("#gwdecay").addEventListener("change", () => { rebuildPool(); renderAll(); sch
 // a solve nobody asked for is worse than a banner saying the answer is old.
 $("#nodecay").addEventListener("change", () => {
   renderControlValues(); saveSettings();
+  rebuildPool(); renderAll(); scheduleSolve(0);
+});
+$("#oddscalib").addEventListener("change", () => {
+  $("#oddscalibWrap").classList.toggle("on", calibrateOdds());
+  saveSettings();
   rebuildPool(); renderAll(); scheduleSolve(0);
 });
 $("#budget").addEventListener("input", (e) => {

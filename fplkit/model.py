@@ -59,6 +59,19 @@ from .sources import odds as odds_source
 PROMOTED_ATTACK = 0.80
 PROMOTED_DEFENCE = 1.25
 
+# How hard a club's own priced fixtures pull its rating before an *unpriced*
+# fixture is projected from it. See _odds_calibration(). Low, because the
+# evidence is a single bookmaker consensus compared against the model's own
+# guess for the same match, not an observed result -- there is no result-luck
+# to average away, but nor is there more than one match's worth of "this club
+# might be different from its Understat history" behind it. Two matches of
+# that kind of evidence earns half weight.
+ODDS_CALIBRATION_PRIOR_MATCHES = 2.0
+# A rating correction wider than this is more likely a team-matching slip or a
+# thin, one-sided market than real signal, so it is clipped rather than taken
+# at face value. exp(0.4) =~ 1.5x, i.e. half a goal a match at typical rates.
+ODDS_CALIBRATION_MAX_LOG = 0.4
+
 # Shrinkage. A single season of xG is a noisy estimate of a true rate, and the
 # noise is worst exactly where it does the most damage: a fringe player with 150
 # minutes and one lucky big chance projects as a superstar unless his rate is
@@ -496,9 +509,89 @@ def _attach_odds(fixtures: pd.DataFrame, teams: list[str]) -> pd.DataFrame:
     return fixtures.assign(odds_note="")
 
 
+def _rating_lambdas(home: str, away: str, ratings: pd.DataFrame,
+                    attack_calib: dict[str, float],
+                    defence_calib: dict[str, float]) -> tuple[float, float]:
+    """The ratings-only projection for one fixture, with any odds calibration
+    folded in. Calibration multipliers default to 1.0, so this is exactly the
+    old xG-ratings formula when none is available or the toggle is off."""
+    league = LEAGUE_MEAN_GOALS
+    lh = (league * ratings.loc[home, "attack_rating"] * attack_calib.get(home, 1.0)
+          * ratings.loc[away, "defence_rating"] * defence_calib.get(away, 1.0)
+          * HOME_ADVANTAGE)
+    la = (league * ratings.loc[away, "attack_rating"] * attack_calib.get(away, 1.0)
+          * ratings.loc[home, "defence_rating"] * defence_calib.get(home, 1.0)
+          / HOME_ADVANTAGE)
+    return lh, la
+
+
+def _odds_calibration(fixtures: pd.DataFrame, ratings: pd.DataFrame
+                      ) -> tuple[dict[str, float], dict[str, float]]:
+    """Per-team attack/defence multipliers, learned from the gap between this
+    fixture list's *priced* matches and what the xG ratings alone would have
+    said about them.
+
+    A book prices a match on everything it knows right now -- a summer signing,
+    a manager sacked in September, a keeper who will not recover in time for
+    the opener -- none of which last season's Understat numbers can see. Where
+    a club's priced fixtures consistently disagree with its rating, that
+    disagreement is evidence about the club, and it is evidence an *unpriced*
+    fixture for the same club currently has no other way to use.
+
+    A single match cannot separate a team's attack from its opponent's
+    defence -- the scoreline only reveals their product -- so a fixture's
+    whole log-error is split evenly between the two ratings it touches, the
+    way one step of iterative proportional fitting would. A club with more
+    than one priced match averages its evidence, shrunk toward "no
+    correction" by ODDS_CALIBRATION_PRIOR_MATCHES.
+    """
+    attack_errors: dict[str, list[float]] = {}
+    defence_errors: dict[str, list[float]] = {}
+
+    def add(team: str, bucket: dict[str, list[float]], error: float) -> None:
+        bucket.setdefault(team, []).append(error)
+
+    for _, fixture in fixtures[fixtures["has_odds"]].iterrows():
+        home, away = fixture["home_team"], fixture["away_team"]
+        if home not in ratings.index or away not in ratings.index:
+            continue
+        rating_lh, rating_la = _rating_lambdas(home, away, ratings, {}, {})
+        if rating_lh <= 0 or rating_la <= 0:
+            continue
+        err_home = np.clip(np.log(fixture["lam_home"] / rating_lh),
+                           -ODDS_CALIBRATION_MAX_LOG, ODDS_CALIBRATION_MAX_LOG)
+        err_away = np.clip(np.log(fixture["lam_away"] / rating_la),
+                           -ODDS_CALIBRATION_MAX_LOG, ODDS_CALIBRATION_MAX_LOG)
+        # err_home is home-attack * away-defence; err_away is away-attack *
+        # home-defence. Neither side of either product is separately known,
+        # so each gets half the blame (or credit) in log space.
+        add(home, attack_errors, err_home / 2)
+        add(away, defence_errors, err_home / 2)
+        add(away, attack_errors, err_away / 2)
+        add(home, defence_errors, err_away / 2)
+
+    def shrunk_multipliers(errors: dict[str, list[float]]) -> dict[str, float]:
+        out = {}
+        for team, values in errors.items():
+            n = len(values)
+            weight = n / (n + ODDS_CALIBRATION_PRIOR_MATCHES)
+            out[team] = float(np.exp(weight * float(np.mean(values))))
+        return out
+
+    return shrunk_multipliers(attack_errors), shrunk_multipliers(defence_errors)
+
+
 def fixture_lambdas(fixtures: pd.DataFrame, strength: pd.DataFrame,
-                    teams: list[str]) -> pd.DataFrame:
-    """Expected goals for each side of each fixture."""
+                    teams: list[str], calibrate: bool = True) -> pd.DataFrame:
+    """Expected goals for each side of each fixture.
+
+    Where a fixture is priced, the odds are used directly. Where it is not,
+    the xG ratings project it -- optionally nudged by what this same club's
+    *priced* fixtures elsewhere in the list said about it, see
+    _odds_calibration(). Both the calibrated and the uncalibrated ratings
+    projection are kept on every xG-sourced row so a consumer (the browser
+    board's toggle, in particular) can switch between them without a refetch.
+    """
     fixtures = _attach_odds(fixtures, teams)
     ratings = strength.set_index("team")
     # Understat is used for relative strength only. Its absolute level is biased
@@ -506,9 +599,9 @@ def fixture_lambdas(fixtures: pd.DataFrame, strength: pd.DataFrame,
     # men), and the league-wide goals rate is a stable, better-known constant,
     # so the ratings are applied on top of that rather than on top of the
     # measured mean. Where odds exist they override this entirely.
-    league = LEAGUE_MEAN_GOALS
 
     lam_home, lam_away, source = [], [], []
+    lam_home_raw, lam_away_raw = [], []
     for _, fixture in fixtures.iterrows():
         home, away = fixture["home_team"], fixture["away_team"]
         if fixture["has_odds"]:
@@ -518,19 +611,35 @@ def fixture_lambdas(fixtures: pd.DataFrame, strength: pd.DataFrame,
                 None if pd.isna(fixture["totals_line"]) else fixture["totals_line"],
             )
             origin = "odds"
+            raw_lh, raw_la = lh, la
         else:
-            lh = league * ratings.loc[home, "attack_rating"] \
-                 * ratings.loc[away, "defence_rating"] * HOME_ADVANTAGE
-            la = league * ratings.loc[away, "attack_rating"] \
-                 * ratings.loc[home, "defence_rating"] / HOME_ADVANTAGE
+            raw_lh, raw_la = _rating_lambdas(home, away, ratings, {}, {})
+            lh, la = raw_lh, raw_la
             origin = "xg"
         lam_home.append(lh)
         lam_away.append(la)
+        lam_home_raw.append(raw_lh)
+        lam_away_raw.append(raw_la)
         source.append(origin)
 
     fixtures["lam_home"] = lam_home
     fixtures["lam_away"] = lam_away
     fixtures["lam_source"] = source
+    # The xG-only figures, before calibration -- what the ratings alone said,
+    # kept even for priced rows so a caller cannot mistake a still-zero column
+    # for "no calibration available" on the rows where it actually matters.
+    fixtures["lam_home_uncalibrated"] = lam_home_raw
+    fixtures["lam_away_uncalibrated"] = lam_away_raw
+
+    if calibrate:
+        attack_calib, defence_calib = _odds_calibration(fixtures, ratings)
+        is_xg = fixtures["lam_source"] == "xg"
+        for index, fixture in fixtures[is_xg].iterrows():
+            home, away = fixture["home_team"], fixture["away_team"]
+            lh, la = _rating_lambdas(home, away, ratings, attack_calib, defence_calib)
+            fixtures.loc[index, "lam_home"] = lh
+            fixtures.loc[index, "lam_away"] = la
+
     return fixtures
 
 
@@ -1784,7 +1893,8 @@ def _player_fixture_points(player: pd.Series, lam_for: float, lam_against: float
 def project(horizon: int = 5, start_gw: int | None = None,
             overrides: pd.DataFrame | None = None,
             recency_half_life: float | None = None,
-            force_refresh: bool = False) -> Projection:
+            force_refresh: bool = False,
+            calibrate_to_odds: bool = True) -> Projection:
     """Run the full pipeline and return projected points over the horizon."""
     fpl_players = fpl_api.players(force_refresh)
     fpl_teams = fpl_api.teams(force_refresh)
@@ -1869,7 +1979,7 @@ def project(horizon: int = 5, start_gw: int | None = None,
     fixtures = all_fixtures[all_fixtures["gw"].isin(gameweeks)].copy()
     fixtures["home_team"] = fixtures["team_h"].map(id_to_name)
     fixtures["away_team"] = fixtures["team_a"].map(id_to_name)
-    fixtures = fixture_lambdas(fixtures, strength, team_names)
+    fixtures = fixture_lambdas(fixtures, strength, team_names, calibrate_to_odds)
 
     odds_note = fixtures["odds_note"].dropna().unique()
     odds_note = next((n for n in odds_note if n), "")

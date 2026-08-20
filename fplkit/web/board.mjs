@@ -30,6 +30,22 @@ export function truncate(snap, horizon) {
  *  a case the FPL calendar produces, so the triple is unique on its own. */
 export const fixtureKey = (f) => `${f.gw}|${f.home_team}|${f.away_team}`;
 
+/** Fixtures with lam_home/lam_away swapped to the pre-calibration figures when
+ *  the "calibrate to odds" toggle is off. A no-op on a priced fixture -- odds
+ *  already override the ratings there regardless of calibration, so the
+ *  snapshot carries the same number in both fields -- and a no-op everywhere
+ *  when the toggle is on, since lam_home/lam_away already are that number. */
+export function withOddsCalibration(fixtures, calibrateOdds) {
+  if (calibrateOdds !== false) return fixtures;
+  let changed = false;
+  const next = fixtures.map((f) => {
+    if (f.lam_home === f.lam_home_uncalibrated && f.lam_away === f.lam_away_uncalibrated) return f;
+    changed = true;
+    return { ...f, lam_home: f.lam_home_uncalibrated, lam_away: f.lam_away_uncalibrated };
+  });
+  return changed ? next : fixtures;
+}
+
 /** A fixtures list with any user-set lam_home/lam_away swapped in. Everything
  *  else about the fixture -- who plays whom, when -- is left alone; only the
  *  expected goals a match is scored with can be overridden. */
@@ -219,7 +235,8 @@ const hazardOf = (raw, dropout) => (dropout === false ? 0 : raw.hazard || 0);
  *  (see `fixtureKey`) to {lam_home, lam_away} -- an opinion about a match
  *  rather than about any one player, so it is scored the same way for every
  *  player of both clubs involved rather than requiring one override each. */
-export function derivePool(snap, edits, { horizon, halfLife, dropout = true }, fixtureEdits) {
+export function derivePool(snap, edits, { horizon, halfLife, dropout = true, calibrateOdds = true },
+                           fixtureEdits) {
   const view = truncate(snap, horizon);
   const count = view.gameweeks.length;
   const overridable = Object.keys(snap.rules.OVERRIDABLE);
@@ -234,17 +251,27 @@ export function derivePool(snap, edits, { horizon, halfLife, dropout = true }, f
     games[f.away_team] = (games[f.away_team] || 0) + 1;
   }
 
-  // Fixture overrides only ever change the fixtures list, never a club's
-  // season-level strength -- npxg_per_match/xgc_per_match stay put, exactly as
-  // they do server-side when odds override a fixture's lambdas without moving
-  // the ratings underneath. `fixturesView` is only distinct from `view` when
-  // something is actually overridden, so the common case pays nothing extra.
-  const patchedFixtures = applyFixtureEdits(view.fixtures, fixtureEdits);
+  // Fixture overrides and the calibration toggle only ever change the
+  // fixtures list, never a club's season-level strength --
+  // npxg_per_match/xgc_per_match stay put, exactly as they do server-side
+  // when odds override a fixture's lambdas without moving the ratings
+  // underneath. `fixturesView` is only distinct from `view` when something is
+  // actually different, so the common case pays nothing extra.
+  const calibratedFixtures = withOddsCalibration(view.fixtures, calibrateOdds);
+  const patchedFixtures = applyFixtureEdits(calibratedFixtures, fixtureEdits);
   const fixturesView = patchedFixtures === view.fixtures ? view : { ...view, fixtures: patchedFixtures };
+  // Any fixture whose expected goals ended up different from the snapshot's
+  // own -- whether a typed-over override or the calibration toggle -- moves
+  // its players off the snapshot's precomputed numbers and onto a live
+  // reprojection, the same way a personal edit does.
   const fixtureAffectedTeams = new Set();
   if (patchedFixtures !== view.fixtures) {
-    for (const f of patchedFixtures) {
-      if (fixtureEdits[fixtureKey(f)]) { fixtureAffectedTeams.add(f.home_team); fixtureAffectedTeams.add(f.away_team); }
+    for (let i = 0; i < patchedFixtures.length; i++) {
+      const f = patchedFixtures[i], original = view.fixtures[i];
+      if (f.lam_home !== original.lam_home || f.lam_away !== original.lam_away) {
+        fixtureAffectedTeams.add(f.home_team);
+        fixtureAffectedTeams.add(f.away_team);
+      }
     }
   }
 
@@ -405,9 +432,11 @@ export const POINT_SOURCES = [
  *  discounted and the chance he is still available is priced in. The board ranks
  *  on the second and people read the first, which is most of the confusion.
  */
-export function explainPlayer(snap, raw, edit, { horizon, halfLife, dropout = true }, fixtureEdits) {
+export function explainPlayer(snap, raw, edit, { horizon, halfLife, dropout = true, calibrateOdds = true },
+                              fixtureEdits) {
   const view = truncate(snap, horizon);
-  const patchedFixtures = applyFixtureEdits(view.fixtures, fixtureEdits);
+  const calibratedFixtures = withOddsCalibration(view.fixtures, calibrateOdds);
+  const patchedFixtures = applyFixtureEdits(calibratedFixtures, fixtureEdits);
   const fixturesView = patchedFixtures === view.fixtures ? view : { ...view, fixtures: patchedFixtures };
   const applied = edit && Object.keys(edit).length ? edit : null;
   const out = reprojectPlayer(fixturesView, raw, applied);
@@ -476,11 +505,13 @@ export function clubLineup(players, team) {
 }
 
 /** Recompute one player under a set of overrides — what `/api/edit` did. */
-export function editPlayer(snap, playerId, overrides, { horizon, halfLife, dropout = true }) {
+export function editPlayer(snap, playerId, overrides, { horizon, halfLife, dropout = true, calibrateOdds = true }) {
   const view = truncate(snap, horizon);
   const raw = snap.players.find((p) => p.id === playerId);
   if (!raw) throw new Error(`no player with id ${playerId}`);
-  const out = reprojectPlayer(view, raw, overrides);
+  const calibratedFixtures = withOddsCalibration(view.fixtures, calibrateOdds);
+  const fixturesView = calibratedFixtures === view.fixtures ? view : { ...view, fixtures: calibratedFixtures };
+  const out = reprojectPlayer(fixturesView, raw, overrides);
   out.xpts_plan = planWeight(out.gw, hazardOf(raw, dropout), halfLife);
   return out;
 }

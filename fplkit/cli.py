@@ -139,6 +139,7 @@ def _run_projection(args) -> Projection:
             overrides=_load_overrides(args.overrides),
             recency_half_life=getattr(args, "recency", 0.0) or None,
             force_refresh=args.refresh,
+            calibrate_to_odds=not getattr(args, "no_odds_calibration", False),
         )
     gws = projection.horizon
     coverage = projection.odds_coverage
@@ -996,6 +997,9 @@ def build_parser() -> argparse.ArgumentParser:
                          help="first gameweek (default: the next one)")
         sub.add_argument("--refresh", action="store_true",
                          help="bypass the cache and refetch every source")
+        sub.add_argument("--no-odds-calibration", action="store_true",
+                         help="don't nudge an unpriced fixture's xG ratings toward "
+                              "what this club's other, priced fixtures say about it")
         sub.add_argument("--recency", type=float, default=0.0, metavar="N",
                          help="weight recent matches above early-season ones. "
                               "N is the half-life in gameweeks (10 is a good "
