@@ -91,9 +91,9 @@ export function applyOverrides(player, overrides, rules) {
       continue;
     }
     // exp_minutes is solved last and wins: it is the more specific claim, and
-    // solveExpMinutes reads whatever the other two just set. Relies on
+    // solveExpMinutes reads whatever the other three just set. Relies on
     // rules.OVERRIDABLE keeping the Python dict's order, which JSON does.
-    if (field === "p_start" || field === "mins_if_start") minutesTouched = true;
+    if (field === "p_start" || field === "mins_if_start" || field === "p_sub") minutesTouched = true;
     else if (field === "exp_minutes") {
       [p.p_start, p.mins_if_start] =
         solveExpMinutes(p.exp_minutes, p.p_start, p.p_sub, rules);

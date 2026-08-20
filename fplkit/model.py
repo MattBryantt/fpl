@@ -1123,13 +1123,18 @@ def _normalise_to(value: pd.Series, df: pd.DataFrame,
 # allowed to take. Each also accepts a `<name>_mult` column, which multiplies
 # whatever the model derived instead of replacing it -- usually the more natural
 # way to express an opinion ("about 20% better than his old club suggests").
-# Order matters for the three minutes fields. They are applied in the order
-# listed, and exp_minutes is solved against whatever the two before it left --
-# so stating all three means "this start probability, this shift, and the
-# minutes I actually want", with the last one arbitrating.
+# Order matters for the four minutes fields. They are applied in the order
+# listed, and exp_minutes is solved against whatever the three before it left --
+# so stating all four means "this start probability, this shift, this bench
+# chance, and the minutes I actually want", with the last one arbitrating.
 OVERRIDABLE = {
     "p_start": (0.0, 1.0),
     "mins_if_start": (0.0, MAX_MINS_IF_START),
+    # p_sub is P(comes on | doesn't start). Left untouched, a benched player's
+    # p_play floors at whatever this was estimated at, no matter how far
+    # p_start or exp_minutes gets pushed down -- a keeper who is realistically
+    # never coming off the bench still needs a way to say so.
+    "p_sub": (0.0, 1.0),
     "exp_minutes": (0.0, 90.0),
     "npxg_per90": (0.0, 3.0),
     "xa_per90": (0.0, 3.0),
@@ -1223,8 +1228,8 @@ def apply_fields(player: Mapping[str, Any], fields: Mapping[str, Any]) -> dict:
             continue
 
         # exp_minutes is solved last and wins: it is the more specific claim,
-        # and _solve_exp_minutes reads whatever the other two just set.
-        if field in ("p_start", "mins_if_start"):
+        # and _solve_exp_minutes reads whatever the other three just set.
+        if field in ("p_start", "mins_if_start", "p_sub"):
             minutes_touched = True
         elif field == "exp_minutes":
             out["p_start"], out["mins_if_start"] = _solve_exp_minutes(
@@ -1353,10 +1358,10 @@ def apply_overrides(df: pd.DataFrame, overrides: pd.DataFrame) -> pd.DataFrame:
                 continue
 
             # exp_minutes is solved last and wins: it is the more specific
-            # claim, and _solve_exp_minutes reads whatever the other two set.
+            # claim, and _solve_exp_minutes reads whatever the other three set.
             if field == "p_start":
                 minutes_touched = start_moved = True
-            elif field == "mins_if_start":
+            elif field in ("mins_if_start", "p_sub"):
                 minutes_touched = True
             elif field == "exp_minutes":
                 was = float(df.loc[mask, "p_start"].iloc[0])
