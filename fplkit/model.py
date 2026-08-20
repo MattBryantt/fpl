@@ -67,6 +67,15 @@ PROMOTED_DEFENCE = 1.25
 # might be different from its Understat history" behind it. Two matches of
 # that kind of evidence earns half weight.
 ODDS_CALIBRATION_PRIOR_MATCHES = 2.0
+# A promoted club's own rating is not club-specific evidence to begin with --
+# it is PROMOTED_ATTACK/PROMOTED_DEFENCE, a division-wide guess -- so shrinking
+# a priced match's disagreement with *that* back toward the guess is shrinking
+# real signal toward no signal. Established clubs are the opposite: their
+# rating is a full season of Understat, worth defending against a single
+# noisy price. A book's price already reflects a summer signing or a change of
+# manager that Understat cannot see, so a promoted club's own priced fixtures
+# are trusted several times harder than an established club's.
+PROMOTED_ODDS_CALIBRATION_PRIOR_MATCHES = 0.4
 # A rating correction wider than this is more likely a team-matching slip or a
 # thin, one-sided market than real signal, so it is clipped rather than taken
 # at face value. exp(0.4) =~ 1.5x, i.e. half a goal a match at typical rates.
@@ -574,7 +583,10 @@ def _odds_calibration(fixtures: pd.DataFrame, ratings: pd.DataFrame
         out = {}
         for team, values in errors.items():
             n = len(values)
-            weight = n / (n + ODDS_CALIBRATION_PRIOR_MATCHES)
+            promoted = bool(ratings.loc[team, "is_promoted"]) if team in ratings.index else False
+            prior_matches = (PROMOTED_ODDS_CALIBRATION_PRIOR_MATCHES if promoted
+                             else ODDS_CALIBRATION_PRIOR_MATCHES)
+            weight = n / (n + prior_matches)
             out[team] = float(np.exp(weight * float(np.mean(values))))
         return out
 
