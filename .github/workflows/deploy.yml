@@ -1,4 +1,4 @@
-# Build the board and publish it, on a schedule, to one permanent URL.
+# Build the board and publish it to one permanent URL, on push or by hand.
 #
 # This replaces a laptop. The board runs the projection maths and the MILP in
 # the browser off snapshot.json, so the only thing that ever needed Python was
@@ -9,19 +9,16 @@
 # Cost: nothing. GitHub Actions is free for private repositories within the
 # monthly minutes allowance and this job takes about two of them; Cloudflare
 # Pages' free tier has no bandwidth cap and builds from an artifact we upload
-# rather than building on their side.
+# rather than building on their side. No scheduled run: a stale snapshot
+# between visits costs nothing, so redeploying only on push or by hand (before
+# a deadline, say) is enough, and it spends none of the Odds API's free-tier
+# budget just to keep the site warm.
 
 name: deploy board
 
 on:
-  schedule:
-    # Every six hours. Set by the tightest external limit rather than by taste:
-    # The Odds API's free key allows 500 credits a month, one run spends two
-    # (h2h and totals are billed per market), and 4 runs a day is ~240 a month.
-    # Three-hourly would be 480 and would leave nothing for running it by hand.
-    - cron: "0 */6 * * *"
-  # For a deadline. The scheduled run is for keeping the site warm; this is the
-  # one to press when team news has just landed and the deadline is in an hour.
+  # For a deadline, or any time a fresh projection is wanted without a code
+  # change to trigger it.
   workflow_dispatch:
     inputs:
       refresh:
@@ -30,9 +27,9 @@ on:
         default: true
   push:
     branches: [main]
-    # Code changes redeploy; a new snapshot is a scheduled concern. Docs and
-    # scripts do not change what the browser runs, so they do not trigger a
-    # build.
+    # Code changes redeploy; a new snapshot without one is a workflow_dispatch
+    # concern. Docs and scripts do not change what the browser runs, so they do
+    # not trigger a build.
     paths:
       - "fplkit/**"
       - "src/**"
