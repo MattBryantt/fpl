@@ -594,6 +594,26 @@ def _print_transfer_path(path, show_lineups: bool = False) -> None:
         console.print(f"[dim]· {note}[/dim]")
 
 
+def _parse_pin_chip(text: str) -> tuple[str, int]:
+    """Parses one `--pin-chip` argument, `NAME=GW`.
+
+    A pin is `chip_windows={chip: (gw, gw)}` plus `force_chips=[chip]` --
+    narrowing a chip's legal window to one gameweek and forcing it to be
+    played is exactly what the web board's chip-pinning controls already do
+    (see index.html's toggleChipWeek/buildTransferPayload); this is the same
+    thing from the command line, not a new idea plan_transfers() needs to
+    learn. See its docstring for the underlying mechanism.
+    """
+    name, _, gw = text.partition("=")
+    if not gw or name not in CHIPS:
+        raise argparse.ArgumentTypeError(
+            f"expected NAME=GW with NAME one of {', '.join(CHIPS)}, got {text!r}")
+    try:
+        return name, int(gw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"GW must be an integer, got {gw!r}")
+
+
 def _load_squad(players: pd.DataFrame, path: str | None) -> tuple[list[int], dict]:
     """Read the fifteen you own from a CSV, with purchase prices if given.
 
@@ -624,14 +644,28 @@ def cmd_transfers(args) -> None:
     include = [int(_resolve(players, name)["fpl_id"]) for name in (args.include or [])]
     exclude = [int(_resolve(players, name)["fpl_id"]) for name in (args.exclude or [])]
 
+    chip_windows = fpl_api.chip_windows(projection.horizon[0])
+    force_chips = list(args.force_chip or [])
+    for chip, gw in (args.pin_chip or []):
+        if chip not in chip_windows:
+            raise SystemExit(f"cannot pin {chip}: not playable in this window "
+                             "(already used, or not this tool's chip windows)")
+        start, stop = chip_windows[chip]
+        if not start <= gw <= stop:
+            raise SystemExit(f"cannot pin {chip} to GW{gw}: its window is "
+                             f"GW{start}-GW{stop}")
+        chip_windows[chip] = (gw, gw)
+        if chip not in force_chips:
+            force_chips.append(chip)
+
     settings = dict(
         horizon=args.transfer_horizon, budget=args.budget, squad=owned or None,
         bank=args.bank, free_transfers=args.free_transfers,
         sell_prices=sell_prices or None, min_minutes_prob=args.min_start,
-        chip_windows=fpl_api.chip_windows(projection.horizon[0]),
+        chip_windows=chip_windows,
         chips_used=args.chips_used or None,
         chip_hold=({chip: 0.0 for chip in CHIPS} if args.ignore_chip_hold else None),
-        force_chips=args.force_chip or None,
+        force_chips=force_chips or None,
         half_life=args.transfer_half_life, include=include or None,
         exclude=exclude or None, hit_limit=args.hit_limit, seconds=args.seconds,
     )
@@ -1137,6 +1171,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "which asks 'if I play this, what is the best squad "
                          "and the best gameweek for it?' rather than 'should "
                          f"I play it?' (one of: {', '.join(CHIPS)})")
+    tr.add_argument("--pin-chip", nargs="*", default=None, type=_parse_pin_chip,
+                    metavar="CHIP=GW",
+                    help="lock a chip to exactly this gameweek, e.g. "
+                         "bboost=5 — implies --force-chip for it. For a chip "
+                         "strategy already decided, so the plan builds squad "
+                         "readiness toward that week instead of timing it")
     tr.add_argument("--ignore-chip-hold", action="store_true",
                     help="set every chip's reservation price to zero, which asks "
                          "the narrower question 'when in this window is each chip "
