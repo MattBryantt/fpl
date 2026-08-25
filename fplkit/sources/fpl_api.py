@@ -1,8 +1,19 @@
 """Official Fantasy Premier League API.
 
 Endpoints used:
-  bootstrap-static/  -> players, teams, gameweeks
-  fixtures/          -> the full 380-fixture list with gameweek assignment
+  bootstrap-static/                    -> players, teams, gameweeks
+  fixtures/                            -> the full 380-fixture list with gameweek assignment
+  entry/{id}/                          -> a manager's public profile
+  entry/{id}/event/{gw}/picks/         -> a manager's squad for one gameweek
+  entry/{id}/history/                  -> a manager's chips used and past-season totals
+  entry/{id}/transfers/                -> a manager's full transfer log
+
+The entry/* endpoints are public and need no login -- a manager's team id
+(visible in the URL of their own "Points" page) is all that identifies them.
+There is deliberately no path here to FPL's authenticated `/my-team/{id}/`
+endpoint, which is the only one that carries per-player selling prices: this
+tool never asks for a password, so anywhere a selling price would matter it
+falls back to the player's current listed price instead (see live_squad()).
 """
 
 from __future__ import annotations
@@ -16,15 +27,19 @@ from ..config import POSITIONS
 BASE = "https://fantasy.premierleague.com/api"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
 TTL = 3 * 3600
+# A manager's own picks/bank/chips change as they play, unlike the player pool
+# -- caching it as long as bootstrap-static would show a stale squad for
+# hours after a real transfer.
+LIVE_TTL = 5 * 60
 
 
-def _get(path: str, force_refresh: bool = False):
+def _get(path: str, force_refresh: bool = False, ttl: int | None = None):
     def fetch():
         response = requests.get(f"{BASE}/{path}", headers=HEADERS, timeout=30)
         response.raise_for_status()
         return response.json()
 
-    return cached_json("fpl", path, fetch, TTL, force_refresh)
+    return cached_json("fpl", path, fetch, TTL if ttl is None else ttl, force_refresh)
 
 
 def bootstrap(force_refresh: bool = False) -> dict:
@@ -146,3 +161,99 @@ def next_gameweek(force_refresh: bool = False) -> int:
         if not event.get("finished"):
             return int(event["id"])
     return int(events[-1]["id"])
+
+
+# --------------------------------------------------------------------------- #
+# A manager's own team
+# --------------------------------------------------------------------------- #
+
+def entry(team_id: int, force_refresh: bool = False) -> dict:
+    """A manager's public profile: name, overall points and rank."""
+    return _get(f"entry/{team_id}/", force_refresh, ttl=LIVE_TTL)
+
+
+def entry_picks(team_id: int, gw: int, force_refresh: bool = False) -> dict:
+    """A manager's squad for one gameweek.
+
+    `picks` is 15 `{element, position, multiplier, is_captain,
+    is_vice_captain, element_type}` rows -- `element` is this season's
+    `fpl_id`, always valid at fetch time regardless of past rollovers.
+    `entry_history` carries that gameweek's `bank`, `value` (squad value,
+    both in tenths of a million), `event_transfers` and
+    `event_transfers_cost`. Confirmed live (2026-08-24): there is no
+    `selling_price` anywhere on this endpoint -- see the module docstring.
+    """
+    return _get(f"entry/{team_id}/event/{gw}/picks/", force_refresh, ttl=LIVE_TTL)
+
+
+def entry_history(team_id: int, force_refresh: bool = False) -> dict:
+    """A manager's season so far: `current` (one row per gameweek, same shape
+    as `entry_picks`'s `entry_history`), `past` (previous seasons) and
+    `chips` (`[{name, event, time}]`, one row per chip played)."""
+    return _get(f"entry/{team_id}/history/", force_refresh, ttl=LIVE_TTL)
+
+
+def entry_transfers(team_id: int, force_refresh: bool = False) -> list[dict]:
+    """A manager's full transfer log, each row tagged with the `event` it was
+    made in. Empty before a manager has made their first in-season transfer
+    -- preseason squad-building is not logged here at all."""
+    return _get(f"entry/{team_id}/transfers/", force_refresh, ttl=LIVE_TTL)
+
+
+def live_squad(team_id: int, gw: int | None = None, force_refresh: bool = False) -> dict:
+    """Everything the board needs to act on a manager's real team, in one call.
+
+    `squad_ids` are `element` values straight off the picks endpoint --
+    this season's `fpl_id`s, already valid against the current player table,
+    with no `code` translation needed here. That translation matters only at
+    the point a squad gets *persisted* across a season boundary
+    (`localStorage`/sync), which the browser already handles at its own
+    save/load boundary; a value fetched live is never stale by definition.
+
+    `sell_prices_by_code` is deliberately absent: without the authenticated
+    `/my-team/` endpoint there is no per-player selling price to offer, so
+    callers should fall back to each player's current listed price -- the
+    same approximation `plan_transfers()` already makes when its own
+    `sell_prices` argument is omitted. `budget_total`, by contrast, does not
+    need per-player prices at all: `value + bank` is exactly what FPL itself
+    would use as a wildcard/free-hit rebuild budget, already net of every
+    player's real sell-on fee on their end.
+    """
+    gw = gw or (next_gameweek(force_refresh) - 1) or 1
+    picks = entry_picks(team_id, gw, force_refresh)
+    history = entry_history(team_id, force_refresh)
+
+    squad_ids = [p["element"] for p in picks["picks"]]
+    captain_id = next((p["element"] for p in picks["picks"] if p["is_captain"]), None)
+
+    eh = picks["entry_history"]
+    bank = eh["bank"] / 10.0
+    value = eh["value"] / 10.0
+
+    chips_used = [c["name"] for c in history.get("chips", [])]
+
+    # Imported here, not at module load: transfers.py -> model.py -> fpl_api.py
+    # is already a cycle, so importing transfers at the top of this file would
+    # invert it.
+    from .. import transfers
+
+    ft = 1  # the first gameweek after preseason always opens on exactly one
+    for row in sorted(history.get("current", []), key=lambda r: r["event"]):
+        if row["event"] < 2 or row["event"] > gw:
+            continue
+        freehit = any(c["event"] == row["event"] and c["name"] == "freehit"
+                      for c in history.get("chips", []))
+        ft = transfers.next_free_transfers(
+            ft, row["event_transfers"], played_freehit=freehit)
+
+    return {
+        "gw": gw,
+        "squad_ids": squad_ids,
+        "captain_id": captain_id,
+        "bank": bank,
+        "value": value,
+        "budget_total": round(bank + value, 1),
+        "chips_used": chips_used,
+        "active_chip": picks.get("active_chip"),
+        "free_transfers": ft,
+    }

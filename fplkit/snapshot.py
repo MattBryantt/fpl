@@ -238,6 +238,11 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
 
         row = {
             "id": fpl_id,
+            # Stable across seasons, unlike `id` (FPL reassigns element ids at
+            # every rollover) -- squad state is persisted keyed on this so a
+            # saved squad survives the id reshuffle instead of silently
+            # evaporating, which is what happened to squads keyed on `id`.
+            "code": int(player["code"]),
             "name": str(player["web_name"]),
             "full_name": str(player["full_name"]),
             "pos": str(player["pos"]),

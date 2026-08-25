@@ -187,6 +187,11 @@ def _build_pool(start_gw: int | None, horizon: int, half_life: float | None,
 
         rows.append({
             "id": fpl_id,
+            # Stable across seasons, unlike `id` (FPL reassigns element ids at
+            # every rollover) -- squad state is persisted keyed on this so a
+            # saved squad survives the id reshuffle instead of silently
+            # evaporating, which is what happened to squads keyed on `id`.
+            "code": int(player["code"]),
             "name": str(player["web_name"]),
             "full_name": str(player["full_name"]),
             "pos": str(player["pos"]),
@@ -371,6 +376,19 @@ def pool(horizon: int = 8, half_life: float | None = DEFAULT_HALF_LIFE,
                           start_gw=start_gw, recency=recency)
     return _build_pool(request.start_gw, request.horizon, request.half_life,
                        request.recency)
+
+
+@app.get("/api/live/{team_id}")
+def live_team(team_id: int, gw: int | None = None) -> dict:
+    """A manager's real squad, bank, free transfers and chips used, read
+    straight from FPL's own public API -- no login, so no per-player selling
+    price (see fpl_api.live_squad's docstring for what that means)."""
+    try:
+        return fpl_api.live_squad(team_id, gw)
+    except requests.HTTPError as error:
+        status = error.response.status_code if error.response is not None else 502
+        raise HTTPException(status_code=status,
+                            detail=f"FPL API error fetching team {team_id}: {error}")
 
 
 @app.post("/api/edit")
@@ -808,6 +826,7 @@ def icon() -> FileResponse:
 ASSETS: dict[str, str] = {
     "board.mjs": "text/javascript",
     "chips.mjs": "text/javascript",
+    "live.mjs": "text/javascript",
     "pitch.mjs": "text/javascript",
     "poisson.mjs": "text/javascript",
     "points.mjs": "text/javascript",

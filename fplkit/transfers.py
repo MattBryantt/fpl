@@ -248,6 +248,27 @@ def candidate_pool(players: pd.DataFrame, points: pd.DataFrame,
             .reset_index(drop=True))
 
 
+def next_free_transfers(ft: int, spent: int, played_freehit: bool = False) -> int:
+    """One step of the free-transfer state machine plan_transfers() solves as
+    a big-M MILP (see the `raw`/`over`/`under` constraints below `# --- the
+    free-transfer state machine ---`), written as a plain scalar so a caller
+    replaying a real transfer log does not need to re-derive it from the LP.
+
+    A free hit costs that gameweek's newly-earned transfer but not, since
+    2024/25, anything already banked -- `played_freehit` only zeroes `earned`.
+    Clamped to `[1, MAX_FREE_TRANSFERS]`, not `[0, ...]`: the game guarantees
+    at least one free transfer every week (a bank of zero does not exist past
+    the opening gameweek), which is why the LP's `under` branch forces the
+    floor at 1 rather than 0.
+
+    Kept in lockstep with the LP by scripts/verify-transfer-rules.py, which
+    checks the two agree over synthetic sequences.
+    """
+    earned = FREE_TRANSFERS_PER_GW - (1 if played_freehit else 0)
+    raw = ft - spent + earned
+    return max(1, min(MAX_FREE_TRANSFERS, raw))
+
+
 def free_transfer_value() -> dict[int, float]:
     """Cumulative worth of holding s banked transfers, for s in 0..5.
 
@@ -369,6 +390,13 @@ def plan_transfers(
             playing at all, and leaving it in would only push a chip you have
             already decided to play into the last gameweek of the window, where
             the discount makes the same charge cheapest.
+
+            Combined with `chip_windows={chip: (gw, gw)}`, this is how a
+            caller *pins* a chip to one specific gameweek rather than merely
+            requiring it somewhere in the window -- narrow the chip's legal
+            window to a single gameweek and force it, and the solve has no
+            other week left to consider. The CLI's `--pin-chip NAME=GW` and
+            the web board's chip-pinning controls both do exactly this.
 
     Returns a `TransferPlan`. `objective` is the discounted total the solver
     ranked on and is comparable only against another solve of the same window;

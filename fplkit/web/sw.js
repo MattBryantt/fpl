@@ -41,6 +41,7 @@ const SHELL = [
   "/manifest.webmanifest",
   "/assets/board.mjs",
   "/assets/chips.mjs",
+  "/assets/live.mjs",
   "/assets/pitch.mjs",
   "/assets/poisson.mjs",
   "/assets/points.mjs",

@@ -1198,6 +1198,16 @@ gameweek of the transfer-and-chip plan.">Free transfers</label>
       <label><input type="checkbox" data-chipused="3xc"> Triple Captain</label>
     </div>
   </div>
+  <div class="ctl">
+    <label for="teamId" title="Your FPL team id, from the URL of your own
+&quot;Points&quot; page: fantasy.premierleague.com/entry/&lt;id&gt;/event/…">Team ID</label>
+    <input type="text" id="teamId" inputmode="numeric" placeholder="e.g. 1234567" style="width:8rem">
+  </div>
+  <div class="ctl">
+    <label>&nbsp;</label>
+    <button class="btn ghost" id="loadMyTeam"
+            title="Fetch your real squad, bank, free transfers and chips used from FPL's own API — read-only, no login required">Load my team</button>
+  </div>
   <div class="ctl needs-server">
     <label>&nbsp;</label>
     <button class="btn ghost" id="refreshData" title="Bypass the cache and refetch every source">Refresh sources</button>
@@ -1684,6 +1694,7 @@ import { pitchHTML, cardsHTML, squadLayout, wireShirts, shirtUrl,
 import { POSITION_TAGS, POSITION_TAG_LABELS, SEED_TAGS } from "/assets/position-tags.mjs";
 import { candidatePool, captainPool, freeTransferValue, chipSlots, fixtureVariation,
          chipPayouts, pairMoves, survivalAdjusted } from "/assets/chips.mjs";
+import { fetchLiveTeam } from "/assets/live.mjs";
 
 const $ = (s) => document.querySelector(s);
 
@@ -1788,7 +1799,17 @@ const saveEdits = () => {
   saveLocal(STORE.edits, S.edits); saveLocal(STORE.editsAt, S.editsAt);
   snapshotEditsHistory(); pushOverrides(); markSynced();
 };
-const saveSquad = () => { saveLocal(STORE.squad, S.squad); markSynced(); };
+/** `S.squad` stays fpl_id-keyed in memory -- every consumer (pitch, transfer
+ *  payload, solver) already expects that. Only what gets *persisted* is
+ *  code-keyed, since fpl_id is reassigned every season and code is not; this
+ *  is the boundary that translates between the two. */
+const squadCodes = () => S.squad.map((id) => S.byId.get(id)?.code).filter((c) => c != null);
+const saveSquad = () => { saveLocal(STORE.squad, squadCodes()); markSynced(); };
+/** Resolve a saved/synced array of player `code`s back to this season's
+ *  fpl_ids, dropping (rather than crashing on) anything no longer in the
+ *  pool -- a code with no match this season, not merely an id that moved. */
+const resolveSquadCodes = (codes) =>
+  (codes || []).map((code) => S.byCode.get(code)).filter((id) => id != null);
 
 /** One plan's worth of chip strategy -- see S.chipPlan for what each field
  *  means. A function rather than a shared literal, so the two sides start
@@ -1815,7 +1836,7 @@ function applyChipPlanSettings(saved) {
 
 const S = {
   snapshot: null,
-  players: [], byId: new Map(), gameweeks: [], meta: null,
+  players: [], byId: new Map(), byCode: new Map(), gameweeks: [], meta: null,
   squad: [], optimal: [], optimalPts: null, optimalCost: null, optimalBench: {},
   optimalState: "idle", optimalError: "",
   pos: "ALL", search: "", sort: "xpts_plan", dir: -1,
@@ -1913,7 +1934,9 @@ const S = {
   // wall of stacked sections the folds exist to fix.
   chipFolds: { ideal: false, near: false },
 };
-S.squad = loadLocal(STORE.squad, []);
+// Held as raw codes until the snapshot loads and S.byCode exists to resolve
+// them against -- see rebuildPool(), which consumes and clears this once.
+S.squadCodesPending = loadLocal(STORE.squad, []);
 
 /* Overrides saved before per-id timestamps existed load with nothing in
    editsAt, and mergeEdits reads a missing entry as 0 -- which loses every
@@ -5961,7 +5984,7 @@ async function pushSyncState() {
   if (!pullSettled) return;
   const sending = JSON.stringify({
     updated_at: syncMeta().updated_at, drafts: S.drafts, edits: S.edits, editsAt: S.editsAt,
-    squad: S.squad, settings: syncableSettings(),
+    squad: squadCodes(), settings: syncableSettings(),
   });
   syncPending = false;
   try {
@@ -6098,11 +6121,12 @@ async function attemptPull(ready) {
     console.log(`[sync] ${ADOPT_REMOTE ? "adopt" : "merge"}: -> ${Object.keys(merged.edits).length} edit(s)`);
     S.edits = merged.edits;
     S.editsAt = merged.at;
-    S.squad = remote.squad || [];
+    // remote.squad is codes (see squadCodes()); S.squad stays fpl_id-keyed.
+    S.squad = resolveSquadCodes(remote.squad);
     saveLocal(STORE.drafts, S.drafts);
     saveLocal(STORE.edits, S.edits);
     saveLocal(STORE.editsAt, S.editsAt);
-    saveLocal(STORE.squad, S.squad);
+    saveLocal(STORE.squad, squadCodes());
     if (remote.settings) applySyncedSettings(remote.settings);
     setSyncMeta({ updated_at: remote.updated_at });
     await recomputeEdited(Object.keys(S.edits).map(Number), { sync: false });
@@ -6129,7 +6153,7 @@ addEventListener("pagehide", () => {
       method: "POST", keepalive: true, headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         updated_at: syncMeta().updated_at, drafts: S.drafts, edits: S.edits, editsAt: S.editsAt,
-        squad: S.squad, settings: syncableSettings(),
+        squad: squadCodes(), settings: syncableSettings(),
       }),
     });
   } catch (_) { /* leaving anyway; localStorage already has it */ }
@@ -6143,6 +6167,62 @@ async function loadOverrides() {
   for (const [id, fields] of Object.entries(r.edits)) S.edits[+id] = fields;
   await recomputeEdited(Object.keys(S.edits).map(Number));
   renderAll();
+}
+
+/** Pulls a manager's real squad, bank, free transfers and chips used straight
+ *  from FPL's own public API (see live.mjs) and drops them onto the board the
+ *  same way a manually-built squad would land: through S.squad, saveSquad(),
+ *  the Free transfers select and the Chips-used checkboxes. Nothing
+ *  downstream (pitch, transfer planner, chips tab) distinguishes a loaded
+ *  squad from a hand-built one, so this does not need to either.
+ *
+ *  gw is S.meta.start_gw, not left to the backend to default: the deployed
+ *  Worker cannot resolve a missing one on its own (see live.mjs's comment on
+ *  fetchLiveTeam), so a caller always supplying it is what keeps the local
+ *  and deployed paths behaving the same way. */
+async function loadMyTeam() {
+  const input = $("#teamId");
+  const teamId = input.value.trim();
+  if (!/^\d+$/.test(teamId)) { alert("Enter your FPL team id — the number in the URL of your own “Points” page."); return; }
+  localStorage.setItem("fpl.teamId", teamId);
+
+  const btn = $("#loadMyTeam");
+  const was = btn.textContent;
+  btn.disabled = true; btn.textContent = "Loading…";
+  try {
+    // S.meta.start_gw is the projection horizon's first gameweek -- the next
+    // one to plan for, not the last one a manager's picks actually exist for.
+    // Those are one apart (the same relationship fpl_api.live_squad() uses
+    // via next_gameweek() - 1 for its own default), which is what a squad
+    // saved for a gameweek that has not opened yet would otherwise 404 on.
+    const gw = Math.max(1, (S.meta?.start_gw || 2) - 1);
+    const team = await fetchLiveTeam(api, teamId, gw);
+
+    const resolved = team.squadIds.filter((id) => S.byId.has(id));
+    if (resolved.length !== team.squadIds.length) {
+      console.warn(`[live] ${team.squadIds.length - resolved.length} pick(s) not in the current pool`);
+    }
+    if (resolved.length !== 15) {
+      alert(`FPL returned ${resolved.length} of 15 picks for gameweek ${gw} — `
+        + `try again once picks for that gameweek are set.`);
+      return;
+    }
+    S.squad = resolved;
+    saveSquad();
+
+    $("#freetransfers").value = String(Math.min(5, Math.max(0, team.freeTransfers)));
+    S.chipsUsed = [...team.chipsUsed];
+    renderChipsUsed();
+
+    $("#budget").value = String(team.budgetTotal);
+    $("#budval").textContent = team.budgetTotal.toFixed(1);
+
+    renderAll();
+  } catch (error) {
+    alert(`Could not load your team.\n\n${error.message}`);
+  } finally {
+    btn.disabled = false; btn.textContent = was;
+  }
 }
 
 /* --------------------------------------------------------------------- data
@@ -6185,6 +6265,15 @@ function rebuildPool(keepSquad = true) {
 
   S.players = data.players; S.gameweeks = data.gameweeks; S.meta = data.meta;
   S.byId = new Map(data.players.map((p) => [p.id, p]));
+  S.byCode = new Map(data.players.map((p) => [p.code, p.id]));
+  // One-time: the squad saved on disk is codes (see saveSquad/resolveSquadCodes),
+  // and this is the first point in boot where S.byCode exists to resolve them
+  // against. A season rollover surfaces here as a shorter resolved list than
+  // pending, rather than as the squad silently vanishing on the next filter.
+  if (S.squadCodesPending) {
+    S.squad = resolveSquadCodes(S.squadCodesPending);
+    S.squadCodesPending = null;
+  }
   if (!keepSquad) S.squad = [];
   S.squad = S.squad.filter((id) => S.byId.has(id));
   S.optimal = S.optimal.filter((id) => S.byId.has(id));
@@ -7656,8 +7745,28 @@ function shortFixture(player, index) {
   return match[2] === "H" ? short : short.toLowerCase();
 }
 
+/** Copies the from-scratch optimal squad over whatever you currently hold.
+ *  Cheap and correct when you have genuinely wildcarded or free-hit -- the
+ *  rebuild really is free. Anywhere else, replacing more players than you
+ *  have free transfers for means real hits, so this warns rather than
+ *  silently assuming the wildcard framing applies. Reuses optDiff(), the
+ *  same incoming/outgoing sets the compare pitch already highlights. */
 function copyOptimal() {
   if (S.optimal.length !== 15) return;
+  if (S.squad.length) {
+    const { outgoing } = optDiff();
+    const free = +($("#freetransfers")?.value ?? 1);
+    const hits = Math.max(0, outgoing.length - free);
+    if (hits > 0) {
+      const cost = hits * (S.snapshot?.rules?.HIT_COST ?? 4);
+      const ok = confirm(
+        `This replaces ${outgoing.length} of your 15 players. You have ${free} free `
+        + `transfer${free === 1 ? "" : "s"}, so outside a wildcard or free hit this `
+        + `would cost ${hits} hit${hits === 1 ? "" : "s"} (−${cost} points).\n\n`
+        + `Copy anyway?`);
+      if (!ok) return;
+    }
+  }
   S.squad = [...S.optimal];
   saveSquad(); renderAll();
 }
@@ -7979,6 +8088,8 @@ $("#draftList").addEventListener("change", (e) => {
   if (cmp) toggleCompare(decodeURIComponent(cmp.dataset.cmp));
 });
 $("#loadOverrides").addEventListener("click", loadOverrides);
+$("#loadMyTeam").addEventListener("click", loadMyTeam);
+$("#teamId").value = localStorage.getItem("fpl.teamId") || "";
 $("#clearEdits").addEventListener("click", async () => {
   const ids = Object.keys(S.edits).map(Number);
   S.edits = {};

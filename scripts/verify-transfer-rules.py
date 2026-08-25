@@ -179,12 +179,15 @@ def check_ledger(plan: transfers.TransferPlan, opening: int, label: str) -> None
     check(f"{label}: opening balance", int(ledger["free"].iloc[0]) == opening,
           f"starts on {int(ledger['free'].iloc[0])} free transfer(s)")
 
+    # Checked against transfers.next_free_transfers() -- the scalar version of
+    # this same recursion -- rather than a second copy of the rule written
+    # here, so the two cannot silently drift apart.
     ok, detail = True, []
     for step in range(len(ledger) - 1):
         row, nxt = ledger.iloc[step], ledger.iloc[step + 1]
-        raw = (int(row["free"]) - int(row["transfers"])
-               + (0 if row["chip"] == "Free Hit" else 1))
-        expect = min(max(raw, 1), MAX_FREE_TRANSFERS)
+        expect = transfers.next_free_transfers(
+            int(row["free"]), int(row["transfers"]),
+            played_freehit=row["chip"] == "Free Hit")
         if int(nxt["free"]) != expect:
             ok = False
             detail.append(f"GW{int(nxt['gw'])} is {int(nxt['free'])}, rule says {expect}")

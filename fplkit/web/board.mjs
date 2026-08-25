@@ -334,7 +334,7 @@ export function derivePool(snap, edits, { horizon, halfLife, dropout = true, cal
     const hazard = hazardOf(raw, dropout);
 
     rows.push({
-      id: raw.id, name: raw.name, full_name: raw.full_name,
+      id: raw.id, code: raw.code, name: raw.name, full_name: raw.full_name,
       pos: raw.pos, team: raw.team, team_short: raw.team_short,
       price, p_start: pStart,
       xpts_plan: planWeight(gw, hazard, halfLife),

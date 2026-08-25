@@ -26,6 +26,50 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024; // a real squad's worth of JSON is a few
                                         // hundred KB; anything past 2 MB is not
                                         // a sync request, it is a mistake or abuse
 
+// FPL's own API sends no CORS headers, so a static-hosted board cannot call
+// it from the browser at all -- this is the second thing (after /api/sync)
+// a static host cannot do alone. Kept deliberately dumb: it bundles the raw
+// upstream JSON and enforces the token, nothing more. Turning that bundle
+// into a squad -- element -> code, the free-transfer replay -- is
+// fplkit/web/live.mjs's job, so the logic exists in exactly one browser
+// module rather than being ported a third time into Worker-side JS.
+const FPL_BASE = "https://fantasy.premierleague.com/api";
+const FPL_HEADERS = { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" };
+
+async function handleLive(request, env, teamId) {
+  if (!env.FPL_TOKEN) {
+    return json({ error: "live team lookup is not configured: FPL_TOKEN secret is unset" }, 500);
+  }
+  const supplied = request.headers.get("X-FPL-Token") || "";
+  if (!(await tokensMatch(supplied, env.FPL_TOKEN))) {
+    return json({ error: "bad or missing token" }, 401);
+  }
+  if (!/^\d+$/.test(teamId || "")) return json({ error: "bad team id" }, 400);
+
+  const gw = new URL(request.url).searchParams.get("gw");
+  if (gw !== null && !/^\d+$/.test(gw)) return json({ error: "bad gw" }, 400);
+
+  try {
+    const picksUrl = gw ? `${FPL_BASE}/entry/${teamId}/event/${gw}/picks/` : null;
+    const [historyRes, picksRes] = await Promise.all([
+      fetch(`${FPL_BASE}/entry/${teamId}/history/`, { headers: FPL_HEADERS }),
+      picksUrl ? fetch(picksUrl, { headers: FPL_HEADERS }) : Promise.resolve(null),
+    ]);
+    if (!historyRes.ok) {
+      return json({ error: `FPL history lookup failed (${historyRes.status})` }, historyRes.status);
+    }
+    if (picksRes && !picksRes.ok) {
+      return json({ error: `FPL picks lookup failed (${picksRes.status})` }, picksRes.status);
+    }
+    return json({
+      history: await historyRes.json(),
+      picks: picksRes ? await picksRes.json() : null,
+    });
+  } catch (error) {
+    return json({ error: `upstream fetch failed: ${error.message}` }, 502);
+  }
+}
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -119,6 +163,8 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/api/sync") return handleSync(request, env);
+    const liveMatch = url.pathname.match(/^\/api\/live\/([^/]+)$/);
+    if (liveMatch) return handleLive(request, env, liveMatch[1]);
 
     // Nothing else should reach this script -- wrangler.jsonc scopes
     // run_worker_first to /api/*, and everything outside it is served
