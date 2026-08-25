@@ -19,6 +19,7 @@ survives across seasons and transfers.
 
 from __future__ import annotations
 
+import datetime
 import io
 
 import numpy as np
@@ -30,6 +31,20 @@ from ..cache import cached_json
 BASE = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data"
 TTL = 12 * 3600
 TIMEOUT = 60
+
+
+def current_season(today: datetime.date | None = None) -> str:
+    """The vaastav archive's folder name for the season under way right now.
+
+    The FPL season opens in August, so a date from August onward belongs to a
+    season starting that year; anything from January to July still belongs to
+    the one that opened the August before. Computed rather than hardcoded so
+    this file does not need a manual edit every rollover -- which is exactly
+    the edit that went stale for the 2026-27 season this fixes.
+    """
+    today = today or datetime.date.today()
+    start_year = today.year if today.month >= 8 else today.year - 1
+    return f"{start_year}-{str(start_year + 1)[2:]}"
 
 # Columns worth carrying: the counting stats the model derives rates from.
 KEEP = ["code", "gw", "minutes", "expected_goals", "expected_assists",
@@ -48,14 +63,19 @@ def _cached_csv(namespace: str, url: str, force_refresh: bool = False) -> pd.Dat
     return pd.read_csv(io.StringIO(text))
 
 
-def gameweek_history(season: str = "2025-26",
+def gameweek_history(season: str | None = None,
                      force_refresh: bool = False) -> pd.DataFrame:
     """One row per player per gameweek, keyed by the stable player `code`.
 
-    Returns an empty frame rather than raising if the archive is unreachable --
-    recency weighting is an enhancement, and losing it should not take the whole
-    projection down with it.
+    Defaults to the season under way right now (see `current_season`) rather
+    than a fixed string, since this is called with no override from
+    `model.py` on every run. Returns an empty frame rather than raising if the
+    archive is unreachable or the current season's gameweek files do not
+    exist yet (true for the first weeks of a new season, before the archive
+    catches up) -- recency weighting is an enhancement, and losing it should
+    not take the whole projection down with it.
     """
+    season = season or current_season()
     try:
         merged = _cached_csv("history", f"{BASE}/{season}/gws/merged_gw.csv", force_refresh)
         players = _cached_csv("history", f"{BASE}/{season}/players_raw.csv", force_refresh)
