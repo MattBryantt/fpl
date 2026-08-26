@@ -824,8 +824,11 @@ def icon() -> FileResponse:
 # are set here too: a .mjs or .wasm served as text/plain is rejected outright by
 # the browser, and the error it gives you does not say so.
 ASSETS: dict[str, str] = {
+    "analysis-view.mjs": "text/javascript",
     "board.mjs": "text/javascript",
     "chips.mjs": "text/javascript",
+    "compare-view.mjs": "text/javascript",
+    "explain-view.mjs": "text/javascript",
     "live.mjs": "text/javascript",
     "pitch.mjs": "text/javascript",
     "poisson.mjs": "text/javascript",
@@ -833,6 +836,10 @@ ASSETS: dict[str, str] = {
     "position-tags.mjs": "text/javascript",
     "solver.js": "text/javascript",
     "solver-worker.js": "text/javascript",
+    "squad-view.mjs": "text/javascript",
+    "state.mjs": "text/javascript",
+    "sync.mjs": "text/javascript",
+    "transfer-view.mjs": "text/javascript",
     "transfers.js": "text/javascript",
     "transfer-worker.js": "text/javascript",
     "vendor/highs.js": "text/javascript",
