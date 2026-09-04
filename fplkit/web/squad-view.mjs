@@ -19,7 +19,7 @@ import {
   TOKEN, api, markSynced, pushOverrides, syncableSettings, applySyncedSettings,
   lastSyncableSettings, setLastSyncableSettings, SKIP_PULL, ADOPT_REMOTE,
 } from "/assets/sync.mjs";
-import { derivePool, age } from "/assets/board.mjs";
+import { derivePool, staleness } from "/assets/board.mjs";
 import { pitchHTML, squadLayout, wireShirts, METRICS, METRIC_KEYS, MAX_METRICS,
          cleanMetrics } from "/assets/pitch.mjs";
 import { POSITION_TAG_LABELS, SEED_TAGS } from "/assets/position-tags.mjs";
@@ -1081,9 +1081,12 @@ export function rebuildPool(keepSquad = true) {
 
 export function renderFreshness() {
   const m = S.meta;
-  const stale = age(m.generated_at);
-  $("#freshness").innerHTML =
-    `Snapshot <b>${stale}</b> · frozen at GW${m.start_gw}, ${m.snapshot_horizon} gameweeks`
+  const { label, level } = staleness(m.generated_at);
+  const el = $("#freshness");
+  el.classList.toggle("warn", level === "warn");
+  el.classList.toggle("bad", level === "bad");
+  el.innerHTML =
+    `Snapshot <b>${label}</b> · frozen at GW${m.start_gw}, ${m.snapshot_horizon} gameweeks`
     + (m.recency ? ` · recency ${m.recency}gw` : "")
     // Silence here would be the trap: a device left on ?nopull=1 keeps looking
     // normal while quietly ignoring every change made anywhere else.

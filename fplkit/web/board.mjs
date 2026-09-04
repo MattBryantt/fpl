@@ -531,14 +531,23 @@ export function checkOverridable(fields, snap) {
   }
 }
 
-/** How stale the snapshot is, in words. */
-export function age(generatedAt) {
+// Beyond a day the snapshot has probably missed a team-news cycle; beyond
+// three it has probably missed a whole gameweek's results. Neither is fatal
+// -- the board still runs -- but both are worth the viewer noticing rather
+// than reading the same muted grey text whether the number is 10m or 10d.
+const STALE_WARN_HOURS = 24;
+const STALE_BAD_HOURS = 72;
+
+/** How stale the snapshot is: a label plus a severity for styling it. */
+export function staleness(generatedAt) {
   const then = new Date(generatedAt);
-  if (isNaN(then)) return "unknown age";
+  if (isNaN(then)) return { label: "unknown age", level: "bad" };
   const minutes = Math.round((Date.now() - then) / 60000);
-  if (minutes < 2) return "just now";
-  if (minutes < 90) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 36) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
+  const hours = minutes / 60;
+  const level = hours >= STALE_BAD_HOURS ? "bad" : hours >= STALE_WARN_HOURS ? "warn" : "fresh";
+  const label = minutes < 2 ? "just now"
+    : minutes < 90 ? `${minutes} min ago`
+    : hours < 36 ? `${Math.round(hours)}h ago`
+    : `${Math.round(hours / 24)}d ago`;
+  return { label, level };
 }
