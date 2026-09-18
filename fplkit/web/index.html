@@ -884,6 +884,11 @@ body.noserver .needs-server { display: none !important; }
   border-bottom: 1px solid var(--border);
 }
 .chiptable td, .movetable td { padding: 6px 5px; border-bottom: 1px solid var(--border); }
+table.seasons { border-collapse: collapse; margin: 6px 0 2px; font-size: 12px;
+  font-variant-numeric: tabular-nums; }
+table.seasons th { text-align: right; font-weight: 500; color: var(--muted); padding: 2px 8px 2px 0; }
+table.seasons td { text-align: right; padding: 2px 8px 2px 0; border-top: 1px solid var(--border); }
+table.seasons td:first-child, table.seasons th:first-child { text-align: left; color: var(--muted); }
 .chiptable.path td:nth-child(n+5) { text-align: right; font-variant-numeric: tabular-nums; }
 .chiptable.path tbody tr { cursor: pointer; }
 .chiptable.path tbody tr:hover { background: var(--hover); }
@@ -1175,6 +1180,13 @@ chance of dropping out, and the chip planner halves a gameweek's weight every 6.
   <div class="ctl">
     <label for="recency">Recent-form half-life <span class="val" id="recval">off</span> <span class="needs">sync</span></label>
     <input type="range" id="recency" min="0" max="38" step="1" value="0">
+  </div>
+  <div class="ctl">
+    <label for="lastseason" title="How much last season's record counts once this season is under
+way. 1: a minute of it is worth a minute of this season's, fading to nothing by gameweek 38.
+0: this season only. Who has been starting lately is a separate, calibrated tilt and is not
+affected.">Last season's weight <span class="val" id="lsval">1.0</span> <span class="needs">sync</span></label>
+    <input type="range" id="lastseason" min="0" max="1" step="0.05" value="1">
   </div>
   <div class="ctl">
     <label for="formation">Force formation</label>
@@ -1628,6 +1640,7 @@ every one the moment it has it; raising it makes banking more attractive.">Trans
   <div class="postags" id="edPosTags"></div>
   <div class="editpts" id="edPts"></div>
   <div class="why" id="edWhy"></div>
+  <div id="edSeasons"></div>
 
   <div class="exsec">
     <div class="exhead">
@@ -1974,6 +1987,11 @@ $("#recency").addEventListener("input", (e) => {
   $("#recency").classList.toggle("needsync", +e.target.value !== (S.meta?.recency || 0));
 });
 $("#recency").addEventListener("change", () => syncSnapshot(false));
+$("#lastseason").addEventListener("input", (e) => {
+  $("#lsval").textContent = (+e.target.value).toFixed(2);
+  $("#lastseason").classList.toggle("needsync", +e.target.value !== (S.meta?.previous ?? 1));
+});
+$("#lastseason").addEventListener("change", () => syncSnapshot(false));
 $("#startgw").addEventListener("change", () => syncSnapshot(false));
 
 $("#constraintChips").addEventListener("click", (e) => {

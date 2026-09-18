@@ -8,6 +8,7 @@ Endpoints used:
   entry/{id}/history/                  -> a manager's chips used and past-season totals
   entry/{id}/transfers/                -> a manager's full transfer log
   element-summary/{id}/                -> one player's per-gameweek rows this season
+  event/{gw}/live/                     -> every player's stats for one gameweek
 
 The entry/* endpoints are public and need no login -- a manager's team id
 (visible in the URL of their own "Points" page) is all that identifies them.
@@ -156,6 +157,45 @@ def season_start_year(force_refresh: bool = False) -> int:
     season" and "last season" in the model is relative to."""
     first = bootstrap(force_refresh)["events"][0]
     return int(str(first["deadline_time"])[:4])
+
+
+def event_live(gw: int, force_refresh: bool = False) -> dict:
+    """Every player's stats for one gameweek, in one call. A finished
+    gameweek's rows never change, so they are cached for the day rather than
+    the three hours the rest of the API gets."""
+    return _get(f"event/{gw}/live/", force_refresh, ttl=24 * 3600)
+
+
+def gameweek_history(through_gw: int, force_refresh: bool = False) -> pd.DataFrame:
+    """One row per player per finished gameweek this season, keyed by the
+    stable `code` -- the same shape history.gameweek_history() reads from the
+    community archive, from the API itself, so it can never be behind it.
+
+    A row is kept only for players whose club actually played that gameweek:
+    the endpoint lists everyone every week, and a blank week is not a benching.
+    """
+    from .history import KEEP  # the columns the model reads
+    elements = bootstrap(force_refresh)["elements"]
+    code = {int(e["id"]): int(e["code"]) for e in elements}
+    club = {int(e["id"]): int(e["team"]) for e in elements}
+    played = fixtures(force_refresh)
+    played = played[played["finished"].fillna(False).astype(bool)]
+    active = {int(gw): set(pd.concat([rows["team_h"], rows["team_a"]]).astype(int))
+              for gw, rows in played.groupby("gw")}
+
+    rows = []
+    for gw in range(1, int(through_gw) + 1):
+        for element in event_live(gw, force_refresh).get("elements", []):
+            fpl_id = int(element["id"])
+            if fpl_id not in code or club[fpl_id] not in active.get(gw, set()):
+                continue
+            stats = element.get("stats", {})
+            rows.append({"code": code[fpl_id], "gw": gw,
+                         **{k: stats.get(k, 0.0) for k in KEEP if k not in ("code", "gw")}})
+    df = pd.DataFrame(rows, columns=KEEP)
+    for column in KEEP:
+        df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0.0)
+    return df
 
 
 def element_summary(element_id: int, force_refresh: bool = False) -> dict:

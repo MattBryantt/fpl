@@ -610,7 +610,10 @@ who took a place in March. Most players are one of those at least once.
 
 So the model now carries two numbers and blends them by *how far ahead it is
 looking*: the long-run rate, and a recency-weighted one (half-life four
-gameweeks) from the per-gameweek archive.
+gameweeks) from this season's per-gameweek rows. Three weighted recent matches
+are enough for the recent rate to be believed outright, which in September is
+what lets this season's starts overtake a long-run rate that is still mostly
+last season's.
 
 **How much the blend should count was measured, not chosen.** Scored out of
 sample on 2025-26 — 724 outfield players, ~21,900 predictions, each one built
@@ -1236,10 +1239,24 @@ defensive-contribution rate goes from three-quarters positional average to
 three-quarters his own record.
 
 Which seasons those are comes from the FPL API's own calendar (gameweek 1's
-deadline), so nothing needs editing at a rollover. The per-gameweek archive is
-read against the gameweek just finished rather than its own last row, and
-dropped when it is more than two gameweeks behind: a mirror three weeks stale is
-not "lately". `plan`, `snapshot` and the `/data` page say when a source fell back.
+deadline), so nothing needs editing at a rollover. `plan`, `snapshot` and the
+`/data` page say when a source fell back.
+
+**How much last season counts is a knob**, because the fade above is a judgement
+rather than a measurement and the right answer depends on how much a squad
+changed over the summer. `--last-season W` on the CLI and *Last season's weight*
+in the board's Settings scale it, from 1 (a minute of last season is worth a
+minute of this one, fading to nothing by gameweek 38) down to 0 (this season
+only, once it has started). It changes the underlying rates, so like the
+recent-form control it takes a Sync to apply. Who has been starting lately is a
+separate, calibrated tilt and is not touched by it. The player editor shows the
+two seasons side by side, unshrunk, with the weight the model gave the old one.
+
+**In season the per-gameweek rows come from the FPL API itself**, one call per
+gameweek to `event/{gw}/live/`, so who has been starting lately, how long his
+shifts run and the optional form tilt can never lag the calendar. The community
+archive is read only preseason, when the question is how last season ended, and
+is dropped if it is more than two gameweeks behind.
 
 ## Form and players who changed club
 

@@ -202,10 +202,13 @@ START_FORM_DECAY = 0.828    # ...falling by this much per gameweek of lead
 # is far below his long-run one.
 MAX_START_FORM_WEIGHT = 1.25
 # How many weighted recent matches it takes before the recent rate is believed
-# over the long-run one. Small, because the evidence is already recency-weighted
-# and a player with three recent matches behind him has genuinely told you
-# something -- but not zero, or one substitute appearance in a blank fortnight
-# would rewrite a season.
+# outright over the long-run one -- a linear ramp, so three recent matches
+# are the whole answer and one is a third of it. Small, because the evidence
+# is already recency-weighted and a player with three recent matches behind
+# him has genuinely told you something -- but not zero, or one substitute
+# appearance in a blank fortnight would rewrite a season. In season the
+# long-run rate is mostly last season's, so this is what lets this season's
+# starts take over inside a month rather than by Christmas.
 START_FORM_PRIOR_MATCHES = 3.0
 
 # Shift length is a steadier trait than start probability -- a manager's team
@@ -314,6 +317,12 @@ class SeasonBasis:
     understat_matches: float  # matches behind the completed Understat season
     preseason: bool           # True while the totals still describe last season
     understat_current_matches: float = 0.0  # ...and behind the season under way
+    # How much a minute of last season is worth against one of this season,
+    # on top of the calendar fade: 1 counts it fully, 0 ignores last season
+    # once this one has started. The knob behind `--last-season` and the
+    # board's slider, because the fade is a judgement rather than a
+    # measurement and the right answer differs by how much a squad changed.
+    previous_scale: float = 1.0
 
     @property
     def fpl_matches(self) -> float:
@@ -340,7 +349,8 @@ class SeasonBasis:
         and the completed one is all there is."""
         if self.preseason:
             return 0.0
-        return float(np.clip(1.0 - self.fpl_matches / PREVIOUS_SEASON_MATCHES, 0.0, 1.0))
+        fade = float(np.clip(1.0 - self.fpl_matches / PREVIOUS_SEASON_MATCHES, 0.0, 1.0))
+        return fade * float(np.clip(self.previous_scale, 0.0, 1.0))
 
     @property
     def understat_weight(self) -> float:
@@ -369,7 +379,8 @@ def _understat_matches(us_stats: pd.DataFrame | None) -> float:
 
 def season_basis(all_fixtures: pd.DataFrame, id_to_name: dict[int, str],
                  us_stats: pd.DataFrame,
-                 us_current: pd.DataFrame | None = None) -> SeasonBasis:
+                 us_current: pd.DataFrame | None = None,
+                 previous_scale: float = 1.0) -> SeasonBasis:
     """Read the season's progress off the fixture list rather than assuming it.
 
     Before a ball is kicked the FPL totals in hand are last season's completed
@@ -389,10 +400,10 @@ def season_basis(all_fixtures: pd.DataFrame, id_to_name: dict[int, str],
         return SeasonBasis(
             club_matches=pd.Series(float(MATCHES_PER_SEASON), index=played.index),
             understat_matches=us_matches, preseason=True,
-            understat_current_matches=current)
+            understat_current_matches=current, previous_scale=previous_scale)
     return SeasonBasis(club_matches=played.clip(lower=1.0),
                        understat_matches=us_matches, preseason=False,
-                       understat_current_matches=current)
+                       understat_current_matches=current, previous_scale=previous_scale)
 
 
 @dataclass
@@ -892,7 +903,7 @@ def minutes_model(players: pd.DataFrame,
             df.get("recent_matches", pd.Series(0.0, index=df.index)), errors="coerce")
         recent = recent.fillna(long_run)
         recent_matches = recent_matches.fillna(0.0).clip(lower=0.0)
-        believed = recent_matches / (recent_matches + START_FORM_PRIOR_MATCHES)
+        believed = (recent_matches / START_FORM_PRIOR_MATCHES).clip(0.0, 1.0)
         recent = long_run + believed * (recent - long_run)
         tilted = long_run + start_form_weight(horizon) * (recent - long_run)
 
@@ -2054,8 +2065,12 @@ def project(horizon: int = 5, start_gw: int | None = None,
             overrides: pd.DataFrame | None = None,
             recency_half_life: float | None = None,
             force_refresh: bool = False,
-            calibrate_to_odds: bool = True) -> Projection:
-    """Run the full pipeline and return projected points over the horizon."""
+            calibrate_to_odds: bool = True,
+            previous_weight: float = 1.0) -> Projection:
+    """Run the full pipeline and return projected points over the horizon.
+
+    `previous_weight` scales what last season's evidence counts for once this
+    season is under way -- see SeasonBasis.previous_scale."""
     fpl_players = fpl_api.players(force_refresh)
     fpl_teams = fpl_api.teams(force_refresh)
     all_fixtures = fpl_api.fixtures(force_refresh)
@@ -2075,7 +2090,7 @@ def project(horizon: int = 5, start_gw: int | None = None,
     id_to_name = dict(zip(fpl_teams["team_id"], fpl_teams["name"]))
     # How far into the season the totals in hand actually are. Everything that
     # divides a season total by something reads this rather than assuming 38.
-    basis = season_basis(all_fixtures, id_to_name, us_stats, us_current)
+    basis = season_basis(all_fixtures, id_to_name, us_stats, us_current, previous_weight)
     start_gw = start_gw or fpl_api.next_gameweek(force_refresh)
 
     # Clubs that were relegated map to nothing and are simply dropped.
@@ -2102,19 +2117,24 @@ def project(horizon: int = 5, start_gw: int | None = None,
             notes.append("last season's archived totals were unavailable; rates "
                          "rest on this season's alone")
 
-    # The per-gameweek archive, fetched once and read for two different things.
-    # It is third-party and can be unavailable or behind, so both readings
-    # degrade to the season-long behaviour rather than taking the projection
-    # down. In season it is read against the gameweek just finished, not its
-    # own last row: a mirror three weeks behind is not "lately".
-    gw_history = history.gameweek_history(force_refresh=force_refresh)
+    # Per-gameweek rows, read for who has been starting lately, how long his
+    # shifts are, and the optional form tilt. In season they come from the
+    # API's own event/{gw}/live endpoint, which cannot lag the calendar;
+    # preseason, when the question is how last season ended, from the
+    # community archive of it. Either can be unavailable, and every reading
+    # then degrades to the season-long behaviour rather than taking the
+    # projection down.
     latest = None if basis.preseason else start_gw - 1
-    if len(gw_history) and latest is not None \
-            and int(gw_history["gw"].max()) < latest - history.ARCHIVE_MAX_LAG:
-        notes.append(f"per-gameweek archive stops at GW{int(gw_history['gw'].max())}, "
-                     f"GW{latest} has finished: recent-form tilt off")
-    elif not len(gw_history):
-        notes.append("per-gameweek archive unavailable: recent-form tilt off")
+    if basis.preseason:
+        gw_history = history.gameweek_history(force_refresh=force_refresh)
+    else:
+        try:
+            gw_history = fpl_api.gameweek_history(latest, force_refresh)
+        except Exception as error:
+            gw_history = pd.DataFrame(columns=history.KEEP)
+            notes.append(f"per-gameweek stats unavailable ({error}): recent-form tilt off")
+    if not len(gw_history) and not notes:
+        notes.append("per-gameweek history unavailable: recent-form tilt off")
 
     # Optional: tilt rates toward how players have been performing lately.
     if recency_half_life:

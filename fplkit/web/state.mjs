@@ -263,9 +263,10 @@ globalThis.board = S;
    Squads, drafts and edits are stored separately above and are never touched
    from here: "Restore defaults" resets knobs, not work. */
 export const SETTING_IDS = ["horizon", "gwdecay", "budget", "ownw", "minstart",
-                     "maxclub", "formation", "recency", "freetransfers"];
+                     "maxclub", "formation", "recency", "lastseason", "freetransfers"];
 export const DEFAULT_SETTINGS = { horizon: "8", gwdecay: "0.79", budget: "100", ownw: "0",
-                           minstart: "0.3", maxclub: "3", formation: "", freetransfers: "1" };
+                           minstart: "0.3", maxclub: "3", formation: "", freetransfers: "1",
+                           lastseason: "1" };
 export const DEFAULT_BENCH = { GKP: 0.03, "1": 0.24, "2": 0.10, "3": 0.04 };
 export const DEFAULT_CHIP_HOLD = { bboost: 14, "3xc": 10, freehit: 12 };
 export const DEFAULT_FT_VALUE = 1.5;

@@ -138,6 +138,7 @@ def _run_projection(args) -> Projection:
             start_gw=args.start_gw,
             overrides=_load_overrides(args.overrides),
             recency_half_life=getattr(args, "recency", 0.0) or None,
+            previous_weight=getattr(args, "last_season", 1.0),
             force_refresh=args.refresh,
             calibrate_to_odds=not getattr(args, "no_odds_calibration", False),
         )
@@ -919,7 +920,7 @@ def cmd_snapshot(args) -> None:
     with console.status("[cyan]projecting and freezing…"):
         path, size = snapshot_module.write(
             path=args.out, horizon=args.horizon, start_gw=args.start_gw,
-            recency=args.recency, force_refresh=args.refresh)
+            recency=args.recency, previous=args.last_season, force_refresh=args.refresh)
 
     payload = json.loads(Path(path).read_text())
     meta = payload["meta"]
@@ -1041,6 +1042,11 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--no-odds-calibration", action="store_true",
                          help="don't nudge an unpriced fixture's xG ratings toward "
                               "what this club's other, priced fixtures say about it")
+        sub.add_argument("--last-season", type=float, default=1.0, metavar="W",
+                         help="how much last season's evidence counts once this "
+                              "season is under way, 0-1 (default 1: a minute of "
+                              "it is worth a minute of this season's, fading to "
+                              "nothing by gameweek 38; 0 = this season only)")
         sub.add_argument("--recency", type=float, default=0.0, metavar="N",
                          help="weight recent matches above early-season ones. "
                               "N is the half-life in gameweeks (10 is a good "
@@ -1249,6 +1255,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help=f"gameweeks to freeze (default {SNAPSHOT_HORIZON}); the "
                            "board can show fewer but never more")
     snap.add_argument("--start-gw", type=int, default=None)
+    snap.add_argument("--last-season", type=float, default=1.0, metavar="W",
+                      help="weight on last season's evidence, 0-1 (see plan --last-season)")
     snap.add_argument("--recency", type=float, default=0.0, metavar="N",
                       help="recent-form half-life. Unlike horizon and half-life "
                            "this cannot be changed after the fact, because it "

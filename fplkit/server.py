@@ -122,15 +122,17 @@ DRAFTS_PATH = OUT_DIR / "drafts.json"
 
 # Projections are expensive (a couple of seconds) and pure, so they are cached
 # for the life of the process. The UI changes horizon and half-life freely.
-_projection_cache: dict[tuple[int | None, int, float], Any] = {}
-_pool_cache: dict[tuple[int | None, int, float | None, float], dict] = {}
+_projection_cache: dict[tuple, Any] = {}
+_pool_cache: dict[tuple, dict] = {}
 
 
-def _get_projection(start_gw: int | None, horizon: int, recency: float = 0.0):
-    key = (start_gw, horizon, recency)
+def _get_projection(start_gw: int | None, horizon: int, recency: float = 0.0,
+                    previous: float = 1.0):
+    key = (start_gw, horizon, recency, previous)
     if key not in _projection_cache:
         _projection_cache[key] = project(horizon=horizon, start_gw=start_gw,
-                                         recency_half_life=recency or None)
+                                         recency_half_life=recency or None,
+                                         previous_weight=previous)
     return _projection_cache[key]
 
 
@@ -151,12 +153,12 @@ def _clean(value: Any) -> Any:
 
 
 def _build_pool(start_gw: int | None, horizon: int, half_life: float | None,
-                recency: float = 0.0) -> dict:
-    key = (start_gw, horizon, half_life, recency)
+                recency: float = 0.0, previous: float = 1.0) -> dict:
+    key = (start_gw, horizon, half_life, recency, previous)
     if key in _pool_cache:
         return _pool_cache[key]
 
-    projection = _get_projection(start_gw, horizon, recency)
+    projection = _get_projection(start_gw, horizon, recency, previous)
     players = apply_plan_weighting(projection, half_life)
     players = price_forecast(players, len(projection.horizon), fpl_api.total_managers())
     raw, weighted = weighted_points(projection, half_life)
@@ -326,6 +328,7 @@ class PoolRequest(BaseModel):
     half_life: Annotated[float, Field(gt=0)] | None = DEFAULT_HALF_LIFE
     start_gw: int | None = None
     recency: float = Field(0.0, ge=0, le=38)
+    previous: float = Field(1.0, ge=0, le=1)
 
 
 class OptimiseRequest(PoolRequest):
@@ -370,11 +373,12 @@ def index() -> FileResponse:
 
 @app.get("/api/pool")
 def pool(horizon: int = 8, half_life: float | None = DEFAULT_HALF_LIFE,
-         start_gw: int | None = None, recency: float = 0.0) -> dict:
+         start_gw: int | None = None, recency: float = 0.0,
+         previous: float = 1.0) -> dict:
     request = PoolRequest(horizon=horizon, half_life=half_life,
-                          start_gw=start_gw, recency=recency)
+                          start_gw=start_gw, recency=recency, previous=previous)
     return _build_pool(request.start_gw, request.horizon, request.half_life,
-                       request.recency)
+                       request.recency, request.previous)
 
 
 @app.get("/api/live/{team_id}")
@@ -393,7 +397,8 @@ def live_team(team_id: int, gw: int | None = None) -> dict:
 @app.post("/api/edit")
 def edit_player(request: EditRequest) -> dict:
     """Recompute one player after changing his inputs."""
-    projection = _get_projection(request.start_gw, request.horizon, request.recency)
+    projection = _get_projection(request.start_gw, request.horizon, request.recency,
+                                 request.previous)
     _check_overridable(request.overrides)
     try:
         result = reproject_player(projection, request.fpl_id, request.overrides)
@@ -705,7 +710,8 @@ def ask(request: AskRequest) -> dict:
     it is handed is a good way to produce a confident explanation of numbers the
     model never produced.
     """
-    projection = _get_projection(request.start_gw, request.horizon, request.recency)
+    projection = _get_projection(request.start_gw, request.horizon, request.recency,
+                                 request.previous)
     dossier = _player_dossier(projection, request.fpl_id, request.half_life,
                               request.edits)
 
@@ -923,6 +929,7 @@ def snapshot_file() -> FileResponse:
 
 class SyncRequest(BaseModel):
     recency: float = Field(0.0, ge=0, le=38)
+    previous: float = Field(1.0, ge=0, le=1)
     start_gw: int | None = None
     refresh: bool = False
 
@@ -938,8 +945,8 @@ def rebuild_snapshot(request: SyncRequest) -> dict:
         cache.clear()
     _projection_cache.clear()
     _pool_cache.clear()
-    path, size = snapshot.write(recency=request.recency, start_gw=request.start_gw,
-                                force_refresh=request.refresh)
+    path, size = snapshot.write(recency=request.recency, previous=request.previous,
+                                start_gw=request.start_gw, force_refresh=request.refresh)
     payload = json.loads(path.read_text())
     return {"path": str(path), "bytes": size,
             "generated_at": payload["generated_at"], "meta": payload["meta"]}
@@ -1106,7 +1113,8 @@ def delete_draft(name: str) -> dict:
 @app.post("/api/optimise")
 def optimise_squad(request: OptimiseRequest) -> dict:
     """Solve the MILP and return the chosen fifteen."""
-    projection = _get_projection(request.start_gw, request.horizon, request.recency)
+    projection = _get_projection(request.start_gw, request.horizon, request.recency,
+                                 request.previous)
     for fields in request.edits.values():
         _check_overridable(fields)
     players = _apply_edits(projection, request.half_life, request.edits)

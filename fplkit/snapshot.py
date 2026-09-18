@@ -178,6 +178,55 @@ def _num(value: Any, default: float | None = 0.0, dp: int = DISPLAY_DP) -> Any:
     return round(number, dp)
 
 
+def _per90(total: Any, minutes: Any) -> float | None:
+    minutes = _num(minutes, 0.0)
+    return None if not minutes else _num(_num(total, 0.0) / minutes * 90.0, None, dp=3)
+
+
+def _seasons(player: dict, basis: Any) -> dict[str, Any]:
+    """What he actually did, this season and last, side by side and unshrunk.
+
+    The rates the model scores with pool the two (see model.PREVIOUS_SEASON_
+    MATCHES); these are the two halves before pooling, so the editor can show
+    "last season 0.45 npxG/90, this season 0.71" next to the number the
+    slider opens on. Preseason the FPL totals in hand *are* last season's,
+    so `now` is empty and `prev` is read from them.
+    """
+    understat = "npxG" if _num(player.get("us_minutes"), 0.0) > 0 else None
+    def block(minutes, starts, matches, npxg, xa, us_minutes, dc, saves, bonus):
+        minutes = _num(minutes, 0.0)
+        return None if minutes <= 0 and _num(matches, 0.0) <= 0 else {
+            "minutes": _num(minutes, dp=0), "starts": _num(starts, dp=0),
+            "matches": _num(matches, dp=0),
+            "npxg_per90": _per90(npxg, us_minutes), "xa_per90": _per90(xa, us_minutes),
+            "dc_per90": _per90(dc, minutes), "saves_per90": _per90(saves, minutes),
+            "bonus_per90": _per90(bonus, minutes),
+        }
+    last = block(player.get("prev_minutes"), player.get("prev_starts"),
+                 player.get("prev_matches"), player.get("npxG"), player.get("xA"),
+                 player.get("us_minutes"), player.get("prev_defensive_contribution"),
+                 player.get("prev_saves"), player.get("prev_bonus"))
+    matches = (basis.club_matches.get(player.get("team"), 0.0)
+               if basis is not None and not basis.preseason else 0.0)
+    # This season's attacking rate is Understat's where it has him, else the
+    # FPL API's own xG less the penalty share, as attach_rates falls back.
+    us_now = _num(player.get("cur_us_minutes"), 0.0)
+    now = block(player.get("minutes"), player.get("starts"), matches,
+                player.get("cur_npxG") if us_now else
+                _num(player.get("expected_goals"), 0.0) * (1 - config.PENALTY_GOAL_SHARE),
+                player.get("cur_xA") if us_now else player.get("expected_assists"),
+                us_now or player.get("minutes"),
+                player.get("defensive_contribution"), player.get("saves"), player.get("bonus"))
+    if basis is not None and basis.preseason:
+        # The totals are last season's; `prev_*` never loaded.
+        last = block(player.get("minutes"), player.get("starts"), 38,
+                     player.get("npxG"), player.get("xA"), player.get("us_minutes"),
+                     player.get("defensive_contribution"), player.get("saves"),
+                     player.get("bonus"))
+        now = None
+    return {"now": now, "prev": last, "attack_source": understat and "understat" or "fpl"}
+
+
 def _teams(force_refresh: bool = False) -> dict[str, Any]:
     """Club name -> short name and FPL club code.
 
@@ -194,10 +243,12 @@ def _teams(force_refresh: bool = False) -> dict[str, Any]:
 
 
 def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
-          recency: float = 0.0, force_refresh: bool = False) -> dict:
+          recency: float = 0.0, previous: float = 1.0,
+          force_refresh: bool = False) -> dict:
     """Run the projection and reduce it to what the browser needs."""
     projection = project(horizon=horizon, start_gw=start_gw,
                          recency_half_life=recency or None,
+                         previous_weight=previous,
                          force_refresh=force_refresh)
 
     basis = projection.basis
@@ -273,6 +324,7 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
             "previous_club": str(player.get("previous_club", "") or ""),
             "status": str(player["status"]),
             "news": str(player["news"] or ""),
+            "seasons": _seasons(player, basis),
             "gw": per_gw,
             "cs": cs_gw,
             "opp": labels,
@@ -333,6 +385,11 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
             "start_gw": gameweeks[0],
             "horizon": len(gameweeks),
             "recency": recency,
+            # The last-season weight this was projected with, and what the
+            # calendar fade left of it -- the board's slider needs the first
+            # to know whether it is out of date, the editor the second.
+            "previous": previous,
+            "previous_weight": _num(basis.previous_weight if basis else None, None),
             "odds_coverage": round(projection.odds_coverage, 3),
             "odds_note": projection.odds_note,
             # Sources that fell back or were dropped on this build, in words.

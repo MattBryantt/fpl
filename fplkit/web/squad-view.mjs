@@ -145,6 +145,9 @@ export function renderControlValues() {
   const recency = +$("#recency").value;
   $("#recval").textContent = recency ? recency + " gw" : "off";
   $("#recency").classList.toggle("needsync", recency !== (S.meta?.recency || 0));
+  const lastSeason = +$("#lastseason").value;
+  $("#lsval").textContent = lastSeason.toFixed(2);
+  $("#lastseason").classList.toggle("needsync", lastSeason !== (S.meta?.previous ?? 1));
   renderBenchWeights();
   renderChipEconValues();
 }
@@ -288,6 +291,7 @@ export function restoreDefaults() {
   // Recency's default is whatever the loaded snapshot was projected with --
   // zeroing it would flag a sync the board does not actually need.
   $("#recency").value = String(S.meta?.recency || 0);
+  $("#lastseason").value = String(S.meta?.previous ?? 1);
   benchTouched = false;
   const bench = S.meta?.bench_slot_weights || DEFAULT_BENCH;
   for (const k of BENCH_KEYS) $(`#bw_${k}`).value = bench[k] ?? DEFAULT_BENCH[k];
@@ -1095,6 +1099,7 @@ export function renderFreshness() {
   el.innerHTML =
     `Snapshot <b>${label}</b> · frozen at GW${m.start_gw}, ${m.snapshot_horizon} gameweeks`
     + (m.recency ? ` · recency ${m.recency}gw` : "")
+    + (m.previous != null && m.previous !== 1 ? ` · last season ×${(+m.previous).toFixed(2)}` : "")
     // Silence here would be the trap: a device left on ?nopull=1 keeps looking
     // normal while quietly ignoring every change made anywhere else.
     + (SKIP_PULL ? ` · <b>not syncing down</b> (nopull=1)` : "")
@@ -1137,7 +1142,7 @@ export async function sync(refresh = false) {
   try {
     const res = await api("/api/snapshot", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ recency: +$("#recency").value,
+      body: JSON.stringify({ recency: +$("#recency").value, previous: +$("#lastseason").value,
                              start_gw: startGw(), refresh }),
     });
     if (!res.ok) {

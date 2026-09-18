@@ -366,6 +366,7 @@ export function derivePool(snap, edits, { horizon, halfLife, dropout = true, cal
       start_long_run: raw.start_long_run, start_recent: raw.start_recent,
       moved: raw.moved, previous_club: raw.previous_club,
       status: raw.status, news: raw.news,
+      seasons: raw.seasons || null,
       gw, opp: raw.opp.slice(0, count),
       p_play: pPlay,
       exp_minutes: expMinutes,

@@ -67,10 +67,12 @@ export function openEditor(id) {
   $("#edWho").textContent = `${p.full_name} · ${p.pos} · ${p.team} · £${p.price.toFixed(1)}m`
     + (p.moved ? ` · numbers recorded at ${p.previous_club}` : "");
   $("#edWhy").innerHTML = p.moved
-    ? `These rates were produced at <b>${p.previous_club}</b> and already carry a team-context
-       adjustment and a heavier prior. If you think the model still has him wrong, say so here.`
-    : `Rates are last season's, shrunk toward the positional average. An override replaces
-       that number outright — the model uses exactly what you type.`;
+    ? `Last season's half of these rates was produced at <b>${p.previous_club}</b> and carries a
+       team-context adjustment and a heavier prior. If you think the model still has him wrong,
+       say so here.`
+    : `Rates pool this season with last, then shrink toward the positional average. An override
+       replaces that number outright — the model uses exactly what you type.`;
+  $("#edSeasons").innerHTML = seasonsHTML(p);
   renderPosTags(id);
   expandedMatches.clear();
   renderEditorFields();
@@ -82,6 +84,34 @@ export function openEditor(id) {
   $("#drawer").classList.add("open");
   $("#scrim").classList.remove("hidden");
 }
+
+/* This season next to last, unshrunk, so the slider below can be read against
+   what he has actually done rather than against a number that already blends
+   the two. The weight column is what the model gave last season when it
+   pooled them -- the calendar fade times the Settings slider. */
+function seasonsHTML(p) {
+  const s = p.seasons;
+  if (!s || (!s.now && !s.prev)) return "";
+  const rows = [
+    ["starts", (b) => `${b.starts}/${b.matches}`],
+    ["minutes", (b) => `${b.minutes}`],
+    ["npxG/90", (b) => num(b.npxg_per90)],
+    ["xA/90", (b) => num(b.xa_per90)],
+    ...(p.pos === "GKP" ? [["saves/90", (b) => num(b.saves_per90)]]
+                        : [["DC/90", (b) => num(b.dc_per90, 1)]]),
+    ["bonus/90", (b) => num(b.bonus_per90)],
+  ];
+  const cell = (b, f) => (b ? f(b) : "—");
+  const weight = S.meta?.previous_weight;
+  return `<table class="seasons"><thead><tr><th></th><th>this season</th>
+      <th>last season${weight != null ? ` <span class="orig">×${weight.toFixed(2)}</span>` : ""}</th>
+    </tr></thead><tbody>${rows.map(([label, f]) =>
+      `<tr><td>${label}</td><td>${cell(s.now, f)}</td><td>${cell(s.prev, f)}</td></tr>`).join("")}
+    </tbody></table>
+    <div class="orig" style="margin:2px 0 8px">attacking rates from ${s.attack_source === "understat"
+      ? "Understat (non-penalty)" : "FPL's own xG, less the penalty share"}; unshrunk</div>`;
+}
+const num = (v, dp = 2) => (v == null ? "—" : (+v).toFixed(dp));
 
 /* Detailed position, edited as a set of toggle chips rather than a slider --
    it is not a number the model reads, just a tag the board shows back next to
@@ -626,7 +656,7 @@ function renderField(box, f, base, store, idPrefix, onChange, hint = "", prevSea
       <input type="range" id="${rid}" min="${f.min}" max="${f.max}" step="${f.step}" value="${value}">
       <input type="number" id="${nid}" min="${f.min}" max="${f.max}" step="${f.step}" value="${(+value).toFixed(f.dp)}">
     </div>
-    ${showPrev ? `<div class="orig" style="margin-top:3px">last season (unweighted): ${prevSeason.toFixed(f.dp)}</div>` : ""}
+    ${showPrev ? `<div class="orig" style="margin-top:3px">both seasons pooled, before shrinkage: ${prevSeason.toFixed(f.dp)}</div>` : ""}
     ${f.help && idPrefix === "ed_" ? `<div class="orig" style="margin-top:3px">${f.help}</div>` : ""}`;
   box.appendChild(div);
 
