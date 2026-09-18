@@ -1147,7 +1147,7 @@ chance of dropping out, and the chip planner halves a gameweek's weight every 6.
   </div>
   <div class="ctl">
     <label for="budget">Budget <span class="val" id="budval">100.0</span></label>
-    <input type="range" id="budget" min="80" max="110" step="0.5" value="100">
+    <input type="range" id="budget" min="80" max="110" step="0.1" value="100">
   </div>
   <div class="ctl">
     <label for="ownw">Template tilt <span class="val" id="ownval">0.00</span></label>
@@ -1187,7 +1187,8 @@ chance of dropping out, and the chip planner halves a gameweek's weight every 6.
   </div>
   <div class="ctl">
     <label for="freetransfers" title="How many free transfers you have banked for the first
-gameweek of the transfer-and-chip plan.">Free transfers</label>
+gameweek of the transfer-and-chip plan. A from-scratch (wildcard) plan carries them over
+its first week rather than spending them.">Free transfers</label>
     <select id="freetransfers">
       <option value="0">0</option><option value="1" selected>1</option>
       <option value="2">2</option><option value="3">3</option>
@@ -1494,7 +1495,9 @@ that same club's other, priced fixtures; off, it is the xG ratings with no such 
     <div>
       <h2 style="margin:0 0 3px">Transfers &amp; chips</h2>
       <div class="sub">What each chip is worth to a squad <b>built for it</b>. Every figure
-        here comes from a fifteen bought from scratch over the whole horizon, on your budget,
+        here comes from a fifteen bought from scratch over the whole horizon, on your budget
+        &mdash; which is also the wildcard draft: after Sync the budget is what selling your
+        fifteen raises plus the bank, and your banked free transfers carry over the rebuild &mdash;
         knowing which chip is coming and when — because that is the decision: a bench boost
         is only worth playing if you spend on a bench worth fielding, and pricing it against
         the cheap bench you happen to own answers a different question. Each chip is scored

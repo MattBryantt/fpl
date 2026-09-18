@@ -39,7 +39,6 @@ from .config import (
     ROOT,
     SQUAD_BY_POS,
     XI_MAX_BY_POS,
-    UNDERSTAT_SEASON,
     XI_MIN_BY_POS,
 )
 from .model import OVERRIDABLE, apply_overrides, project, reproject_player
@@ -970,6 +969,7 @@ def provenance(horizon: int = 8) -> dict:
             "bytes": sum(e["bytes"] for e in entries),
         }
 
+    year = fpl_api.season_start_year()
     by_source = players["rate_source"].value_counts().to_dict() if "rate_source" in players else {}
     by_confidence = players["confidence"].value_counts().to_dict() if "confidence" in players else {}
 
@@ -989,10 +989,11 @@ def provenance(horizon: int = 8) -> dict:
             },
             "understat": {
                 "base": "https://understat.com/main/getPlayersStats/",
-                "endpoints": ["POST league=EPL&season=" + str(UNDERSTAT_SEASON)],
+                "endpoints": [f"POST league=EPL&season={season}"
+                              for season in (year - 1, year)],
                 "ttl_hours": 24,
                 "auth": "none",
-                "rows": int(len(understat.player_stats())),
+                "rows": int(len(understat.player_stats(str(year - 1)))),
                 "matched": matched,
                 "unmatched": int(len(players) - matched),
                 "cache": cache_state("understat"),
@@ -1013,13 +1014,16 @@ def provenance(horizon: int = 8) -> dict:
         },
         "history": {
             "base": history.BASE,
-            "endpoints": ["2025-26/gws/merged_gw.csv", "2025-26/players_raw.csv"],
+            "endpoints": [f"{history.current_season()}/gws/merged_gw.csv",
+                          f"{history.season_folder(year - 1)}/players_raw.csv",
+                          f"{history.season_folder(year - 1)}/teams.csv"],
             "ttl_hours": history.TTL // 3600,
             "auth": "none",
             "third_party": True,
             "rows": int(len(history.gameweek_history())),
             "cache": cache_state("history"),
         },
+        "notes": list(projection.notes),
         "rate_source": {str(k): int(v) for k, v in by_source.items()},
         "confidence": {str(k): int(v) for k, v in by_confidence.items()},
         "movers": int(players["moved_club"].sum()) if "moved_club" in players else 0,

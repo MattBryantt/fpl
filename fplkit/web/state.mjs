@@ -17,7 +17,7 @@ export const SVGNS = "http://www.w3.org/2000/svg";
    out/overrides.csv are still written on sync, so the CLI keeps working from
    the same squads -- but this is the copy that is always there. */
 export const STORE = { drafts: "fpl.drafts", edits: "fpl.edits", editsAt: "fpl.editsAt",
-                editsHistory: "fpl.edits.history", squad: "fpl.squad",
+                editsHistory: "fpl.edits.history", squad: "fpl.squad", purchase: "fpl.purchase",
                 settings: "fpl.settings", posTags: "fpl.postags",
                 lineupOrder: "fpl.lineuporder", fixtureEdits: "fpl.fixtureedits" };
 
@@ -66,12 +66,24 @@ export const saveEdits = () => {
  *  code-keyed, since fpl_id is reassigned every season and code is not; this
  *  is the boundary that translates between the two. */
 export const squadCodes = () => S.squad.map((id) => S.byId.get(id)?.code).filter((c) => c != null);
-export const saveSquad = () => { saveLocal(STORE.squad, squadCodes()); markSynced(); };
+/** What each owned player was bought for, keyed the same way as the squad is
+ *  persisted. Pruned to the squad on every save: a player you drop takes his
+ *  purchase price with him, so if he comes back he is bought at today's price. */
+export const purchaseCodes = () => Object.fromEntries(S.squad
+  .filter((id) => S.purchase[id] != null && S.byId.get(id)?.code != null)
+  .map((id) => [S.byId.get(id).code, S.purchase[id]]));
+export const saveSquad = () => {
+  for (const id of Object.keys(S.purchase)) if (!S.squad.includes(+id)) delete S.purchase[id];
+  saveLocal(STORE.squad, squadCodes()); saveLocal(STORE.purchase, purchaseCodes()); markSynced();
+};
 /** Resolve a saved/synced array of player `code`s back to this season's
  *  fpl_ids, dropping (rather than crashing on) anything no longer in the
  *  pool -- a code with no match this season, not merely an id that moved. */
 export const resolveSquadCodes = (codes) =>
   (codes || []).map((code) => S.byCode.get(code)).filter((id) => id != null);
+export const resolvePurchaseCodes = (byCode) => Object.fromEntries(
+  Object.entries(byCode || {}).map(([code, price]) => [S.byCode.get(+code), +price])
+    .filter(([id, price]) => id != null && Number.isFinite(price)));
 
 /** One plan's worth of chip strategy -- see S.chipPlan for what each field
  *  means. A function rather than a shared literal, so the two sides start
@@ -106,6 +118,9 @@ export const S = {
   snapshot: null,
   players: [], byId: new Map(), byCode: new Map(), gameweeks: [], meta: null,
   squad: [], optimal: [], optimalPts: null, optimalCost: null, optimalBench: {},
+  // fpl_id -> price paid, for the players in `squad` it is known for. Absent
+  // means bought at today's price, so sells at it -- see squad-view's sellPrice.
+  purchase: {},
   optimalState: "idle", optimalError: "",
   pos: "ALL", search: "", sort: "xpts_plan", dir: -1,
   edits: loadLocal(STORE.edits, {}), editsAt: loadLocal(STORE.editsAt, {}),
@@ -205,6 +220,7 @@ export const S = {
 // Held as raw codes until the snapshot loads and S.byCode exists to resolve
 // them against -- see rebuildPool(), which consumes and clears this once.
 S.squadCodesPending = loadLocal(STORE.squad, []);
+S.purchaseCodesPending = loadLocal(STORE.purchase, {});
 
 /* Overrides saved before per-id timestamps existed load with nothing in
    editsAt, and mergeEdits reads a missing entry as 0 -- which loses every

@@ -73,7 +73,7 @@
    *  drifting from the rule it was supposed to mirror. */
   function buildLp(pool, opt) {
     const {
-      gameweeks, budget, squad = [], bank = 0, freeTransfers = 1,
+      gameweeks, budget, squad = [], bank = 0, freeTransfers = 1, sellPrices = {},
       chips = {}, captainPool = [], slotWeight, squadByPos, xiMinByPos, xiMaxByPos,
       squadSize, xiSize, maxPerClub, include = [], exclude = [],
       halfLife, holdValue, friction, ftWorth, maxFreeTransfers,
@@ -89,6 +89,9 @@
     if (missing.length) throw new Error(`owned players are not in the pool: ${missing.join(", ")}`);
     const ownedSet = new Set(owned);
     const preseason = owned.length === 0;
+    // What a player raises when sold: his purchase price plus half the rise,
+    // where that is known (see live.mjs's sellPrice), else his listed price.
+    const sellOf = (p) => sellPrices[p.id] ?? p.price;
 
     const first = gameweeks[0], last = gameweeks[gameweeks.length - 1];
     const terminal = last + 1;
@@ -150,11 +153,10 @@
           addCon(`fhclub_${ti}_${gw}`, [...members.map((p) => T(1, FH(p.id, gw))), T(-maxPerClub, flag)], "<=", 0);
         });
         // Affordable out of what selling the real squad that week would
-        // raise, plus the bank -- sell price is always current price here
-        // (this tool has never tracked what a player was bought for).
+        // raise, plus the bank.
         const afford = [
           ...pool.map((p) => T(p.price, FH(p.id, gw))),
-          ...pool.map((p) => T(-p.price, SQ(p.id, gw))),
+          ...pool.map((p) => T(-sellOf(p), SQ(p.id, gw))),
           T(-1, BANK(gw)),
         ];
         addCon(`fhafford_${gw}`, afford, "<=", 0);
@@ -272,7 +274,7 @@
 
     // --- money -------------------------------------------------------------
     gameweeks.forEach((gw, step) => {
-      const raised = pool.map((p) => T(p.price, SO(p.id, gw)));
+      const raised = pool.map((p) => T(sellOf(p), SO(p.id, gw)));
       const outlay = pool.map((p) => T(-p.price, BU(p.id, gw)));
       if (preseason && step === 0) {
         addCon(`bank_${gw}`,
@@ -300,13 +302,16 @@
       bin.add(OVER(gw)); bin.add(UNDER(gw));
     }
 
-    addCon(`ftopen`, [T(1, FT(first))], "=", preseason ? 0 : freeTransfers);
+    // Opening on what is banked, whether or not there is a squad: a from-scratch
+    // first week is a wildcard (or the opening deadline) and carries them over.
+    addCon(`ftopen`, [T(1, FT(first))], "=", freeTransfers);
 
     gameweeks.forEach((gw, step) => {
       const nxt = step + 1 < gameweeks.length ? gameweeks[step + 1] : terminal;
       // raw = ft[gw] - spent[gw] + earned, earned = freeTransfersPerGw - freehit?
+      // A from-scratch first week earns none, like a free hit week.
       const rv = [T(1, FT(gw)), T(-1, SPENT(gw)), ...playedTerm("freehit", gw, -1)];
-      const rc = freeTransfersPerGw;
+      const rc = preseason && step === 0 ? 0 : freeTransfersPerGw;
 
       // raw >= (max+1) - bigM*(1-over)  ->  rv - bigM*over >= (max+1) - bigM - rc
       addCon(`ftover1_${gw}`, [...rv, T(-bigM, OVER(gw))], ">=", (maxFreeTransfers + 1) - bigM - rc);
@@ -376,8 +381,7 @@
     };
 
     let objConstant = 0;
-    const openingState = preseason ? 0 : freeTransfers;
-    const opening = ftWorthOf(openingState);
+    const opening = ftWorthOf(freeTransfers);
 
     gameweeks.forEach((gw, step) => {
       const dw = decay[gw];

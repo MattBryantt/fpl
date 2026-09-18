@@ -335,6 +335,8 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
             "recency": recency,
             "odds_coverage": round(projection.odds_coverage, 3),
             "odds_note": projection.odds_note,
+            # Sources that fell back or were dropped on this build, in words.
+            "notes": list(projection.notes),
             "priced_gws": priced,
             "total_managers": fpl_api.total_managers(),
             # How far into the season the totals behind this snapshot are. The

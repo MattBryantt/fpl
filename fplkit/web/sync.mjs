@@ -9,7 +9,8 @@
  * is called. */
 "use strict";
 import { $, S, STORE, loadLocal, saveLocal, SETTING_IDS, applyChipPlanSettings,
-         persistableChipPlan, squadCodes, resolveSquadCodes, saveSquad } from "/assets/state.mjs";
+         persistableChipPlan, squadCodes, resolveSquadCodes, saveSquad,
+         purchaseCodes, resolvePurchaseCodes } from "/assets/state.mjs";
 import { fetchLiveTeam } from "/assets/live.mjs";
 import {
   BENCH_KEYS, chipHoldValues, ftValueSetting,
@@ -267,7 +268,7 @@ export async function pushSyncState() {
   if (!pullSettled) return;
   const sending = JSON.stringify({
     updated_at: syncMeta().updated_at, drafts: S.drafts, edits: S.edits, editsAt: S.editsAt,
-    squad: squadCodes(), settings: syncableSettings(),
+    squad: squadCodes(), purchase: purchaseCodes(), settings: syncableSettings(),
   });
   syncPending = false;
   try {
@@ -406,10 +407,12 @@ async function attemptPull(ready) {
     S.editsAt = merged.at;
     // remote.squad is codes (see squadCodes()); S.squad stays fpl_id-keyed.
     S.squad = resolveSquadCodes(remote.squad);
+    S.purchase = resolvePurchaseCodes(remote.purchase);
     saveLocal(STORE.drafts, S.drafts);
     saveLocal(STORE.edits, S.edits);
     saveLocal(STORE.editsAt, S.editsAt);
     saveLocal(STORE.squad, squadCodes());
+    saveLocal(STORE.purchase, purchaseCodes());
     if (remote.settings) applySyncedSettings(remote.settings);
     setSyncMeta({ updated_at: remote.updated_at });
     await recomputeEdited(Object.keys(S.edits).map(Number), { sync: false });
@@ -436,7 +439,7 @@ addEventListener("pagehide", () => {
       method: "POST", keepalive: true, headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         updated_at: syncMeta().updated_at, drafts: S.drafts, edits: S.edits, editsAt: S.editsAt,
-        squad: squadCodes(), settings: syncableSettings(),
+        squad: squadCodes(), purchase: purchaseCodes(), settings: syncableSettings(),
       }),
     });
   } catch (_) { /* leaving anyway; localStorage already has it */ }
@@ -479,7 +482,7 @@ export async function loadMyTeam() {
     // via next_gameweek() - 1 for its own default), which is what a squad
     // saved for a gameweek that has not opened yet would otherwise 404 on.
     const gw = Math.max(1, (S.meta?.start_gw || 2) - 1);
-    const team = await fetchLiveTeam(api, teamId, gw);
+    const team = await fetchLiveTeam(api, teamId, gw, (id) => S.byId.get(id)?.price || 0);
 
     const resolved = team.squadIds.filter((id) => S.byId.has(id));
     if (resolved.length !== team.squadIds.length) {
@@ -491,6 +494,8 @@ export async function loadMyTeam() {
       return;
     }
     S.squad = resolved;
+    S.purchase = Object.fromEntries(Object.entries(team.purchasePrices)
+      .map(([id, price]) => [+id, price]).filter(([id]) => S.byId.has(id)));
     saveSquad();
 
     $("#freetransfers").value = String(Math.min(5, Math.max(0, team.freeTransfers)));

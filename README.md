@@ -522,8 +522,9 @@ simply not available from either.
 Recency weighting therefore reads the
 [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League)
 archive, a community mirror that snapshots the FPL API every gameweek. It is
-**third-party**, so the feature is off by default, a fetch failure costs only the
-tilt, and it is listed separately on the provenance page.
+**third-party**, so the feature is off by default, a fetch failure — or a mirror
+more than two gameweeks behind the real calendar — costs only the tilt, and it
+is listed separately on the provenance page.
 
 Two design choices worth stating:
 
@@ -1214,10 +1215,36 @@ Free hit is otherwise skipped entirely when there is no blank or double in the
 window, which is both honest and a real saving — it is a second fifteen-man squad's
 worth of binaries to discover it is worth nothing.
 
+## Two seasons of evidence
+
+The FPL API serves this season's totals and forgets last season's the day it
+rolls over, and Understat serves one season per call. Read alone, either leaves
+the model in September with four matches of evidence about everything the API
+measures — starts, defensive contribution, saves, bonus — and a 1,200-minute
+prior that turns four matches into the positional average.
+
+So both seasons stand behind every rate. Last season's totals (the FPL ones from
+the archive's end-of-season `players_raw.csv`, the attacking ones from Understat's
+completed season) are pooled with this season's at a weight that fades as this
+season fills in: a full season's worth before a ball is kicked, when it is the
+only evidence there is, half by the midpoint, nothing once this season is itself
+complete. Starts and minutes are pooled only for players still at the club they
+played them for — a pecking order is a fact about a squad, not a player — and
+the role-driven rates for everyone, with the mover prior on top as before. Team
+attack and defence pool the same way. Four matches in, an ever-present's
+defensive-contribution rate goes from three-quarters positional average to
+three-quarters his own record.
+
+Which seasons those are comes from the FPL API's own calendar (gameweek 1's
+deadline), so nothing needs editing at a rollover. The per-gameweek archive is
+read against the gameweek just finished rather than its own last row, and
+dropped when it is more than two gameweeks behind: a mirror three weeks stale is
+not "lately". `plan`, `snapshot` and the `/data` page say when a source fell back.
+
 ## Form and players who changed club
 
-The rates come from last season, and two things make that less reliable than the
-minute counts suggest.
+The rates rest mostly on last season, and two things make that less reliable
+than the minute counts suggest.
 
 **Cross-season regression.** A complete campaign should not be taken at face
 value, because a rate is partly the player and partly what happened to him. How
@@ -1414,9 +1441,10 @@ luckiest sample in the league.
 ## The part you should not trust
 
 **Minutes.** Everything above is a rounding error next to whether a player
-starts. Start probabilities come from last season's starts, which cannot see
-transfers, new managers, or a changed pecking order — and in preseason that is a
-lot of what matters.
+starts. Start probabilities come from starts — this season's and, faded, last
+season's at the same club — which cannot see transfers, new managers, or a
+changed pecking order until they have happened, and in preseason that is a lot
+of what matters.
 
 `blindspots` lists every priced player with too little Premier League history to
 project (summer signings, returning loanees) and writes an overrides template:
@@ -1626,11 +1654,24 @@ last answers "what are my chips worth to the fifteen I already own?", which is
 the honest question when you have no intention of churning the side to chase a
 chip week. A free hit is untouched by it, because that chip does not spend
 transfers. Bank is derived rather than set — the budget slider minus the
-squad's cost, the same number the summary tile shows. Sell price is always the
-current listed price, the same default `plan_transfers` itself uses when none
-is given; this tool has never tracked what a player was bought for, so there is
-no way to price the 50% sell-on fee exactly, and pretending otherwise would be
-a false precision.
+squad's selling value, the same number the summary tile shows. Selling value
+is the real one: what each player was bought for plus half of any rise since,
+rounded down to £0.1m, with a fall taken in full. FPL's public API never states
+purchase prices, so **Load my team** rebuilds them — the transfer log carries
+what every in-season purchase cost, and a player's own gameweek history carries
+the price he was listed at in gameweek 1, which is what the opening squad paid.
+The budget it sets is that selling value plus the bank, which is exactly what a
+wildcard or free hit has to spend. A player you add by hand is taken as bought
+at today's price. Purchase prices are saved and synced with the squad, and
+`fpl.py transfers --squad` reads a `purchase_price` column the same way.
+
+**The wildcard is the from-scratch mode**, not a chip the plan times: with no
+squad the opening fifteen is a free choice out of the budget, nothing is charged
+for reaching it, your banked free transfers carry over that week (and none is
+earned in it, as under a free hit), and the weeks after are planned as usual.
+On the board that is the Chips tab as it opens after Sync; on the CLI it is
+`fpl.py transfers` without `--squad` and `--budget` set to selling value plus
+bank.
 
 ### Why the board now does re-solve several times over
 

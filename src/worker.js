@@ -50,10 +50,12 @@ async function handleLive(request, env, teamId) {
   if (gw !== null && !/^\d+$/.test(gw)) return json({ error: "bad gw" }, 400);
 
   try {
-    const picksUrl = gw ? `${FPL_BASE}/entry/${teamId}/event/${gw}/picks/` : null;
-    const [historyRes, picksRes] = await Promise.all([
-      fetch(`${FPL_BASE}/entry/${teamId}/history/`, { headers: FPL_HEADERS }),
-      picksUrl ? fetch(picksUrl, { headers: FPL_HEADERS }) : Promise.resolve(null),
+    const get = (path) => fetch(`${FPL_BASE}/${path}`, { headers: FPL_HEADERS });
+    const picksUrl = gw ? `entry/${teamId}/event/${gw}/picks/` : null;
+    const [historyRes, picksRes, transfersRes] = await Promise.all([
+      get(`entry/${teamId}/history/`),
+      picksUrl ? get(picksUrl) : Promise.resolve(null),
+      get(`entry/${teamId}/transfers/`),
     ]);
     if (!historyRes.ok) {
       return json({ error: `FPL history lookup failed (${historyRes.status})` }, historyRes.status);
@@ -61,9 +63,20 @@ async function handleLive(request, env, teamId) {
     if (picksRes && !picksRes.ok) {
       return json({ error: `FPL picks lookup failed (${picksRes.status})` }, picksRes.status);
     }
+    const picks = picksRes ? await picksRes.json() : null;
+    // Each owned player's own gameweek rows, which carry the price he was
+    // listed at in gameweek 1 -- what the opening squad paid for him. Only
+    // the rows are bundled; the fixtures list on the same endpoint is not.
+    const summaries = {};
+    await Promise.all((picks?.picks || []).map(async (p) => {
+      const res = await get(`element-summary/${p.element}/`);
+      if (res.ok) summaries[p.element] = (await res.json()).history || [];
+    }));
     return json({
       history: await historyRes.json(),
-      picks: picksRes ? await picksRes.json() : null,
+      picks,
+      transfers: transfersRes.ok ? await transfersRes.json() : [],
+      summaries,
     });
   } catch (error) {
     return json({ error: `upstream fetch failed: ${error.message}` }, 502);
@@ -118,7 +131,7 @@ async function handleSync(request, env) {
       return json({ error: "invalid JSON" }, 400);
     }
     if (typeof body !== "object" || body === null || typeof body.updated_at !== "number") {
-      return json({ error: "expected {updated_at: number, drafts?, edits?, squad?, settings?}" }, 400);
+      return json({ error: "expected {updated_at: number, drafts?, edits?, squad?, purchase?, settings?}" }, 400);
     }
 
     // Last write wins, and it is the *pusher's* clock that decides that, not
@@ -147,6 +160,8 @@ async function handleSync(request, env) {
       // Opaque here for the same reason settings is: the Worker just carries it.
       editsAt: (body.editsAt && typeof body.editsAt === "object") ? body.editsAt : {},
       squad: Array.isArray(body.squad) ? body.squad : [],
+      // What each squad member was bought for, keyed like `squad` is. Opaque.
+      purchase: (body.purchase && typeof body.purchase === "object") ? body.purchase : {},
       // Opaque to the Worker -- the Settings panel's controls and bench
       // weights, in whatever shape the client's syncableSettings() produces.
       // A new control does not need a matching change here.

@@ -6,7 +6,7 @@
 "use strict";
 import { $, S, planOpts, noDecay, transferHalfLife } from "/assets/state.mjs";
 import {
-  benchWeights, squadCost, planXI, captaincy, parseFormation, optDiff, renderAll,
+  benchWeights, squadCost, sellPrice, squadSellValue, planXI, captaincy, parseFormation, optDiff, renderAll,
 } from "/assets/squad-view.mjs";
 import { renderCompare, renderSquad } from "/assets/squad-view.mjs";
 import { renderGwChart } from "/assets/analysis-view.mjs";
@@ -559,13 +559,14 @@ function ensureTransferWorker() {
  *  whose key no longer matches is shown with a banner rather than blanked:
  *  the old answer is still the best thing on screen until a new one exists. */
 export function transferInputKey() {
-  // Your squad and your banked transfers are both absent, and their absence is
-  // the point: the plan is built from scratch, so neither can change the answer.
-  // Leaving them in would have flashed "settings have changed" at every edit to
-  // a squad this model never reads.
+  // Your squad is absent, and its absence is the point: the plan is built from
+  // scratch, so it cannot change the answer. Leaving it in would have flashed
+  // "settings have changed" at every edit to a squad this model never reads.
+  // Banked transfers do count: a rebuild in season is a wildcard, and they
+  // carry over it.
   return JSON.stringify([
     S.include, S.exclude, S.chipsUsed, S.chipPlan.opt,
-    $("#budget").value, $("#maxclub").value,
+    $("#budget").value, $("#maxclub").value, S.meta?.preseason ? 0 : $("#freetransfers").value,
     $("#minstart").value, $("#formation").value, benchWeights(),
     transferGwCount(), noDecay(), S.gameweeks[0] ?? null,
     S.snapshot?.generated_at ?? null, S.edits, chipHoldValuesRef(), ftValueSettingRef(),
@@ -683,8 +684,11 @@ export function buildTransferPayload(squad = []) {
   // a chip is priced at whatever it pays over the side you actually hold, and
   // every route to a better one is charged a transfer and a hit, same as FPL
   // itself charges you -- the question "what do I do next" asks instead.
-  const bank = squad.length ? Math.max(0, budget - squadCost(squad)) : 0;
-  const freeTransfers = squad.length ? +$("#freetransfers").value : 0;
+  // An owned squad is worth what it sells for, and the plan sells at that.
+  const sellPrices = Object.fromEntries(squad.map((id) => [id, sellPrice(id)]));
+  const bank = squad.length ? Math.max(0, budget - squadSellValue(squad)) : 0;
+  // Before the opening deadline nothing is banked; a wildcard keeps what was.
+  const freeTransfers = S.meta.preseason && !squad.length ? 0 : +$("#freetransfers").value;
 
   // "No transfers" bans every purchase, which the squad-size constraint turns
   // into no sales either. A free hit is untouched by it on purpose: that chip
@@ -697,7 +701,7 @@ export function buildTransferPayload(squad = []) {
   const poolPayload = pool.map((p) => ({ id: p.id, pos: p.pos, team: p.team, price: p.price,
                                          pts: pointsByPlayer.get(p.id) }));
   const opt = {
-    gameweeks, budget, squad: [...squad], bank, freeTransfers,
+    gameweeks, budget, squad: [...squad], bank, freeTransfers, sellPrices,
     chips, forceChips, captainPool: cPool,
     slotWeight,
     squadByPos: rules.SQUAD_BY_POS, xiMinByPos, xiMaxByPos,

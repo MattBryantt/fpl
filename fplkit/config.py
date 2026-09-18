@@ -16,7 +16,12 @@ load_dotenv(ROOT / ".env")
 
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "").strip()
 ODDS_REGIONS = os.getenv("ODDS_REGIONS", "uk").strip()
-UNDERSTAT_SEASON = os.getenv("UNDERSTAT_SEASON", "2025").strip()
+
+# Which Understat seasons to read is decided by the FPL API's own calendar (see
+# fpl_api.season_start_year), not by a pinned string: the completed season and
+# the one under way are pooled, see model.PREVIOUS_SEASON. An explicit
+# UNDERSTAT_SEASON in .env still overrides the completed one.
+UNDERSTAT_SEASON = os.getenv("UNDERSTAT_SEASON", "").strip() or None
 
 # --- Asking questions about a projection --------------------------------------
 # Any OpenAI-compatible /chat/completions endpoint, because every free option
@@ -138,7 +143,11 @@ VICE_CAPTAIN_WEIGHT = 0.1
 # solve that has one available answers "rebuild now" and the answer is only as
 # good as a six-gameweek projection of a fifteen-player restructure. Deciding
 # when to wildcard is a judgement about the season, made outside the model; once
-# you have decided, plan the rebuilt squad with `fpl.py plan` instead.
+# you have decided, the rebuild *is* `plan_transfers` with no squad: the opening
+# fifteen is a free choice out of what selling the old one raises plus the
+# bank, the banked free transfers carry over, and the weeks after it are
+# planned as usual. That is the board's from-scratch Chips mode and
+# `fpl.py transfers` without `--squad`.
 CHIPS = ("freehit", "bboost", "3xc")
 CHIP_LABELS = {"freehit": "Free Hit",
                "bboost": "Bench Boost", "3xc": "Triple Captain"}

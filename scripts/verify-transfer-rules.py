@@ -138,6 +138,8 @@ def flat(base: dict[str, float]):
 def solve(projection, players, **kwargs) -> transfers.TransferPlan:
     defaults = dict(horizon=len(HORIZON), budget=100.0, min_minutes_prob=0.0,
                     chip_windows={}, seconds=60)
+    if not kwargs.get("squad"):
+        defaults["free_transfers"] = 0  # preseason: nothing banked yet
     return transfers.plan_transfers(projection, players, **{**defaults, **kwargs})
 
 
@@ -187,7 +189,7 @@ def check_ledger(plan: transfers.TransferPlan, opening: int, label: str) -> None
         row, nxt = ledger.iloc[step], ledger.iloc[step + 1]
         expect = transfers.next_free_transfers(
             int(row["free"]), int(row["transfers"]),
-            played_freehit=row["chip"] == "Free Hit")
+            played_chip=row["chip"] == "Free Hit")
         if int(nxt["free"]) != expect:
             ok = False
             detail.append(f"GW{int(nxt['gw'])} is {int(nxt['free'])}, rule says {expect}")

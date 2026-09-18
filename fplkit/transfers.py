@@ -85,6 +85,7 @@ from .config import (
     HIT_COST,
     MAX_FREE_TRANSFERS,
     MAX_PER_CLUB,
+    SELL_ON_FEE,
     SQUAD_BY_POS,
     SQUAD_SIZE,
     TRANSFER_FRICTION,
@@ -248,25 +249,36 @@ def candidate_pool(players: pd.DataFrame, points: pd.DataFrame,
             .reset_index(drop=True))
 
 
-def next_free_transfers(ft: int, spent: int, played_freehit: bool = False) -> int:
+def next_free_transfers(ft: int, spent: int, played_chip: bool = False) -> int:
     """One step of the free-transfer state machine plan_transfers() solves as
     a big-M MILP (see the `raw`/`over`/`under` constraints below `# --- the
     free-transfer state machine ---`), written as a plain scalar so a caller
     replaying a real transfer log does not need to re-derive it from the LP.
 
-    A free hit costs that gameweek's newly-earned transfer but not, since
-    2024/25, anything already banked -- `played_freehit` only zeroes `earned`.
-    Clamped to `[1, MAX_FREE_TRANSFERS]`, not `[0, ...]`: the game guarantees
-    at least one free transfer every week (a bank of zero does not exist past
-    the opening gameweek), which is why the LP's `under` branch forces the
-    floor at 1 rather than 0.
+    A free hit or a wildcard costs that gameweek's newly-earned transfer but
+    not, since 2024/25, anything already banked -- `played_chip` only zeroes
+    `earned`, and the caller passes `spent=0` for such a week because its
+    moves were free. Clamped to `[1, MAX_FREE_TRANSFERS]`, not `[0, ...]`: the
+    game guarantees at least one free transfer every week (a bank of zero
+    does not exist past the opening gameweek), which is why the LP's `under`
+    branch forces the floor at 1 rather than 0.
 
     Kept in lockstep with the LP by scripts/verify-transfer-rules.py, which
     checks the two agree over synthetic sequences.
     """
-    earned = FREE_TRANSFERS_PER_GW - (1 if played_freehit else 0)
+    earned = FREE_TRANSFERS_PER_GW - (1 if played_chip else 0)
     raw = ft - spent + earned
     return max(1, min(MAX_FREE_TRANSFERS, raw))
+
+
+def sell_price(bought: float, now: float) -> float:
+    """What a player sells for: his purchase price plus half of any rise,
+    rounded down to £0.1m (`transfers_sell_on_fee`). A fall is taken in full.
+    Ported to live.mjs's sellPrice."""
+    profit = round((now - bought) * 10)
+    if profit <= 0:
+        return round(now, 1)
+    return round(bought + math.floor(profit * (1 - SELL_ON_FEE)) / 10, 1)
 
 
 def free_transfer_value() -> dict[int, float]:
@@ -362,11 +374,16 @@ def plan_transfers(
     """Solve the squad path, the transfers along it and the chip timing together.
 
     Args:
-        squad: the fifteen you own now. `None` means preseason -- the first
-            gameweek's squad is chosen freely, because before the opening
-            deadline transfers are unlimited and free.
+        squad: the fifteen you own now. `None` means the first gameweek's
+            squad is chosen freely and nothing is charged for reaching it --
+            preseason, when transfers are unlimited, or a wildcard week, when
+            they are too. `budget` is then everything there is to spend: the
+            opening £100m, or what selling the old fifteen raises plus the bank.
         bank: money not in the squad, in millions.
         free_transfers: how many you have available for the first gameweek.
+            With no squad this is what carries over past the rebuild -- zero
+            before the season starts, whatever you had banked for a wildcard,
+            since neither a wildcard nor a free hit burns them any more.
         sell_prices: what each owned player sells for, if that differs from his
             listed price. FPL takes half of any rise back, rounded down to
             £0.1m, so this matters the moment a squad has been held a while.
@@ -644,18 +661,18 @@ def plan_transfers(
         problem += spent[gw] == pulp.lpSum(bought[i][gw] for i in index)
         problem += paid[gw] >= spent[gw] - ft[gw]
 
-    problem += ft[first] == (0 if preseason else int(free_transfers))
-    if preseason:
-        # No transfer was rolled through the opening deadline, so gameweek two
-        # opens on exactly one -- which the recursion below produces from zero.
-        pass
+    problem += ft[first] == int(free_transfers)
 
     big_m = 2 * MAX_FREE_TRANSFERS + SQUAD_SIZE
     for step, gw in enumerate(gameweeks):
         nxt = gameweeks[step + 1] if step + 1 < len(gameweeks) else terminal
         # Playing a free hit costs you that gameweek's new free transfer, but
-        # since 2024/25 it no longer burns the ones you banked.
+        # since 2024/25 it no longer burns the ones you banked. A from-scratch
+        # first week is a wildcard (or the opening deadline) and earns none
+        # for the same reason; what was banked simply carries.
         earned = FREE_TRANSFERS_PER_GW - played("freehit", gw)
+        if preseason and step == 0:
+            earned = 0
         raw = ft[gw] - spent[gw] + earned
 
         problem += raw >= (MAX_FREE_TRANSFERS + 1) - big_m * (1 - over[gw])
@@ -706,7 +723,7 @@ def plan_transfers(
     banked = {gw: pulp.lpSum(ft_worth[s] * ft_state[gw][s]
                              for s in range(MAX_FREE_TRANSFERS + 1))
               for gw in gameweeks + [terminal]}
-    opening = ft_worth[0 if preseason else int(free_transfers)]
+    opening = ft_worth[int(free_transfers)]
 
     total = []
     for step, gw in enumerate(gameweeks):
@@ -880,8 +897,9 @@ def _read_solution(*, pool, points, gameweeks, index, in_squad, in_xi, in_slot,
                      + ("them" if len(forced) > 1 else "it")
                      + ", not the best plan")
     if preseason:
-        notes.append("preseason: the opening squad is a free choice, and the "
-                     "first free transfer arrives for the second gameweek")
+        notes.append("from scratch: the opening fifteen is a free choice -- a "
+                     "wildcard, or the preseason squad -- and no transfer is "
+                     "earned for that week")
     if variation:
         notes.append("doubles/blanks in the window: "
                      + "; ".join(f"GW{gw} ({what})" for gw, what in variation.items()))

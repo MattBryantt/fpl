@@ -8,7 +8,7 @@ import { saveSquad } from "/assets/state.mjs";
 import { squadLayout, pitchHTML, wireShirts, shirtUrl } from "/assets/pitch.mjs";
 import { chipSlots, pairMoves } from "/assets/chips.mjs";
 import {
-  BENCH_KEYS, planXI, benchSlots, captaincy, squadCost, saveDraftAs, loadDraft, renderAll,
+  BENCH_KEYS, planXI, benchSlots, captaincy, squadCost, squadSellValue, saveDraftAs, loadDraft, renderAll,
 } from "/assets/squad-view.mjs";
 import {
   planTransfersAndChips, planOwnedSquad, transferInputKey, ownedInputKey,
@@ -710,7 +710,7 @@ export function renderChips() {
       // it is worth. If the two disagree, Optimal is playing on less money and
       // a gap between the lines can be entirely that, not chips or transfers.
       const budget = +$("#budget").value;
-      const ownedCost = S.squad.length ? squadCost(S.squad) : 0;
+      const ownedCost = S.squad.length ? squadSellValue(S.squad) : 0;
       return ownedCost > budget + 0.05 ? `<div class="planstale" style="margin-top:16px">Your squad
         costs £${fmt(ownedCost, 1)}m, more than the £${fmt(budget, 1)}m Budget below — "Optimal" is
         capped at that budget, so it is playing on less money than you actually have. Raise

@@ -9,12 +9,13 @@
  * sides are fully evaluated before either is called. */
 "use strict";
 import {
-  $, S, POS_ORDER, STORE, loadLocal, saveLocal, saveSquad, resolveSquadCodes,
+  $, S, POS_ORDER, STORE, loadLocal, saveLocal, saveSquad, resolveSquadCodes, resolvePurchaseCodes,
   newChipPlanState, persistableChipPlan, applyChipPlanSettings,
   SETTING_IDS, DEFAULT_SETTINGS, DEFAULT_BENCH, DEFAULT_CHIP_HOLD, DEFAULT_FT_VALUE,
   VIEW_PANES, noDecay, gwDecay, halfLife, halfLifeOf, hlJSON, calibrateOdds, planOpts,
   decayText, decayLabel, ctxDecay, css, fmt, el,
 } from "/assets/state.mjs";
+import { sellPrice as sellPriceOf } from "/assets/live.mjs";
 import {
   TOKEN, api, markSynced, pushOverrides, syncableSettings, applySyncedSettings,
   lastSyncableSettings, setLastSyncableSettings, SKIP_PULL, ADOPT_REMOTE,
@@ -552,13 +553,18 @@ export function renderSquad() {
 
   const v = validity(S.squad);
   const budget = +$("#budget").value;
-  $("#tCost").textContent = "£" + fmt(v.cost, 1);
+  // The squad is worth what it sells for, not what it is listed at: a player
+  // who has risen since you bought him gives back half the rise on the way out.
+  const worth = squadSellValue(S.squad);
+  $("#tCost").textContent = "£" + fmt(worth, 1);
+  $("#tCost").title = worth < v.cost - 0.05
+    ? `lists at £${fmt(v.cost, 1)}m; sells for £${fmt(worth, 1)}m after the sell-on fee` : "";
   const meter = $("#budMeter");
-  meter.classList.toggle("over", v.cost > budget);
-  meter.firstElementChild.style.width = Math.min(100, (v.cost / budget) * 100) + "%";
+  meter.classList.toggle("over", worth > budget);
+  meter.firstElementChild.style.width = Math.min(100, (worth / budget) * 100) + "%";
   // What is left, which is the number you buy the next player with -- and the
   // one the cost alone makes you do arithmetic for.
-  const bank = budget - v.cost;
+  const bank = budget - worth;
   $("#tBank").textContent = S.squad.length
     ? (bank < 0 ? `£${fmt(-bank, 1)}m over budget` : `£${fmt(bank, 1)}m in the bank`)
     : `£${fmt(budget, 1)}m to spend`;
@@ -1040,7 +1046,8 @@ export function rebuildPool(keepSquad = true) {
   // pending, rather than as the squad silently vanishing on the next filter.
   if (S.squadCodesPending) {
     S.squad = resolveSquadCodes(S.squadCodesPending);
-    S.squadCodesPending = null;
+    S.purchase = resolvePurchaseCodes(S.purchaseCodesPending);
+    S.squadCodesPending = S.purchaseCodesPending = null;
   }
   if (!keepSquad) S.squad = [];
   S.squad = S.squad.filter((id) => S.byId.has(id));
@@ -1187,6 +1194,15 @@ export function renderCompareOptions() {
 }
 
 export const squadCost = (ids) => ids.reduce((a, id) => a + (S.byId.get(id)?.price || 0), 0);
+/** What an owned player sells for: half of any rise since he was bought is
+ *  kept by the game, rounded down to £0.1m; a fall is his in full. A player
+ *  with no recorded purchase price is taken as bought at today's price. */
+export const sellPrice = (id) => {
+  const now = S.byId.get(id)?.price || 0;
+  const bought = S.purchase[id];
+  return bought == null ? now : sellPriceOf(bought, now);
+};
+export const squadSellValue = (ids) => ids.reduce((a, id) => a + sellPrice(id), 0);
 
 const optDiff = () => {
   const mine = new Set(S.squad), theirs = new Set(S.optimal);

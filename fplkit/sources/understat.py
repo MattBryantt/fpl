@@ -33,7 +33,9 @@ NUMERIC = ["games", "time", "goals", "xG", "npg", "npxG", "assists", "xA",
 
 def player_stats(season: str | None = None, force_refresh: bool = False) -> pd.DataFrame:
     """One row per player for the given Understat season (start year)."""
-    season = season or UNDERSTAT_SEASON
+    if season is None:
+        from . import fpl_api  # the completed season, off the API's own calendar
+        season = UNDERSTAT_SEASON or str(fpl_api.season_start_year() - 1)
 
     def fetch():
         response = requests.post(

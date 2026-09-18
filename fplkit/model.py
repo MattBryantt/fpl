@@ -20,7 +20,7 @@ Three layers, each answering one question:
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -53,6 +53,7 @@ from .config import (
 from .matching import match_players, match_team
 from .sources import fpl_api, history, understat
 from .sources import odds as odds_source
+from .config import UNDERSTAT_SEASON
 
 # Newly promoted clubs have no Premier League xG history. Until they have played
 # some games, assume a below-average attack and a leaky defence.
@@ -258,6 +259,28 @@ ASSISTS_PER_OPEN_PLAY_GOAL = ASSISTS_PER_GOAL / (1 - PENALTY_GOAL_SHARE)
 TRANSFER_CONTEXT_ALPHA = 0.5
 
 
+# --- Two seasons of evidence --------------------------------------------------
+# The FPL API serves this season's totals and forgets last season's the day it
+# rolls over; Understat serves one season per call. Read alone, either leaves
+# the model in September with four matches of evidence about everything the
+# API measures -- starts, defensive contribution, saves, bonus -- and a
+# 1,200-minute prior that turns four matches into the positional average.
+#
+# So last season is pooled in as extra evidence, at a weight that fades as this
+# season fills in: worth a full season of minutes before a ball is kicked (when
+# it is the only evidence there is, and the cross-season priors above were
+# fitted for exactly that), half by the midpoint, and nothing once this season
+# is itself complete. Linear because nothing measured says otherwise, and the
+# shape matters far less than having the evidence at all. `SeasonBasis.
+# previous_weight` is the one number; everything pooled reads it from there.
+#
+# Starts and minutes are pooled only for players still at the club they played
+# them for -- a pecking order is a fact about a squad, not a player. Rates that
+# follow the role (defensive contribution, saves, bonus, cards, xG) are pooled
+# for everyone, with the mover prior on top as before.
+PREVIOUS_SEASON_MATCHES = float(MATCHES_PER_SEASON)
+
+
 # Thresholds that used to be absolute minute counts, written instead as the
 # share of a full workload they stand for: 900 minutes of a 3,420-minute season
 # is 26%, 450 is 13%, 270 is 8%. They have to be shares, because "900 minutes"
@@ -288,8 +311,9 @@ class SeasonBasis:
     """
 
     club_matches: pd.Series   # per club, matches behind the FPL totals in hand
-    understat_matches: float  # matches behind the Understat totals
+    understat_matches: float  # matches behind the completed Understat season
     preseason: bool           # True while the totals still describe last season
+    understat_current_matches: float = 0.0  # ...and behind the season under way
 
     @property
     def fpl_matches(self) -> float:
@@ -307,9 +331,45 @@ class SeasonBasis:
     def understat_minutes(self) -> float:
         return self.understat_matches * 90.0
 
+    @property
+    def previous_weight(self) -> float:
+        """How much a minute of last season is worth against one of this season.
+        See PREVIOUS_SEASON_MATCHES. Zero in preseason for the FPL totals, which
+        then *are* last season's and must not be counted twice; the same
+        weight applied to Understat is one, since the season under way is empty
+        and the completed one is all there is."""
+        if self.preseason:
+            return 0.0
+        return float(np.clip(1.0 - self.fpl_matches / PREVIOUS_SEASON_MATCHES, 0.0, 1.0))
+
+    @property
+    def understat_weight(self) -> float:
+        return 1.0 if self.preseason else self.previous_weight
+
+    @property
+    def pooled_fpl_minutes(self) -> float:
+        """A regular's evidence once last season is pooled in."""
+        return self.fpl_minutes + self.previous_weight * PREVIOUS_SEASON_MATCHES * 90.0
+
+    @property
+    def pooled_understat_minutes(self) -> float:
+        return (self.understat_weight * self.understat_minutes
+                + self.understat_current_matches * 90.0)
+
+
+def _understat_matches(us_stats: pd.DataFrame | None) -> float:
+    """Understat's own workload, measured off its data rather than assumed, so
+    that a season in progress degrades honestly instead of overstating how
+    much evidence is behind every attacking rate."""
+    if us_stats is None or "us_minutes" not in us_stats:
+        return 0.0
+    us_minutes = pd.to_numeric(us_stats["us_minutes"], errors="coerce")
+    return float(us_minutes.max()) / 90.0 if len(us_minutes) and us_minutes.max() > 0 else 0.0
+
 
 def season_basis(all_fixtures: pd.DataFrame, id_to_name: dict[int, str],
-                 us_stats: pd.DataFrame) -> SeasonBasis:
+                 us_stats: pd.DataFrame,
+                 us_current: pd.DataFrame | None = None) -> SeasonBasis:
     """Read the season's progress off the fixture list rather than assuming it.
 
     Before a ball is kicked the FPL totals in hand are last season's completed
@@ -322,20 +382,17 @@ def season_basis(all_fixtures: pd.DataFrame, id_to_name: dict[int, str],
               .map(id_to_name).value_counts()
               .reindex(list(id_to_name.values())).fillna(0.0).astype(float))
 
-    # Understat's own workload, measured off its data rather than assumed, so
-    # that pointing UNDERSTAT_SEASON at a season in progress degrades honestly
-    # instead of overstating how much evidence is behind every attacking rate.
-    us_minutes = pd.to_numeric(us_stats.get("us_minutes"), errors="coerce")
-    us_matches = (float(us_minutes.max()) / 90.0
-                  if us_minutes is not None and len(us_minutes) and us_minutes.max() > 0
-                  else float(MATCHES_PER_SEASON))
+    us_matches = _understat_matches(us_stats) or float(MATCHES_PER_SEASON)
+    current = _understat_matches(us_current)
 
     if played.sum() == 0:
         return SeasonBasis(
             club_matches=pd.Series(float(MATCHES_PER_SEASON), index=played.index),
-            understat_matches=us_matches, preseason=True)
+            understat_matches=us_matches, preseason=True,
+            understat_current_matches=current)
     return SeasonBasis(club_matches=played.clip(lower=1.0),
-                       understat_matches=us_matches, preseason=False)
+                       understat_matches=us_matches, preseason=False,
+                       understat_current_matches=current)
 
 
 @dataclass
@@ -350,78 +407,117 @@ class Projection:
     odds_note: str
     strength: pd.DataFrame | None = None  # per-club attack/defence, for reprojection
     basis: SeasonBasis | None = None  # what season the totals behind this describe
+    notes: list[str] = field(default_factory=list)  # sources that fell back, in words
 
 
 # --------------------------------------------------------------------------- #
 # Layer 1: team strength and fixture lambdas
 # --------------------------------------------------------------------------- #
 
+def _team_xgc(players: pd.DataFrame, minutes_col: str, xgc_col: str,
+              team_col: str) -> pd.Series:
+    """Per-club expected goals conceded per match, recovered from player totals:
+    every player on the pitch shares the team's concession rate, so a
+    minutes-weighted mean of their per-90 figures is that rate."""
+    minutes = pd.to_numeric(players[minutes_col], errors="coerce").fillna(0.0)
+    xgc = pd.to_numeric(players[xgc_col], errors="coerce").fillna(0.0)
+    frame = pd.DataFrame({"team": players[team_col], "minutes": minutes, "xgc": xgc})
+    frame = frame[(frame["minutes"] > 0) & frame["team"].notna()]
+    totals = frame.groupby("team")[["minutes", "xgc"]].sum()
+    return (totals["xgc"] / totals["minutes"] * 90.0).where(totals["minutes"] > 0)
+
+
 def team_strength(players: pd.DataFrame, us_stats: pd.DataFrame,
                   team_map: dict[str, str],
-                  basis: SeasonBasis | None = None) -> pd.DataFrame:
+                  basis: SeasonBasis | None = None,
+                  us_current: pd.DataFrame | None = None,
+                  team_map_current: dict[str, str] | None = None) -> pd.DataFrame:
     """Per-match attacking and defensive rates for each FPL club.
 
     Attack comes from Understat (non-penalty xG summed over the squad, divided
-    by matches). Defence comes from the FPL API's own expected_goals_conceded
-    per 90, taken as a minutes-weighted mean across the squad -- every player on
-    the pitch shares the same team concession rate, so weighting by minutes
-    recovers it.
+    by matches), the completed season and the one under way pooled by
+    `basis.understat_weight`. Defence comes from the FPL API's own
+    expected_goals_conceded, this season's totals pooled with last season's
+    archived ones by `basis.previous_weight`; see _team_xgc for how a club's
+    rate is recovered from its players.
     """
     us_teams = understat.team_rates(us_stats)
     us_teams["fpl_team"] = us_teams["us_team"].map(team_map)
     attack = us_teams.set_index("fpl_team")["team_npxg_per_match"].to_dict()
+    us_weight = basis.understat_weight if basis else 1.0
+    us_matches = basis.understat_matches if basis else float(MATCHES_PER_SEASON)
+    cur_matches = basis.understat_current_matches if basis else 0.0
+    attack_now: dict[str, float] = {}
+    if us_current is not None and len(us_current) and cur_matches > 0:
+        now_teams = understat.team_rates(us_current)
+        now_teams["fpl_team"] = now_teams["us_team"].map(team_map_current or {})
+        attack_now = now_teams.set_index("fpl_team")["team_npxg_per_match"].to_dict()
 
     def played_here_last_season(row, team: str) -> bool:
         clubs = row.get("us_team_list")
         return isinstance(clubs, list) and any(team_map.get(c) == team for c in clubs)
 
+    prev_weight = basis.previous_weight if basis else 0.0
+    # Preseason the FPL totals are last season's, produced at each player's
+    # *previous* club, so only players who were already here describe this
+    # defence. Once the season is under way they are this season's and
+    # describe the club he is at now, whoever he is. Last season's archived
+    # totals are grouped by the club they were produced at, which is theirs.
+    if basis is None or basis.preseason:
+        here = players[players.apply(lambda r: played_here_last_season(r, r["team"]), axis=1)]
+        this_season = _team_xgc(here, "minutes", "expected_goals_conceded", "team")
+    else:
+        this_season = _team_xgc(players, "minutes", "expected_goals_conceded", "team")
+    if prev_weight > 0 and "prev_team" in players:
+        last_season = _team_xgc(players, "prev_minutes",
+                                "prev_expected_goals_conceded", "prev_team")
+    else:
+        last_season = pd.Series(dtype=float)
+
     rows = []
-    for team, group in players.groupby("team"):
-        # A player's expected_goals_conceded_per_90 describes the defence he
-        # played behind last season, which for a new signing is his old club's.
-        # Only players who were already here tell us anything about this defence.
-        continuing = group[group.apply(played_here_last_season, axis=1, team=team)]
-        minutes = continuing["minutes"]
-        xgc90 = continuing["expected_goals_conceded_per_90"]
-        usable = minutes > 0
-        if usable.any() and (minutes[usable] * xgc90[usable]).sum() > 0:
-            conceded = float(np.average(xgc90[usable], weights=minutes[usable]))
-        else:
-            conceded = np.nan
-        rows.append({
-            "team": team,
-            "npxg_per_match": attack.get(team, np.nan),
-            "xgc_per_match": conceded,
-        })
+    for team in sorted(players["team"].dropna().unique()):
+        club_matches = float(basis.club_matches.get(team, MATCHES_PER_SEASON)) if basis else float(MATCHES_PER_SEASON)
+        # Evidence behind each side, in matches, and the pooled rate.
+        att_parts = [(us_weight * us_matches, attack.get(team)),
+                     (cur_matches, attack_now.get(team))]
+        def_parts = [(club_matches, this_season.get(team)),
+                     (prev_weight * PREVIOUS_SEASON_MATCHES, last_season.get(team))]
+
+        def pooled(parts):
+            parts = [(m, r) for m, r in parts if m > 0 and r is not None and not pd.isna(r)]
+            matches = sum(m for m, _ in parts)
+            return ((sum(m * r for m, r in parts) / matches, matches)
+                    if matches > 0 else (np.nan, 0.0))
+
+        npxg, att_m = pooled(att_parts)
+        xgc, def_m = pooled(def_parts)
+        rows.append({"team": team, "npxg_per_match": npxg, "xgc_per_match": xgc,
+                     "attack_matches": att_m, "defence_matches": def_m,
+                     "is_promoted": team not in attack})
 
     df = pd.DataFrame(rows)
     league_attack = df["npxg_per_match"].mean(skipna=True) or LEAGUE_MEAN_GOALS
     league_defence = df["xgc_per_match"].mean(skipna=True) or LEAGUE_MEAN_GOALS
 
-    # A club with no Premier League xG history last season was promoted. Both of
-    # its ratings are assumptions, not measurements -- a handful of its players
-    # may have FPL minutes, but those describe their previous clubs.
-    df["is_promoted"] = df["npxg_per_match"].isna()
-    df.loc[df["is_promoted"], "npxg_per_match"] = league_attack * PROMOTED_ATTACK
-    df.loc[df["is_promoted"], "xgc_per_match"] = league_defence * PROMOTED_DEFENCE
+    # A club with no Premier League xG history last season was promoted. Until
+    # it has played, both of its ratings are assumptions, not measurements: a
+    # below-average attack and a leaky defence, regressed toward like any other
+    # club's as its own matches arrive.
+    df.loc[df["is_promoted"] & df["npxg_per_match"].isna(), "npxg_per_match"] = \
+        league_attack * PROMOTED_ATTACK
+    df.loc[df["is_promoted"] & df["xgc_per_match"].isna(), "xgc_per_match"] = \
+        league_defence * PROMOTED_DEFENCE
     df["npxg_per_match"] = df["npxg_per_match"].fillna(league_attack)
     df["xgc_per_match"] = df["xgc_per_match"].fillna(league_defence)
 
-    # Regress one season of team xG toward the league mean. Season-over-season
-    # correlation of team xG rates is well short of 1, so taking last year's
-    # number at face value overstates how far apart the clubs really are.
-    #
-    # Each side is regressed by the evidence behind *it*, not by a shared
-    # constant: attack is Understat's and is a completed season, defence is the
-    # FPL API's and is however far into this one we are. Six matches into a
-    # season those are 38 and 6, and treating them alike would let a club's
-    # early concession rate move its rating as if a full season stood behind it.
-    us_matches = basis.understat_matches if basis else float(MATCHES_PER_SEASON)
-    attack_weight = us_matches / (us_matches + TEAM_PRIOR_MATCHES)
-    fpl_matches = (df["team"].map(basis.club_matches) if basis
-                   else pd.Series(float(MATCHES_PER_SEASON), index=df.index))
-    fpl_matches = fpl_matches.fillna(float(MATCHES_PER_SEASON))
-    defence_weight = fpl_matches / (fpl_matches + TEAM_PRIOR_MATCHES)
+    # Regress team xG toward the league mean. Season-over-season correlation
+    # of team xG rates is well short of 1, so taking a rate at face value
+    # overstates how far apart the clubs really are. Each side is regressed
+    # by the evidence behind *it*: the matches pooled above, so six matches
+    # of this season plus a faded last one earn more than six alone, and a
+    # promoted club's guess earns nothing until its own matches arrive.
+    attack_weight = df["attack_matches"] / (df["attack_matches"] + TEAM_PRIOR_MATCHES)
+    defence_weight = df["defence_matches"] / (df["defence_matches"] + TEAM_PRIOR_MATCHES)
 
     df["npxg_per_match"] = (attack_weight * df["npxg_per_match"]
                             + (1 - attack_weight) * league_attack)
@@ -748,16 +844,23 @@ def minutes_model(players: pd.DataFrame,
                     else pd.Series(float(MATCHES_PER_SEASON), index=df.index))
     club_matches = club_matches.fillna(float(MATCHES_PER_SEASON)).clip(lower=1.0)
 
-    raw_start = (df["starts"] / club_matches).clip(0.0, 1.0)
-    sub_minutes = (df["minutes"] - df["starts"] * ASSUMED_START_MINUTES).clip(lower=0.0)
+    # Last season's starts and minutes pooled in, for players still at the
+    # club they played them for -- see PREVIOUS_SEASON_MATCHES.
+    carry = _previous_weight(df, basis, same_club=True)
+    starts = df["starts"].astype(float) + carry * _prev(df, "starts")
+    minutes = df["minutes"].astype(float) + carry * _prev(df, "minutes")
+    matches = club_matches + carry * _prev(df, "matches")
+
+    raw_start = (starts / matches).clip(0.0, 1.0)
+    sub_minutes = (minutes - starts * ASSUMED_START_MINUTES).clip(lower=0.0)
     sub_appearances = sub_minutes / ASSUMED_SUB_MINUTES
-    non_start_matches = (club_matches - df["starts"]).clip(lower=1.0)
+    non_start_matches = (matches - starts).clip(lower=1.0)
     raw_sub = (sub_appearances / non_start_matches).clip(0.0, 1.0)
 
     # How much the evidence is worth. A full season speaks for itself; 300
     # minutes barely speaks at all, and zero cannot speak.
-    minutes = df["minutes"].astype(float)
     weight = minutes / (minutes + START_PRIOR_MINUTES)
+    df["evidence_minutes"] = minutes
     prior = _start_prior(df)
     prior_share = prior / prior.groupby([df["team"], df["is_keeper"]]).transform("sum")
     # Put the prior on the same scale as a start probability before blending, or
@@ -1561,6 +1664,33 @@ def renormalise_minutes(players: pd.DataFrame,
     return df
 
 
+def _prev(df: pd.DataFrame, column: str) -> pd.Series:
+    """Last season's archived total, zero for anyone the archive lacks."""
+    return pd.to_numeric(df.get(f"prev_{column}"), errors="coerce").reindex(df.index).fillna(0.0) \
+        if f"prev_{column}" in df else pd.Series(0.0, index=df.index)
+
+
+def _previous_weight(df: pd.DataFrame, basis: SeasonBasis | None,
+                     same_club: bool = False) -> pd.Series:
+    """Per-player weight on last season's FPL totals: `basis.previous_weight`
+    for anyone the archive knows, and with `same_club`, only if he is still
+    where he produced them."""
+    weight = basis.previous_weight if basis else 0.0
+    if weight <= 0 or "prev_team" not in df:
+        return pd.Series(0.0, index=df.index)
+    known = df["prev_team"].notna()
+    if same_club:
+        known &= df["prev_team"] == df["team"]
+    return pd.Series(np.where(known, weight, 0.0), index=df.index)
+
+
+def _pooled_rate(df: pd.DataFrame, column: str, carry: pd.Series,
+                 minutes: pd.Series) -> pd.Series:
+    """A per-90 rate over this season's total plus last season's, weighted."""
+    total = pd.to_numeric(df[column], errors="coerce").fillna(0.0) + carry * _prev(df, column)
+    return (total / minutes.replace(0.0, np.nan) * 90.0).fillna(0.0)
+
+
 def _shrink(rate: pd.Series, minutes: pd.Series, prior: pd.Series,
             prior_minutes: pd.Series | float = PLAYER_PRIOR_MINUTES) -> pd.Series:
     """Pull a per-90 rate toward a prior, weighted by how much evidence there is."""
@@ -1605,47 +1735,70 @@ def attach_rates(players: pd.DataFrame, strength: pd.DataFrame | None = None,
     positional average, weighted by the minutes behind them. Without the
     shrinkage the optimiser reliably picks whoever had the smallest, luckiest
     sample in the league.
+
+    Two seasons stand behind every rate where two are available -- see
+    PREVIOUS_SEASON_MATCHES. Understat's completed season and the one under
+    way are pooled by `basis.understat_weight`; the FPL API's totals and last
+    season's archived ones by `basis.previous_weight`.
     """
     df = players.copy()
-    minutes = df["minutes"].astype(float)
-    minutes_90 = (minutes / 90.0).replace(0, np.nan)
+    carry = _previous_weight(df, basis)
+    minutes = df["minutes"].astype(float) + carry * _prev(df, "minutes")
+    full_fpl = basis.pooled_fpl_minutes if basis else MATCHES_PER_SEASON * 90.0
 
-    fpl_xg90 = df["expected_goals_per_90"].fillna(0.0)
-    fpl_xa90 = df["expected_assists_per_90"].fillna(0.0)
-    us_xg90 = pd.to_numeric(df.get("npxg_per90"), errors="coerce")
-    us_xa90 = pd.to_numeric(df.get("xa_per90"), errors="coerce")
+    # Understat: last season's totals at the weight the calendar gives them,
+    # the club-context adjustment on that half only (it is what was produced
+    # somewhere else), plus whatever this season has produced here.
+    us_weight = basis.understat_weight if basis else 1.0
+    us_last = pd.to_numeric(df.get("us_minutes"), errors="coerce").fillna(0.0) * us_weight
+    us_now = pd.to_numeric(df.get("cur_us_minutes"), errors="coerce").reindex(df.index).fillna(0.0) \
+        if "cur_us_minutes" in df else pd.Series(0.0, index=df.index)
+    us_minutes = us_last + us_now
+    has_understat = us_minutes > 0
 
-    has_understat = us_xg90.notna() & (df["us_minutes"].fillna(0) > 0)
-    raw_xg90 = np.where(has_understat, us_xg90, fpl_xg90 * (1 - PENALTY_GOAL_SHARE))
-    raw_xa90 = np.where(has_understat, us_xa90, fpl_xa90)
+    df["team_context"] = 1.0
+    if strength is not None and us_attack_rating and "moved_club" in df:
+        new_rating = df["team"].map(strength.set_index("team")["attack_rating"])
+        old_rating = df["previous_club"].map(us_attack_rating)
+        ratio = (new_rating / old_rating).replace([np.inf, -np.inf], np.nan)
+        context = ratio.clip(0.4, 2.5) ** TRANSFER_CONTEXT_ALPHA
+        df["team_context"] = np.where(df["moved_club"] & context.notna(),
+                                      context.fillna(1.0), 1.0)
+
+    def understat_rate(last: str, now: str) -> pd.Series:
+        total = (pd.to_numeric(df.get(last), errors="coerce").reindex(df.index).fillna(0.0)
+                 * us_weight * df["team_context"])
+        if now in df:
+            total = total + pd.to_numeric(df[now], errors="coerce").fillna(0.0)
+        return (total / us_minutes.replace(0.0, np.nan) * 90.0).fillna(0.0)
+
+    # The FPL fallback for anyone Understat has never seen: its xG includes
+    # penalties, which are modelled separately, so the league's share comes off.
+    fpl_xg90 = _pooled_rate(df, "expected_goals", carry, minutes) * (1 - PENALTY_GOAL_SHARE)
+    fpl_xa90 = _pooled_rate(df, "expected_assists", carry, minutes)
+    raw_xg90 = understat_rate("npxG", "cur_npxG").where(has_understat, fpl_xg90)
+    raw_xa90 = understat_rate("xA", "cur_xA").where(has_understat, fpl_xa90)
 
     # The minutes that actually produced each rate, and the full workload they
     # should be read against. An Understat-backed attacking rate is backed by
-    # Understat's minutes from Understat's season; everything else is backed by
-    # the FPL API's, from whatever point of this season it is serving. Preseason
-    # the two are near enough the same number that the distinction looks
-    # academic -- but they count different seasons the moment one rolls over,
-    # and weighting last season's xG by this season's minutes is exactly how a
-    # genuine 0.6 npxG/90 striker gets shrunk to nothing in September.
-    us_minutes = pd.to_numeric(df.get("us_minutes"), errors="coerce").fillna(0.0)
-    understat_backed = pd.Series(has_understat, index=df.index).fillna(False)
-    attack_minutes = us_minutes.where(understat_backed, minutes)
-    full_fpl = basis.fpl_minutes if basis else MATCHES_PER_SEASON * 90.0
-    full_us = basis.understat_minutes if basis else MATCHES_PER_SEASON * 90.0
-    attack_full = pd.Series(np.where(understat_backed, full_us, full_fpl), index=df.index)
+    # Understat's minutes from Understat's seasons; everything else is backed by
+    # the FPL API's. They count different seasons at different weights, and
+    # weighting last season's xG by this season's minutes alone is exactly how
+    # a genuine 0.6 npxG/90 striker got shrunk to nothing in September.
+    attack_minutes = us_minutes.where(has_understat, minutes)
+    full_us = basis.pooled_understat_minutes if basis else MATCHES_PER_SEASON * 90.0
+    attack_full = pd.Series(np.where(has_understat, full_us, full_fpl), index=df.index)
 
     df["rate_source"] = np.where(has_understat, "understat", "fpl")
     df.loc[attack_minutes < THIN_SHARE * attack_full, "rate_source"] = "thin"
     df.loc[attack_minutes <= 0, "rate_source"] = "none"
 
-    df["raw_npxg_per90"] = pd.to_numeric(pd.Series(raw_xg90, index=df.index),
-                                         errors="coerce").fillna(0.0)
-    df["raw_xa_per90"] = pd.to_numeric(pd.Series(raw_xa90, index=df.index),
-                                       errors="coerce").fillna(0.0)
-    df["raw_bonus_per90"] = (df["bonus"] / minutes_90).fillna(0.0).clip(0, 3)
-    df["raw_yellow_per90"] = (df["yellow_cards"] / minutes_90).fillna(0.0).clip(0, 1)
-    df["raw_dc_per90"] = df["defensive_contribution_per_90"].fillna(0.0)
-    df["raw_saves_per90"] = df["saves_per_90"].fillna(0.0)
+    df["raw_npxg_per90"] = raw_xg90
+    df["raw_xa_per90"] = raw_xa90
+    df["raw_bonus_per90"] = _pooled_rate(df, "bonus", carry, minutes).clip(0, 3)
+    df["raw_yellow_per90"] = _pooled_rate(df, "yellow_cards", carry, minutes).clip(0, 1)
+    df["raw_dc_per90"] = _pooled_rate(df, "defensive_contribution", carry, minutes)
+    df["raw_saves_per90"] = _pooled_rate(df, "saves", carry, minutes)
 
     # Recency: tilt each rate by how the player was trending late last season.
     # Applied before shrinkage on purpose, so a big multiplier off a short hot
@@ -1664,21 +1817,11 @@ def attach_rates(players: pd.DataFrame, strength: pd.DataFrame | None = None,
                 df["recency"] = multiplier
 
     # A change of club moves a player's attacking output toward his new team's
-    # level. A striker leaving a mid-table side for a title contender gets more
-    # and better chances; the reverse costs him. Only the attacking rates are
-    # adjusted -- defensive contribution is a function of role and position far
-    # more than of team quality, and the clean-sheet and concession terms
-    # already use the new club's defence.
-    df["team_context"] = 1.0
-    if strength is not None and us_attack_rating and "moved_club" in df:
-        new_rating = df["team"].map(strength.set_index("team")["attack_rating"])
-        old_rating = df["previous_club"].map(us_attack_rating)
-        ratio = (new_rating / old_rating).replace([np.inf, -np.inf], np.nan)
-        context = ratio.clip(0.4, 2.5) ** TRANSFER_CONTEXT_ALPHA
-        df["team_context"] = np.where(df["moved_club"] & context.notna(),
-                                      context.fillna(1.0), 1.0)
-        df["raw_npxg_per90"] *= df["team_context"]
-        df["raw_xa_per90"] *= df["team_context"]
+    # level (`team_context`, applied above to the half of his record produced
+    # at the old club). Only the attacking rates are adjusted -- defensive
+    # contribution is a function of role and position far more than of team
+    # quality, and the clean-sheet and concession terms already use the new
+    # club's defence.
 
     # One prior per rate, because the evidence for them is not the same. The two
     # attacking rates are measured across seasons (see NPXG_PRIOR_MINUTES); the
@@ -1916,13 +2059,24 @@ def project(horizon: int = 5, start_gw: int | None = None,
     fpl_players = fpl_api.players(force_refresh)
     fpl_teams = fpl_api.teams(force_refresh)
     all_fixtures = fpl_api.fixtures(force_refresh)
-    us_stats = understat.player_stats(force_refresh=force_refresh)
+    notes: list[str] = []
+
+    # Two seasons of everything. The season the API is serving names both: the
+    # one before it is complete and is the bulk of the evidence; the one under
+    # way is pooled in at the weight the calendar gives it (PREVIOUS_SEASON_
+    # MATCHES). Preseason the API's own totals are still last season's, so the
+    # archive is not read for them -- that would count the same season twice.
+    year = fpl_api.season_start_year(force_refresh)
+    us_stats = understat.player_stats(UNDERSTAT_SEASON or str(year - 1),
+                                      force_refresh=force_refresh)
+    us_current = _understat_current(str(year), force_refresh, notes)
 
     team_names = fpl_teams["name"].tolist()
     id_to_name = dict(zip(fpl_teams["team_id"], fpl_teams["name"]))
     # How far into the season the totals in hand actually are. Everything that
     # divides a season total by something reads this rather than assuming 38.
-    basis = season_basis(all_fixtures, id_to_name, us_stats)
+    basis = season_basis(all_fixtures, id_to_name, us_stats, us_current)
+    start_gw = start_gw or fpl_api.next_gameweek(force_refresh)
 
     # Clubs that were relegated map to nothing and are simply dropped.
     us_clubs = sorted({club for clubs in us_stats["us_team_list"] for club in clubs})
@@ -1931,33 +2085,61 @@ def project(horizon: int = 5, start_gw: int | None = None,
     players = match_players(fpl_players, us_stats, team_map)
     players = detect_movers(players, team_map)
 
-    # The per-gameweek archive, fetched once and read for two different things.
-    # It is third-party and can be unavailable, so both readings degrade to the
-    # season-long behaviour rather than taking the projection down.
-    gw_history = history.gameweek_history(force_refresh=force_refresh)
+    team_map_current: dict[str, str] = {}
+    if len(us_current):
+        now_clubs = sorted({club for clubs in us_current["us_team_list"] for club in clubs})
+        team_map_current = {club: match_team(club, team_names) for club in now_clubs}
+        matched = match_players(fpl_players, us_current, team_map_current)
+        current = matched[["fpl_id", "us_minutes", "npxG", "xA"]].rename(
+            columns={"us_minutes": "cur_us_minutes", "npxG": "cur_npxG", "xA": "cur_xA"})
+        players = players.merge(current, on="fpl_id", how="left")
 
-    # Optional: tilt rates toward how players were performing late last season.
+    if not basis.preseason:
+        previous = history.season_totals(history.season_folder(year - 1), force_refresh)
+        if len(previous):
+            players = players.merge(previous, on="code", how="left")
+        else:
+            notes.append("last season's archived totals were unavailable; rates "
+                         "rest on this season's alone")
+
+    # The per-gameweek archive, fetched once and read for two different things.
+    # It is third-party and can be unavailable or behind, so both readings
+    # degrade to the season-long behaviour rather than taking the projection
+    # down. In season it is read against the gameweek just finished, not its
+    # own last row: a mirror three weeks behind is not "lately".
+    gw_history = history.gameweek_history(force_refresh=force_refresh)
+    latest = None if basis.preseason else start_gw - 1
+    if len(gw_history) and latest is not None \
+            and int(gw_history["gw"].max()) < latest - history.ARCHIVE_MAX_LAG:
+        notes.append(f"per-gameweek archive stops at GW{int(gw_history['gw'].max())}, "
+                     f"GW{latest} has finished: recent-form tilt off")
+    elif not len(gw_history):
+        notes.append("per-gameweek archive unavailable: recent-form tilt off")
+
+    # Optional: tilt rates toward how players have been performing lately.
     if recency_half_life:
-        multipliers = history.recency_multipliers(gw_history, recency_half_life)
+        multipliers = history.recency_multipliers(gw_history, recency_half_life,
+                                                  latest=latest)
         if len(multipliers):
             players = players.merge(multipliers, on="code", how="left")
 
     # Not optional, unlike the tilt above. Who has been starting lately is not a
     # stylistic preference about form, it is the difference between a start rate
     # that answers this week's question and one that answers last season's.
-    form = history.start_form(gw_history, START_FORM_HALF_LIFE)
+    form = history.start_form(gw_history, START_FORM_HALF_LIFE, latest=latest)
     if len(form):
         players = players.merge(form, on="code", how="left")
 
     # Same archive, same recency weighting, a different question: not how often
     # he starts but how long the shift is once he does. See MINUTES_FORM_PRIOR_MATCHES.
-    mins_form = history.minutes_form(gw_history, START_FORM_HALF_LIFE)
+    mins_form = history.minutes_form(gw_history, START_FORM_HALF_LIFE, latest=latest)
     if len(mins_form):
         players = players.merge(mins_form, on="code", how="left")
 
     # Team strength has to be known before player rates, because adjusting a
     # transferred player's output needs the ratings of both clubs involved.
-    strength = team_strength(players, us_stats, team_map, basis)
+    strength = team_strength(players, us_stats, team_map, basis,
+                             us_current, team_map_current)
     us_teams = understat.team_rates(us_stats)
     league_mean = us_teams["team_npxg_per_match"].mean()
     us_attack_rating = (us_teams.set_index("us_team")["team_npxg_per_match"]
@@ -1990,7 +2172,6 @@ def project(horizon: int = 5, start_gw: int | None = None,
     players = conserve_team_output(players, strength)
     per_gameweek = gameweek_overrides(overrides, players)
 
-    start_gw = start_gw or fpl_api.next_gameweek(force_refresh)
     gameweeks = list(range(start_gw, start_gw + horizon))
 
     fixtures = all_fixtures[all_fixtures["gw"].isin(gameweeks)].copy()
@@ -2070,7 +2251,8 @@ def project(horizon: int = 5, start_gw: int | None = None,
     # with too little Premier League history to project from. A share of the
     # season rather than a fixed 450 minutes, so the list still means the same
     # thing in September as it does in May.
-    summary["needs_override"] = ((summary["minutes"] < BLINDSPOT_SHARE * basis.fpl_minutes)
+    evidence = summary.get("evidence_minutes", summary["minutes"])
+    summary["needs_override"] = ((evidence < BLINDSPOT_SHARE * basis.pooled_fpl_minutes)
                                  & (summary["price"] >= 5.0))
 
     # How much of each club's expected goals the model actually manages to
@@ -2106,7 +2288,23 @@ def project(horizon: int = 5, start_gw: int | None = None,
         odds_note=odds_note,
         strength=strength,
         basis=basis,
+        notes=notes,
     )
+
+
+def _understat_current(season: str, force_refresh: bool,
+                       notes: list[str]) -> pd.DataFrame:
+    """The season under way on Understat, or an empty frame before it has one
+    -- the endpoint answers a season that has not started with nothing, or
+    with an error, and either way this season simply contributes no minutes."""
+    try:
+        stats = understat.player_stats(season, force_refresh=force_refresh)
+    except Exception as error:
+        notes.append(f"Understat {season} unavailable ({error}); attacking rates "
+                     "rest on last season alone")
+        return pd.DataFrame(columns=["us_team_list", "us_minutes", "npxG", "xA"])
+    return stats if len(stats) else pd.DataFrame(columns=["us_team_list", "us_minutes",
+                                                          "npxG", "xA"])
 
 
 def reproject_player(projection: Projection, fpl_id: int,

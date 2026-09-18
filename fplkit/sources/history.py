@@ -33,6 +33,11 @@ TTL = 12 * 3600
 TIMEOUT = 60
 
 
+def season_folder(start_year: int) -> str:
+    """The vaastav archive's folder name for the season starting in `start_year`."""
+    return f"{start_year}-{str(start_year + 1)[2:]}"
+
+
 def current_season(today: datetime.date | None = None) -> str:
     """The vaastav archive's folder name for the season under way right now.
 
@@ -43,8 +48,46 @@ def current_season(today: datetime.date | None = None) -> str:
     the edit that went stale for the 2026-27 season this fixes.
     """
     today = today or datetime.date.today()
-    start_year = today.year if today.month >= 8 else today.year - 1
-    return f"{start_year}-{str(start_year + 1)[2:]}"
+    return season_folder(today.year if today.month >= 8 else today.year - 1)
+
+
+# A per-gameweek archive that has fallen this far behind the real calendar is
+# not "recent form" any more, whatever its own latest row says. The tilt was
+# calibrated on a mirror that kept up; two gameweeks is the slack a weekend's
+# lag deserves, and past it the archive is dropped rather than read as current.
+ARCHIVE_MAX_LAG = 2
+
+# Season totals worth carrying from the completed season, and the column each
+# lands on. Pooled with this season's FPL totals by model.attach_rates and
+# model.minutes_model, so a rate six matches into a season still knows what
+# the same player did over the previous thirty-eight.
+PREVIOUS_TOTALS = ["minutes", "starts", "bonus", "yellow_cards", "saves",
+                   "defensive_contribution", "expected_goals", "expected_assists",
+                   "expected_goals_conceded"]
+
+
+def season_totals(season: str, force_refresh: bool = False) -> pd.DataFrame:
+    """One row per player for a completed season: the FPL API's own season
+    totals as the archive last mirrored them, keyed by `code`, plus the club
+    he ended it at (`prev_team`, FPL's full club name) and its match count.
+
+    Empty on any failure: the previous season is extra evidence, and losing it
+    puts the model back on this season's totals alone rather than taking the
+    projection down.
+    """
+    try:
+        players = _cached_csv("history", f"{BASE}/{season}/players_raw.csv", force_refresh)
+        teams = _cached_csv("history", f"{BASE}/{season}/teams.csv", force_refresh)
+    except Exception:
+        return pd.DataFrame(columns=["code", "prev_team", "prev_matches"]
+                            + [f"prev_{c}" for c in PREVIOUS_TOTALS])
+    out = pd.DataFrame({"code": pd.to_numeric(players["code"], errors="coerce")})
+    for column in PREVIOUS_TOTALS:
+        out[f"prev_{column}"] = pd.to_numeric(players.get(column), errors="coerce").fillna(0.0)
+    names = dict(zip(teams["id"], teams["name"]))
+    out["prev_team"] = players["team"].map(names)
+    out["prev_matches"] = 38.0
+    return out.dropna(subset=["code"]).astype({"code": int}).drop_duplicates("code")
 
 # Columns worth carrying: the counting stats the model derives rates from.
 KEEP = ["code", "gw", "minutes", "expected_goals", "expected_assists",
@@ -96,7 +139,25 @@ def gameweek_history(season: str | None = None,
     return df[KEEP]
 
 
-def start_form(history: pd.DataFrame, half_life_matches: float = 4.0) -> pd.DataFrame:
+def _weighted(history: pd.DataFrame, half_life_matches: float,
+              latest: int | None) -> pd.DataFrame | None:
+    """The archive with a recency weight on every row, or None when it is too
+    stale to use. `latest` is the gameweek just finished according to the FPL
+    API; None means trust the archive's own last row (a completed season)."""
+    if history.empty or not half_life_matches:
+        return None
+    archive_latest = int(history["gw"].max())
+    if latest is None:
+        latest = archive_latest
+    elif archive_latest < latest - ARCHIVE_MAX_LAG:
+        return None
+    df = history.copy()
+    df["w"] = 0.5 ** ((latest - df["gw"]) / float(half_life_matches))
+    return df
+
+
+def start_form(history: pd.DataFrame, half_life_matches: float = 4.0,
+               latest: int | None = None) -> pd.DataFrame:
     """A recency-weighted start rate, and how many matches stand behind it.
 
     Separate from `recency_multipliers` on purpose, and not optional the way the
@@ -126,13 +187,10 @@ def start_form(history: pd.DataFrame, half_life_matches: float = 4.0) -> pd.Data
     then decays toward the flat rate as the horizon lengthens, which is the part
     that handles the reversal properly.
     """
-    if history.empty or not half_life_matches:
+    df = _weighted(history, half_life_matches, latest)
+    if df is None:
         return pd.DataFrame(columns=["code", "recent_start_rate", "recent_matches"])
-
-    df = history.copy()
     df["started"] = (pd.to_numeric(df["starts"], errors="coerce").fillna(0.0) > 0).astype(float)
-    latest = df["gw"].max()
-    df["w"] = 0.5 ** ((latest - df["gw"]) / float(half_life_matches))
 
     grouped = df.groupby("code")
     weight = grouped["w"].sum()
@@ -149,7 +207,8 @@ def start_form(history: pd.DataFrame, half_life_matches: float = 4.0) -> pd.Data
     return out.dropna(subset=["recent_start_rate"]).reset_index(drop=True)
 
 
-def minutes_form(history: pd.DataFrame, half_life_matches: float = 4.0) -> pd.DataFrame:
+def minutes_form(history: pd.DataFrame, half_life_matches: float = 4.0,
+                 latest: int | None = None) -> pd.DataFrame:
     """A recency-weighted shift length, and how many starts stand behind it.
 
     Season-to-date `minutes / starts` off the FPL API cannot isolate this: total
@@ -167,17 +226,12 @@ def minutes_form(history: pd.DataFrame, half_life_matches: float = 4.0) -> pd.Da
     apart.
     """
     columns = ["code", "recent_mins_if_start", "recent_start_matches", "recent_mins_std"]
-    if history.empty or not half_life_matches:
+    df = _weighted(history, half_life_matches, latest)
+    if df is None:
         return pd.DataFrame(columns=columns)
-
-    df = history.copy()
-    started = pd.to_numeric(df["starts"], errors="coerce").fillna(0.0) > 0
-    df = df[started]
+    df = df[pd.to_numeric(df["starts"], errors="coerce").fillna(0.0) > 0]
     if df.empty:
         return pd.DataFrame(columns=columns)
-
-    latest = df["gw"].max()
-    df["w"] = 0.5 ** ((latest - df["gw"]) / float(half_life_matches))
 
     grouped = df.groupby("code")
     weight = grouped["w"].sum()
@@ -200,7 +254,8 @@ def minutes_form(history: pd.DataFrame, half_life_matches: float = 4.0) -> pd.Da
 
 def recency_multipliers(history: pd.DataFrame, half_life_matches: float,
                         clip: tuple[float, float] = (0.6, 1.6),
-                        min_minutes: float = 270.0) -> pd.DataFrame:
+                        min_minutes: float = 270.0,
+                        latest: int | None = None) -> pd.DataFrame:
     """How much better or worse a player looked late in the season than overall.
 
     Deliberately a *multiplier* on the rates the model already has, not a
@@ -217,12 +272,9 @@ def recency_multipliers(history: pd.DataFrame, half_life_matches: float,
     """
     columns = ["expected_goals", "expected_assists", "defensive_contribution",
                "saves", "bonus"]
-    if history.empty or not half_life_matches:
+    df = _weighted(history, half_life_matches, latest)
+    if df is None:
         return pd.DataFrame(columns=["code"] + [f"{c}_mult" for c in columns])
-
-    df = history.copy()
-    latest = df["gw"].max()
-    df["w"] = 0.5 ** ((latest - df["gw"]) / float(half_life_matches))
 
     out = []
     for code, group in df.groupby("code"):

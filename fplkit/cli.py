@@ -150,6 +150,8 @@ def _run_projection(args) -> Projection:
     )
     if projection.odds_note:
         console.print(f"[yellow]odds: {projection.odds_note}[/yellow]")
+    for note in projection.notes:
+        console.print(f"[yellow]{note}[/yellow]")
     if getattr(args, "recency", 0):
         tilted = int((projection.players.get("recency", pd.Series(dtype=float)) != 1.0).sum())
         console.print(f"[dim]recency weighting on, {args.recency:g}-gameweek "
@@ -629,9 +631,12 @@ def _load_squad(players: pd.DataFrame, path: str | None) -> tuple[list[int], dic
         ids = [int(_resolve(players, str(name))["fpl_id"]) for name in df["web_name"]]
 
     sell = {}
-    column = next((c for c in ("sell_price", "purchase_price") if c in df.columns), None)
-    if column:
-        sell = {i: float(v) for i, v in zip(ids, df[column]) if pd.notna(v)}
+    now = players.set_index("fpl_id")["price"]
+    if "sell_price" in df.columns:
+        sell = {i: float(v) for i, v in zip(ids, df["sell_price"]) if pd.notna(v)}
+    elif "purchase_price" in df.columns:
+        sell = {i: transfers.sell_price(float(v), float(now[i]))
+                for i, v in zip(ids, df["purchase_price"]) if pd.notna(v)}
     return ids, sell
 
 
@@ -658,9 +663,11 @@ def cmd_transfers(args) -> None:
         if chip not in force_chips:
             force_chips.append(chip)
 
+    # Before the opening deadline nothing is banked; a wildcard keeps what was.
+    free_transfers = 0 if not owned and projection.basis.preseason else args.free_transfers
     settings = dict(
         horizon=args.transfer_horizon, budget=args.budget, squad=owned or None,
-        bank=args.bank, free_transfers=args.free_transfers,
+        bank=args.bank, free_transfers=free_transfers,
         sell_prices=sell_prices or None, min_minutes_prob=args.min_start,
         chip_windows=chip_windows,
         chips_used=args.chips_used or None,
@@ -675,7 +682,7 @@ def cmd_transfers(args) -> None:
 
     console.print(
         f"[bold]GW{path.gameweeks[0]}–GW{path.gameweeks[-1]}[/bold], "
-        f"{'preseason — the opening fifteen is a free choice' if not owned else f'from the {len(owned)} you own'}"
+        f"{'from scratch — the opening fifteen is a free choice' if not owned else f'from the {len(owned)} you own'}"
         f", discounting at a {args.transfer_half_life:g}-gameweek half-life.\n")
     _print_transfer_path(path, show_lineups=args.lineups)
 
@@ -1150,8 +1157,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(tr)
     tr.add_argument("--squad", default=None,
                     help="CSV of the fifteen you own (fpl_id or web_name, and "
-                         "optionally sell_price). Omit before the season starts, "
-                         "when the opening squad is a free choice")
+                         "optionally purchase_price, from which the sell price "
+                         "follows, or sell_price outright). Omit to build the "
+                         "fifteen from scratch: preseason, or a wildcard, with "
+                         "--budget set to what selling the old squad raises plus "
+                         "the bank")
     tr.add_argument("--bank", type=float, default=0.0,
                     help="money not in the squad, in millions")
     tr.add_argument("--free-transfers", type=int, default=1,

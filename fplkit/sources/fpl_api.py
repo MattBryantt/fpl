@@ -7,13 +7,15 @@ Endpoints used:
   entry/{id}/event/{gw}/picks/         -> a manager's squad for one gameweek
   entry/{id}/history/                  -> a manager's chips used and past-season totals
   entry/{id}/transfers/                -> a manager's full transfer log
+  element-summary/{id}/                -> one player's per-gameweek rows this season
 
 The entry/* endpoints are public and need no login -- a manager's team id
 (visible in the URL of their own "Points" page) is all that identifies them.
 There is deliberately no path here to FPL's authenticated `/my-team/{id}/`
 endpoint, which is the only one that carries per-player selling prices: this
-tool never asks for a password, so anywhere a selling price would matter it
-falls back to the player's current listed price instead (see live_squad()).
+tool never asks for a password. Selling prices are rebuilt instead from what
+the public endpoints do say -- what each player was bought for -- see
+purchase_prices() and live_squad().
 """
 
 from __future__ import annotations
@@ -147,6 +149,21 @@ def chip_windows(gameweek: int | None = None,
     return windows
 
 
+def season_start_year(force_refresh: bool = False) -> int:
+    """The year the season the API is serving kicked off in, off gameweek 1's
+    deadline. The game for a new season goes live in July, so from then until
+    the following June this names that season -- which is what every "this
+    season" and "last season" in the model is relative to."""
+    first = bootstrap(force_refresh)["events"][0]
+    return int(str(first["deadline_time"])[:4])
+
+
+def element_summary(element_id: int, force_refresh: bool = False) -> dict:
+    """One player's season: `history` (one row per gameweek played, with the
+    price he carried that week as `value`, in tenths) and `history_past`."""
+    return _get(f"element-summary/{element_id}/", force_refresh)
+
+
 def total_managers(force_refresh: bool = False) -> int:
     return int(bootstrap(force_refresh).get("total_players", 0))
 
@@ -200,6 +217,42 @@ def entry_transfers(team_id: int, force_refresh: bool = False) -> list[dict]:
     return _get(f"entry/{team_id}/transfers/", force_refresh, ttl=LIVE_TTL)
 
 
+# Chips that suspend the transfer accounting for their gameweek: the moves made
+# under them are free and unlimited, cost nothing from the bank of free
+# transfers, and earn none either.
+TRANSFER_CHIPS = ("freehit", "wildcard")
+
+
+def purchase_prices(squad_ids: list[int], transfer_log: list[dict],
+                    freehit_gws: set[int], force_refresh: bool = False) -> dict[int, float]:
+    """What each owned player was bought for, in millions.
+
+    The transfer log carries the price of every in-season purchase; the
+    latest one for a player still owned is the one his sell price is built
+    from (bought, sold, bought back: the second purchase). A free-hit week's
+    moves are skipped because they were handed back. Whoever is left was in
+    the opening squad and cost what he was listed at in gameweek 1, which his
+    own gameweek history still says. A player with neither falls back to his
+    current price, which is the honest "no profit known".
+    """
+    bought: dict[int, float] = {}
+    for move in sorted(transfer_log, key=lambda t: (t["event"], t.get("time", ""))):
+        if move["event"] in freehit_gws:
+            continue
+        bought[move["element_in"]] = move["element_in_cost"] / 10.0
+
+    out = {}
+    for fpl_id in squad_ids:
+        if fpl_id in bought:
+            out[fpl_id] = bought[fpl_id]
+            continue
+        rows = element_summary(fpl_id, force_refresh).get("history", [])
+        opening = next((r for r in rows if r.get("round") == 1), None)
+        if opening is not None:
+            out[fpl_id] = opening["value"] / 10.0
+    return out
+
+
 def live_squad(team_id: int, gw: int | None = None, force_refresh: bool = False) -> dict:
     """Everything the board needs to act on a manager's real team, in one call.
 
@@ -210,14 +263,12 @@ def live_squad(team_id: int, gw: int | None = None, force_refresh: bool = False)
     (`localStorage`/sync), which the browser already handles at its own
     save/load boundary; a value fetched live is never stale by definition.
 
-    `sell_prices_by_code` is deliberately absent: without the authenticated
-    `/my-team/` endpoint there is no per-player selling price to offer, so
-    callers should fall back to each player's current listed price -- the
-    same approximation `plan_transfers()` already makes when its own
-    `sell_prices` argument is omitted. `budget_total`, by contrast, does not
-    need per-player prices at all: `value + bank` is exactly what FPL itself
-    would use as a wildcard/free-hit rebuild budget, already net of every
-    player's real sell-on fee on their end.
+    `purchase_prices` and `sell_prices` are rebuilt from the public transfer
+    log and gameweek-1 prices (see purchase_prices()), since the endpoint that
+    states them outright needs a login. `budget_total` is what a wildcard or
+    free hit has to spend: the squad's selling value plus the bank. FPL's own
+    `value` is passed through for reference; it is the team value the site
+    shows, bank included, so it is not added to the bank again here.
     """
     gw = gw or (next_gameweek(force_refresh) - 1) or 1
     picks = entry_picks(team_id, gw, force_refresh)
@@ -230,7 +281,8 @@ def live_squad(team_id: int, gw: int | None = None, force_refresh: bool = False)
     bank = eh["bank"] / 10.0
     value = eh["value"] / 10.0
 
-    chips_used = [c["name"] for c in history.get("chips", [])]
+    chips_played = {c["event"]: c["name"] for c in history.get("chips", [])}
+    chips_used = list(chips_played.values())
 
     # Imported here, not at module load: transfers.py -> model.py -> fpl_api.py
     # is already a cycle, so importing transfers at the top of this file would
@@ -241,10 +293,15 @@ def live_squad(team_id: int, gw: int | None = None, force_refresh: bool = False)
     for row in sorted(history.get("current", []), key=lambda r: r["event"]):
         if row["event"] < 2 or row["event"] > gw:
             continue
-        freehit = any(c["event"] == row["event"] and c["name"] == "freehit"
-                      for c in history.get("chips", []))
+        chip = chips_played.get(row["event"]) in TRANSFER_CHIPS
         ft = transfers.next_free_transfers(
-            ft, row["event_transfers"], played_freehit=freehit)
+            ft, 0 if chip else row["event_transfers"], played_chip=chip)
+
+    freehit_gws = {e for e, name in chips_played.items() if name == "freehit"}
+    bought = purchase_prices(squad_ids, entry_transfers(team_id, force_refresh),
+                             freehit_gws, force_refresh)
+    now = {int(p["id"]): p["now_cost"] / 10.0 for p in bootstrap(force_refresh)["elements"]}
+    sell = {i: transfers.sell_price(bought.get(i, now[i]), now[i]) for i in squad_ids}
 
     return {
         "gw": gw,
@@ -252,7 +309,9 @@ def live_squad(team_id: int, gw: int | None = None, force_refresh: bool = False)
         "captain_id": captain_id,
         "bank": bank,
         "value": value,
-        "budget_total": round(bank + value, 1),
+        "purchase_prices": bought,
+        "sell_prices": sell,
+        "budget_total": round(bank + sum(sell.values()), 1),
         "chips_used": chips_used,
         "active_chip": picks.get("active_chip"),
         "free_transfers": ft,
