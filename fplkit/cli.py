@@ -1042,10 +1042,10 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--no-odds-calibration", action="store_true",
                          help="don't nudge an unpriced fixture's xG ratings toward "
                               "what this club's other, priced fixtures say about it")
-        sub.add_argument("--last-season", type=float, default=1.0, metavar="W",
+        sub.add_argument("--last-season", type=float, default=0.5, metavar="W",
                          help="how much last season's evidence counts once this "
-                              "season is under way, 0-1 (default 1: a minute of "
-                              "it is worth a minute of this season's, fading to "
+                              "season is under way, 0-1 (default 0.5; 1 = a minute "
+                              "of it is worth a minute of this season's, fading to "
                               "nothing by gameweek 38; 0 = this season only)")
         sub.add_argument("--recency", type=float, default=0.0, metavar="N",
                          help="weight recent matches above early-season ones. "
@@ -1255,7 +1255,7 @@ def build_parser() -> argparse.ArgumentParser:
                       help=f"gameweeks to freeze (default {SNAPSHOT_HORIZON}); the "
                            "board can show fewer but never more")
     snap.add_argument("--start-gw", type=int, default=None)
-    snap.add_argument("--last-season", type=float, default=1.0, metavar="W",
+    snap.add_argument("--last-season", type=float, default=0.5, metavar="W",
                       help="weight on last season's evidence, 0-1 (see plan --last-season)")
     snap.add_argument("--recency", type=float, default=0.0, metavar="N",
                       help="recent-form half-life. Unlike horizon and half-life "
