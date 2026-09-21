@@ -266,7 +266,7 @@ export const SETTING_IDS = ["horizon", "gwdecay", "budget", "ownw", "minstart",
                      "maxclub", "formation", "recency", "lastseason", "freetransfers"];
 export const DEFAULT_SETTINGS = { horizon: "8", gwdecay: "0.79", budget: "100", ownw: "0",
                            minstart: "0.3", maxclub: "3", formation: "", freetransfers: "1",
-                           lastseason: "0.5" };
+                           lastseason: "0.25" };
 export const DEFAULT_BENCH = { GKP: 0.03, "1": 0.24, "2": 0.10, "3": 0.04 };
 export const DEFAULT_CHIP_HOLD = { bboost: 14, "3xc": 10, freehit: 12 };
 export const DEFAULT_FT_VALUE = 1.5;

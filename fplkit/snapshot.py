@@ -243,7 +243,7 @@ def _teams(force_refresh: bool = False) -> dict[str, Any]:
 
 
 def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
-          recency: float = 0.0, previous: float = 0.5,
+          recency: float = 0.0, previous: float = 0.25,
           force_refresh: bool = False) -> dict:
     """Run the projection and reduce it to what the browser needs."""
     projection = project(horizon=horizon, start_gw=start_gw,
