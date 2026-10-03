@@ -442,6 +442,7 @@ projection rather than a view of it:
 | Save and compare drafts | ✅ | |
 | See where a player's points come from | ✅ | |
 | Fresh odds, prices, injuries | | Sync |
+| Last season's weight, in steps of 0.25 | ✅ | Sync, for anything in between |
 | First gameweek, recent-form half-life | | Sync |
 | Ask why a player is rated highly | | the AI endpoint |
 

@@ -98,7 +98,7 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith("/api/")) return;   // never cache a write or a sync
 
-  if (url.pathname === "/snapshot.json") {
+  if (url.pathname === "/snapshot.json" || url.pathname.startsWith("/snapshots/")) {
     event.respondWith(networkFirst(request));
     return;
   }

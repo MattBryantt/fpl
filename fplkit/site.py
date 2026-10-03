@@ -32,6 +32,10 @@ from . import config
 from .server import ASSETS, SHIRT_SOURCE, WEB_DIR
 from .sources import fpl_api
 
+# Last-season weights, in percent, the static board can switch between. The
+# 25 is the default and is served as snapshot.json itself.
+LAST_SEASON_STEPS = (0, 25, 50, 75, 100)
+
 # Pages that are their own directory, so the host serves them at a clean URL
 # without needing rewrite rules. `/data` has to keep working: it is linked from
 # the board and it is in the service worker's shell list.
@@ -118,6 +122,9 @@ def _headers_file(out: Path) -> None:
         "/snapshot.json\n"
         "  Cache-Control: no-cache\n"
         "\n"
+        "/snapshots/*\n"
+        "  Cache-Control: no-cache\n"
+        "\n"
         "/assets/*\n"
         "  Cache-Control: no-cache\n"
         "\n"
@@ -193,8 +200,13 @@ def _write_service_worker(out: Path) -> str:
     return version
 
 
-def build(out_dir: Path, snapshot_path: Path) -> dict[str, int | str]:
-    """Write the whole board to `out_dir`. Returns a count of what was written."""
+def build(out_dir: Path, snapshot_path: Path,
+          variants: dict[int, Path] | None = None) -> dict[str, int | str]:
+    """Write the whole board to `out_dir`. Returns a count of what was written.
+
+    `variants` maps a last-season weight in percent to a snapshot built with it,
+    so the slider works on a host with no Python behind it.
+    """
     out = Path(out_dir)
     if out.exists():
         shutil.rmtree(out)
@@ -219,6 +231,10 @@ def build(out_dir: Path, snapshot_path: Path) -> dict[str, int | str]:
 
     snapshot = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
     shutil.copy2(snapshot_path, out / "snapshot.json")
+    for pct, path in (variants or {}).items():
+        target = out / "snapshots" / f"prev-{pct}.json"
+        target.parent.mkdir(exist_ok=True)
+        shutil.copy2(path, target)
     shirts = _mirror_shirts(out, _shirt_codes(snapshot))
 
     _headers_file(out)
