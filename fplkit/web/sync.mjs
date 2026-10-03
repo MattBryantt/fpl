@@ -178,7 +178,7 @@ export function syncableSettings() {
     noDecay: !!$("#nodecay")?.checked, calibrateOdds: $("#oddscalib")?.checked !== false,
     chipPlan: persistableChipPlan(),
     bench: Object.fromEntries(BENCH_KEYS.map((k) => [k, $(`#bw_${k}`).value])),
-    benchTouched: getBenchTouched(), include: [...S.include], exclude: [...S.exclude],
+    benchTouched: getBenchTouched(), include: [...S.include], exclude: [...S.exclude], poolOut: [...S.poolOut],
     chipsUsed: [...S.chipsUsed],
     chipHold: chipHoldValues(), ftValue: ftValueSetting(), chipEconTouched: getChipEconTouched(),
   };
@@ -207,6 +207,7 @@ export function applySyncedSettings(saved) {
   }
   if (Array.isArray(saved.include)) S.include = saved.include.map(Number);
   if (Array.isArray(saved.exclude)) S.exclude = saved.exclude.map(Number);
+  if (Array.isArray(saved.poolOut)) S.poolOut = saved.poolOut.map(Number);
   if (Array.isArray(saved.chipsUsed)) S.chipsUsed = saved.chipsUsed.slice();
   renderChipsUsed();
   // Folds the pulled controls/bench/include/exclude into this device's own

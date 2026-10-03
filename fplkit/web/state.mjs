@@ -140,6 +140,9 @@ export const S = {
   // to the tag-based lane order (see TAG_LANE, effectiveRowOrder).
   lineupOrder: loadLocal(STORE.lineupOrder, {}),
   compare: [], draftsPath: "", include: [], exclude: [],
+  // Players the user cut from the chips planner's candidate pool. Unlike exclude
+  // they are dropped after the pool is picked, so nobody is promoted to fill in.
+  poolOut: [],
   // Chips already played this half of the season, for the transfer-and-chip
   // plan -- a fact about the plan like include/exclude, so it travels the
   // same way (readSettings/syncableSettings), not through STORE directly.

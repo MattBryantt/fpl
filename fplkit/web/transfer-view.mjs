@@ -581,7 +581,7 @@ export function transferInputKey() {
   // Banked transfers do count: a rebuild in season is a wildcard, and they
   // carry over it.
   return JSON.stringify([
-    S.include, S.exclude, S.chipsUsed, S.chipPlan.opt,
+    S.include, S.exclude, S.poolOut, S.chipsUsed, S.chipPlan.opt,
     $("#budget").value, $("#maxclub").value, S.meta?.preseason ? 0 : $("#freetransfers").value,
     $("#minstart").value, $("#formation").value, benchWeights(),
     transferGwCount(), noDecay(), S.gameweeks[0] ?? null,
@@ -589,6 +589,35 @@ export function transferInputKey() {
   ]);
 }
 import { chipHoldValues as chipHoldValuesRef, ftValueSetting as ftValueSettingRef } from "/assets/squad-view.mjs";
+
+/** The candidate pool before any manual cuts, with what it was built from.
+ *  `keep` is who can never be cut: the players you required, plus your own
+ *  fifteen when the plan is anchored to it. */
+export function plannerCandidates(squad = []) {
+  const rules = S.snapshot.rules;
+  const gwCount = transferGwCount();
+  const players = S.players.map((p) => ({
+    id: p.id, pos: p.pos, team: p.team, price: p.price, p_play: p.p_play,
+    hazard: p.hazard, gw: p.gw,
+  }));
+  const pointsByPlayer = new Map(players.map((p) => [p.id, survivalAdjusted(p, gwCount)]));
+  // Every one of these used to be a constant here while the same control sat
+  // in Settings driving the squad optimiser -- so the two halves of the board
+  // answered different questions and neither said so. The plan now reads the
+  // same knobs the pitch does.
+  // Only the players you have *required*, not everyone you happen to own. A
+  // from-scratch build has nothing to sell, and forcing them in would quietly
+  // widen the candidate set by fifteen on the strength of a squad this model
+  // does not read. Anchored mode is the exception: it has to keep your own
+  // fifteen in the pool or the plan could not represent selling them.
+  const keep = [...new Set([...squad, ...S.include])];
+  const full = candidatePool(players, pointsByPlayer,
+    { keep, minMinutesProb: +$("#minstart").value, exclude: S.exclude, caps: rules.POOL_BY_POS,
+      pricePointCandidates: rules.PRICE_POINT_CANDIDATES });
+  const cut = new Set(S.poolOut);
+  const pool = full.filter((p) => !cut.has(p.id) || keep.includes(p.id));
+  return { players, pointsByPlayer, keep, pool, full };
+}
 
 /** Reduce the pool, build the ownership facts and the rule constants into
  *  exactly what transfers.js needs — the same "prep vs solve" split as
@@ -617,25 +646,8 @@ export function buildTransferPayload(squad = []) {
   const gwCount = transferGwCount();
   const gameweeks = S.gameweeks.slice(0, gwCount);
 
-  const players = S.players.map((p) => ({
-    id: p.id, pos: p.pos, team: p.team, price: p.price, p_play: p.p_play,
-    hazard: p.hazard, gw: p.gw,
-  }));
-  const pointsByPlayer = new Map(players.map((p) => [p.id, survivalAdjusted(p, gwCount)]));
+  const { players, pointsByPlayer, pool } = plannerCandidates(squad);
 
-  // Every one of these used to be a constant here while the same control sat
-  // in Settings driving the squad optimiser -- so the two halves of the board
-  // answered different questions and neither said so. The plan now reads the
-  // same knobs the pitch does.
-  // Only the players you have *required*, not everyone you happen to own. A
-  // from-scratch build has nothing to sell, and forcing them in would quietly
-  // widen the candidate set by fifteen on the strength of a squad this model
-  // does not read. Anchored mode is the exception: it has to keep your own
-  // fifteen in the pool or the plan could not represent selling them.
-  const keep = [...new Set([...squad, ...S.include])];
-  const pool = candidatePool(players, pointsByPlayer,
-    { keep, minMinutesProb: +$("#minstart").value, exclude: S.exclude, caps: rules.POOL_BY_POS,
-      pricePointCandidates: rules.PRICE_POINT_CANDIDATES });
   const cPool = captainPool(pool, pointsByPlayer, rules.CAPTAIN_CANDIDATES);
 
   // A pinned formation is a floor and a ceiling at once. The keeper is always
@@ -922,7 +934,7 @@ export async function planTransfersAndChips() {
  *  fifteen you own, which this plan is anchored to. */
 export function ownedInputKey() {
   return JSON.stringify([
-    S.squad, S.include, S.exclude, S.chipsUsed, S.chipPlan.own,
+    S.squad, S.include, S.exclude, S.poolOut, S.chipsUsed, S.chipPlan.own,
     $("#budget").value, $("#maxclub").value, $("#freetransfers").value,
     $("#minstart").value, $("#formation").value, benchWeights(),
     transferGwCount(), noDecay(), S.gameweeks[0] ?? null,
