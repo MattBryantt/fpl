@@ -940,6 +940,7 @@ def cmd_build(args) -> None:
 
     out = Path(args.out)
     snapshot_path = Path(args.snapshot) if args.snapshot else None
+    variants = {}
 
     if snapshot_path is None or not snapshot_path.exists():
         with console.status("[cyan]projecting and freezing…"):
@@ -948,9 +949,16 @@ def cmd_build(args) -> None:
                 recency=args.recency, force_refresh=args.refresh)
         snapshot_path = Path(written)
         console.print(f"[dim]built {snapshot_path}[/dim]")
+        with console.status("[cyan]projecting the other last-season weights…"):
+            for pct in site.LAST_SEASON_STEPS:
+                if pct != 25:
+                    variants[pct], _ = snapshot_module.write(
+                        path=snapshot_path.with_name(f"snapshot-prev-{pct}.json"),
+                        horizon=args.horizon, start_gw=args.start_gw,
+                        recency=args.recency, previous=pct / 100)
 
     with console.status("[cyan]assembling the site…"):
-        counts = site.build(out, snapshot_path)
+        counts = site.build(out, snapshot_path, variants)
 
     total = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
     console.print(f"[bold]{out}[/bold]  [dim]{total / 1024:.0f} KB[/dim]")

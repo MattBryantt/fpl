@@ -76,6 +76,7 @@ export async function detectServer() {
     serverPresent = false;
   }
   document.body.classList.toggle("noserver", !serverPresent);
+  $("#lastseason").step = serverPresent ? 0.05 : 0.25;
   return serverPresent;
 }
 

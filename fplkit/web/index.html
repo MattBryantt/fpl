@@ -1189,7 +1189,7 @@ chance of dropping out, and the chip planner halves a gameweek's weight every 6.
     <label for="lastseason" title="How much last season's record counts once this season is under
 way. 1: a minute of it is worth a minute of this season's, fading to nothing by gameweek 38.
 0: this season only. Who has been starting lately is a separate, calibrated tilt and is not
-affected.">Last season's weight <span class="val" id="lsval">0.25</span> <span class="needs">sync</span></label>
+affected.">Last season's weight <span class="val" id="lsval">0.25</span> <span class="needs needs-server">sync</span></label>
     <input type="range" id="lastseason" min="0" max="1" step="0.05" value="0.25">
   </div>
   <div class="ctl">
@@ -1726,7 +1726,7 @@ import {
   renderChipEconValues, setChipEconDefaults, dropConstraint, swapIn, rebuildPool,
   applySettings, renderChrome, loadPool, toggleSettingsPanel, toggleMoreOptions,
   renderControlValues, togglePosTag, saveDraft, loadDraft, deleteDraft,
-  toggleCompare, sync as syncSnapshot, BENCH_KEYS, HOLD_KEYS, HOLD_INPUT_ID,
+  toggleCompare, setLastSeason, sync as syncSnapshot, BENCH_KEYS, HOLD_KEYS, HOLD_INPUT_ID,
 } from "/assets/squad-view.mjs";
 import { renderNearMisses, renderGwChart, renderExposure,
          renderTimeline, renderFixtures, setFixtureLambda, resetFixtureOverride,
@@ -1995,7 +1995,7 @@ $("#lastseason").addEventListener("input", (e) => {
   $("#lsval").textContent = (+e.target.value).toFixed(2);
   $("#lastseason").classList.toggle("needsync", +e.target.value !== (S.meta?.previous ?? 1));
 });
-$("#lastseason").addEventListener("change", () => syncSnapshot(false));
+$("#lastseason").addEventListener("change", setLastSeason);
 $("#startgw").addEventListener("change", () => syncSnapshot(false));
 
 $("#constraintChips").addEventListener("click", (e) => {

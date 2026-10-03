@@ -18,7 +18,7 @@ import {
 import { sellPrice as sellPriceOf } from "/assets/live.mjs";
 import {
   TOKEN, api, markSynced, pushOverrides, syncableSettings, applySyncedSettings,
-  lastSyncableSettings, setLastSyncableSettings, SKIP_PULL, ADOPT_REMOTE,
+  lastSyncableSettings, setLastSyncableSettings, SKIP_PULL, ADOPT_REMOTE, serverPresent,
 } from "/assets/sync.mjs";
 import { derivePool, staleness } from "/assets/board.mjs";
 import { pitchHTML, squadLayout, wireShirts, METRICS, METRIC_KEYS, MAX_METRICS,
@@ -1018,8 +1018,8 @@ export function renderComparison() {
 // reads it, which is the whole point of the arrangement below.
 const DATA_CACHE = "fpl-data-v1";
 
-export async function loadSnapshot() {
-  const res = await api("/snapshot.json");
+export async function loadSnapshot(path = "/snapshot.json") {
+  const res = await api(path);
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
     throw new Error(detail.error || detail.detail || `snapshot unavailable (${res.status})`);
@@ -1031,7 +1031,7 @@ export async function loadSnapshot() {
   // worst possible half-installed state. And when a token is configured the
   // worker cannot authenticate a request of its own; only the page holds it.
   try {
-    (await caches.open(DATA_CACHE)).put("/snapshot.json", res.clone());
+    (await caches.open(DATA_CACHE)).put(path, res.clone());
   } catch (_) { /* no Cache API — private mode, or plain http off localhost */ }
   return res.json();
 }
@@ -1130,6 +1130,21 @@ export async function loadPool(keepSquad = true) {
   }
   wrap.classList.remove("stale");
   $("#loading").classList.add("hidden");
+  renderAll();
+  scheduleSolve(0);
+}
+
+/** The slider's static-host path: snap to the nearest pre-built weight and load
+    that snapshot. With a laptop behind the page, Sync handles any value. */
+export async function setLastSeason() {
+  if (serverPresent !== false) return sync(false);
+  const pct = Math.round(+$("#lastseason").value * 4) * 25;
+  try {
+    S.snapshot = await loadSnapshot(pct === 25 ? "/snapshot.json" : `/snapshots/prev-${pct}.json`);
+  } catch (error) {
+    alert(`Could not load that weight — ${error.message}`);
+  }
+  rebuildPool();
   renderAll();
   scheduleSolve(0);
 }
