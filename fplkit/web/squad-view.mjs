@@ -597,6 +597,8 @@ export function renderSquad() {
     + (captain ? S.byId.get(captain).xppg || 0 : 0);
   $("#tXppg").textContent = xiIds.length && xiGames ? fmt(xiRate, 1) : "—";
 
+  renderSquadMoney(bank);
+
   const exp = exposure(S.squad);
   $("#tCov").textContent = S.squad.length ? Math.round(exp.share * 100) + "%" : "—";
 
@@ -616,6 +618,34 @@ export function renderSquad() {
     }
   }
 }
+/** Buy price per owned player and the bank, for when the live import is stale
+ *  (a wildcard week, say). Editing either keeps the other money figure fixed. */
+function renderSquadMoney(bank) {
+  const box = $("#squadMoney");
+  box.hidden = !S.squad.length;
+  if (!S.squad.length) return;
+  const rows = S.squad.map((id) => S.byId.get(id)).filter(Boolean).map((p) => `
+    <label class="sub">${p.name} <input type="number" step="0.1" min="3.5" max="16" style="width:4.5rem"
+      data-buy="${p.id}" value="${fmt(S.purchase[p.id] ?? p.price, 1)}"
+      title="Price paid; now £${fmt(p.price, 1)}m, sells for £${fmt(sellPrice(p.id), 1)}m"></label>`).join(" ");
+  if (box.contains(document.activeElement)) return;
+  box.innerHTML = `<details><summary class="sub">Squad money — buy prices and bank</summary>
+    <label class="sub">Bank £m <input type="number" step="0.1" min="0" style="width:4.5rem"
+      id="bankInput" value="${fmt(Math.max(0, bank), 1)}"></label>
+    <div>${rows}</div></details>`;
+}
+document.addEventListener("change", (e) => {
+  const buy = e.target.closest?.("[data-buy]");
+  const isBank = e.target.id === "bankInput";
+  if (!buy && !isBank) return;
+  const bank = $("#budget").value - squadSellValue(S.squad);
+  if (buy) S.purchase[+buy.dataset.buy] = +buy.value;
+  const kept = isBank ? +e.target.value : bank;
+  $("#budget").value = String(Math.round((squadSellValue(S.squad) + kept) * 10) / 10);
+  $("#budval").textContent = (+$("#budget").value).toFixed(1);
+  saveSquad(); scheduleSolve(); renderAll();
+});
+
 // The solver ranks the bench, because the slots are not interchangeable: the
 // first substitute comes on whenever a starter blanks, the third rarely does.
 export const BENCH_LABEL = { GKP: "GK sub", 1: "1st sub", 2: "2nd sub", 3: "3rd sub" };
