@@ -89,7 +89,7 @@ for (const c of cases) {
   const started = performance.now();
   let result;
   try {
-    result = await FplTransfers.planTransfers(c.pool, c.opt, VENDOR);
+    result = await FplTransfers.planTransfers(c.pool, { ...c.opt, mipRelGap: 1e-4 }, VENDOR);
   } catch (error) {
     failures.push(`${c.name}: JS threw "${error.message}" but CBC found ${c.objective}`);
     continue;

@@ -328,7 +328,7 @@ function forcibleChipSlots() {
   const gameweeks = S.gameweeks.slice(0, transferGwCountRef());
   return chipSlots(S.meta.chip_windows || {}, gameweeks, S.chipsUsed, S.snapshot.rules.CHIPS);
 }
-import { transferGwCount as transferGwCountRef } from "/assets/transfer-view.mjs";
+import { transferGwCount as transferGwCountRef, plannerCandidates as plannerCandidatesRef } from "/assets/transfer-view.mjs";
 
 /** The Settings controls the plan honours, spelled out on the tab that obeys
  *  them. Each of these was a hardcoded constant in buildTransferPayload until
@@ -636,6 +636,34 @@ function renderOwnedPanelHTML(slots, forcible) {
       { prefix: "own", weekIdx: S.ownedPlanWeek, live: false, showPitch: false }) : ""}`;
 }
 
+/** Who the chips planner may pick from. Every solve scales with this list, so
+ *  cutting players is the lever on wait time; each press cuts one, and the plans
+ *  below go stale rather than re-solving, like any other setting. */
+function poolFoldHTML() {
+  if (!S.meta || !S.snapshot) return "";
+  const { full, keep, pointsByPlayer } = plannerCandidatesRef(S.squad.length === 15 ? S.squad : []);
+  const cut = new Set(S.poolOut);
+  const kept = new Set(keep);
+  const total = (p) => (pointsByPlayer.get(p.id) || []).reduce((a, b) => a + b, 0);
+  const chip = (p) => `<button class="mini poolchip${cut.has(p.id) ? " cut" : ""}" data-poolcut="${p.id}"
+    ${kept.has(p.id) ? "disabled" : ""} title="${kept.has(p.id) ? "in your squad or required" : ""}">
+    ${S.byId.get(p.id)?.name} £${fmt(p.price, 1)}</button>`;
+  const rows = ["GKP", "DEF", "MID", "FWD"].map((pos) => {
+    const group = full.filter((p) => p.pos === pos).sort((a, b) => total(b) - total(a));
+    return `<div class="poolrow"><b>${pos}</b> ${group.map(chip).join("")}</div>`;
+  }).join("");
+  const live = full.length - full.filter((p) => cut.has(p.id) && !kept.has(p.id)).length;
+  return `<details class="chipfold"${S.chipFolds.pool ? " open" : ""}>
+    <summary data-fold="pool">Planner pool<span class="scope">${live} players${
+      live < full.length ? ` · ${full.length - live} cut` : ""}</span></summary>
+    <div class="foldbody">
+      <div class="sub">Press a player to cut him from every plan below. Fewer players, faster solves.
+        Press again to restore. ${cut.size ? `<button class="mini" id="poolReset">Restore all</button>` : ""}</div>
+      ${rows}
+    </div>
+  </details>`;
+}
+
 export function renderChips() {
   const host = $("#chipsBody");
   if (!host) return;
@@ -667,6 +695,7 @@ export function renderChips() {
   // both sides the same way -- and it is one line, not a card.
   host.innerHTML = `
     <div class="sub" id="chipConstraints" style="margin-bottom:10px"></div>
+    ${poolFoldHTML()}
 
     <div class="pitchpair">
       <div class="pitchside">
@@ -724,6 +753,13 @@ export function renderChips() {
   $("#replanBtn")?.addEventListener("click", planTransfersAndChips);
   renderChipConstraints();
   wireChipFolds("#chipsBody");
+  host.querySelectorAll("[data-poolcut]").forEach((b) => b.addEventListener("click", () => {
+    const id = +b.dataset.poolcut;
+    S.poolOut = S.poolOut.includes(id) ? S.poolOut.filter((x) => x !== id) : [...S.poolOut, id];
+    saveSettingsRef();
+    renderChips();
+  }));
+  $("#poolReset")?.addEventListener("click", () => { S.poolOut = []; saveSettingsRef(); renderChips(); });
 
   // The chart's toggle and its fold both live inside #chipsBody, which this
   // function rewrites on every render, so neither can use a load-time

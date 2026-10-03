@@ -140,6 +140,9 @@ export const S = {
   // to the tag-based lane order (see TAG_LANE, effectiveRowOrder).
   lineupOrder: loadLocal(STORE.lineupOrder, {}),
   compare: [], draftsPath: "", include: [], exclude: [],
+  // Players the user cut from the chips planner's candidate pool. Unlike exclude
+  // they are dropped after the pool is picked, so nobody is promoted to fill in.
+  poolOut: [],
   // Chips already played this half of the season, for the transfer-and-chip
   // plan -- a fact about the plan like include/exclude, so it travels the
   // same way (readSettings/syncableSettings), not through STORE directly.
@@ -205,9 +208,9 @@ export const S = {
   // The same transfer-and-chip plan, anchored to the fifteen you actually own
   // instead of built from scratch -- "given what I hold, when should I play
   // my chips and what do I transfer?" rather than "what would an ideal side
-  // do?". Lives on its own worker (see ensureOwnedWorker) so re-solving it
-  // never races the from-scratch plan above; not persisted, for the same
-  // reason transferPlan is not.
+  // do?". Solved on its own workers (see runJobs) so re-solving it never
+  // races the from-scratch plan above; not persisted, for the same reason
+  // transferPlan is not.
   ownedPlan: { state: "idle", result: null, error: "", key: null, progress: null },
   ownedPlanWeek: 0,
   // Which of the Chips tab's collapsible blocks you have opened. Both boxes are
