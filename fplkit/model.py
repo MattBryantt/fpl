@@ -957,7 +957,7 @@ def minutes_model(players: pd.DataFrame,
         recent_starts = pd.to_numeric(
             df.get("recent_start_matches", pd.Series(0.0, index=df.index)),
             errors="coerce").fillna(0.0).clip(lower=0.0)
-        believed = recent_starts / (recent_starts + MINUTES_FORM_PRIOR_MATCHES)
+        believed = (recent_starts / MINUTES_FORM_PRIOR_MATCHES).clip(0.0, 1.0)
         df["mins_if_start"] = (float(ASSUMED_START_MINUTES)
                                + believed.fillna(0.0) * (recent_mins.fillna(ASSUMED_START_MINUTES)
                                                           - ASSUMED_START_MINUTES)
