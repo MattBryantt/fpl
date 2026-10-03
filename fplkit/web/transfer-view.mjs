@@ -527,28 +527,44 @@ const TRANSFER_HORIZON_CAP = 6;
 export const transferGwCount = () =>
   Math.min(S.gameweeks.length, TRANSFER_HORIZON_CAP, +$("#horizon").value || TRANSFER_HORIZON_CAP);
 
-let transferWorker = null;
-const transferWaiters = new Map();
 let transferSeq = 0;
 
-function ensureTransferWorker() {
-  if (transferWorker) return transferWorker;
-  transferWorker = new Worker("/assets/transfer-worker.js");
-  transferWorker.onmessage = (event) => {
-    const { seq, kind } = event.data;
-    const waiter = transferWaiters.get(seq);
-    if (!waiter) return;
-    if (kind === "progress") { waiter.progress(event.data); return; }
-    transferWaiters.delete(seq);
-    waiter.resolve(event.data);
-  };
-  transferWorker.onerror = (event) => {
-    for (const [, waiter] of transferWaiters) waiter.reject(new Error(event.message || "the planner failed to start"));
-    transferWaiters.clear();
-    transferWorker.terminate();
-    transferWorker = null;
-  };
-  return transferWorker;
+const MAX_PARALLEL_SOLVES = 4;
+
+/** Run independent solve jobs on a few short-lived workers at once. HiGHS WASM
+ *  is single-threaded, so the jobs of one press (plan, baseline, a solve per
+ *  chip, a solve per pinned week) are what there is to spread across cores.
+ *  Resolves with results in job order; a superseded run terminates its workers
+ *  and never settles, which callers already guard against with their seq. */
+function runJobs(jobs, isStale, onProgress) {
+  const started = performance.now();
+  const count = Math.max(1, Math.min(MAX_PARALLEL_SOLVES, (navigator.hardwareConcurrency || 2) - 1, jobs.length));
+  const workers = [];
+  const results = new Array(jobs.length);
+  let next = 0, done = 0;
+  const stop = () => workers.forEach((w) => w.terminate());
+
+  return new Promise((resolve, reject) => {
+    const feed = (worker) => {
+      if (isStale()) { stop(); return; }
+      if (next >= jobs.length) { worker.terminate(); return; }
+      const i = next++;
+      const { pool, opt, tag } = jobs[i];
+      worker.onmessage = (event) => {
+        results[i] = { tag, ...event.data };
+        onProgress({ done: ++done, total: jobs.length });
+        if (done === jobs.length) resolve({ results, ms: Math.round(performance.now() - started) });
+        else feed(worker);
+      };
+      worker.postMessage({ pool, opt });
+    };
+    for (let k = 0; k < count; k++) {
+      const worker = new Worker("/assets/transfer-worker.js");
+      worker.onerror = (event) => { stop(); reject(new Error(event.message || "the planner failed to start")); };
+      workers.push(worker);
+      feed(worker);
+    }
+  });
 }
 
 /** Everything the plan is an answer *to*, as one comparable string. The plan
@@ -849,11 +865,6 @@ export async function planTransfersAndChips() {
   const jobs = buildTransferJobs(payload);
   const key = transferInputKey();
   const seq = ++transferSeq;
-  // A superseded request is dropped by the worker mid-sweep and never answered,
-  // so its waiter would sit in the map forever holding a promise nothing can
-  // settle. Nothing awaits those promises any more -- the seq check below is
-  // what actually guards the result -- but the entries are worth not keeping.
-  transferWaiters.clear();
   // The week on screen is an index into a plan that no longer exists, so it
   // goes back to the first gameweek rather than pointing at nothing.
   S.planWeek = 0;
@@ -866,16 +877,10 @@ export async function planTransfersAndChips() {
 
   let data;
   try {
-    data = await new Promise((resolve, reject) => {
-      transferWaiters.set(seq, {
-        resolve, reject,
-        progress: ({ done, total }) => {
-          if (seq !== transferSeq) return;
-          S.transferPlan.progress = { done, total };
-          renderChips();
-        },
-      });
-      ensureTransferWorker().postMessage({ seq, jobs });
+    data = await runJobs(jobs, () => seq !== transferSeq, ({ done, total }) => {
+      if (seq !== transferSeq) return;
+      S.transferPlan.progress = { done, total };
+      renderChips();
     });
   } catch (error) {
     if (seq !== transferSeq) return;
@@ -944,36 +949,7 @@ export function buildPlanOnlyJobs(payload) {
   return jobs;
 }
 
-/** A second, independent instance of the same worker transfer-worker.js runs
- *  on. The worker only ever answers its newest request and abandons anything
- *  still in flight the moment a fresher one arrives (see its own comment) --
- *  fine when there is one plan on the tab, wrong the moment there are two:
- *  posting the owned-squad plan would silently cut off the from-scratch one
- *  mid-solve and vice versa. A dedicated worker per plan is what keeps them
- *  from racing each other. */
-let ownedWorker = null;
-const ownedWaiters = new Map();
 let ownedSeq = 0;
-
-function ensureOwnedWorker() {
-  if (ownedWorker) return ownedWorker;
-  ownedWorker = new Worker("/assets/transfer-worker.js");
-  ownedWorker.onmessage = (event) => {
-    const { seq, kind } = event.data;
-    const waiter = ownedWaiters.get(seq);
-    if (!waiter) return;
-    if (kind === "progress") { waiter.progress(event.data); return; }
-    ownedWaiters.delete(seq);
-    waiter.resolve(event.data);
-  };
-  ownedWorker.onerror = (event) => {
-    for (const [, waiter] of ownedWaiters) waiter.reject(new Error(event.message || "the planner failed to start"));
-    ownedWaiters.clear();
-    ownedWorker.terminate();
-    ownedWorker = null;
-  };
-  return ownedWorker;
-}
 
 /** Solve the transfer-and-chip plan anchored to the fifteen you actually own
  *  (S.squad), so the tab can answer "given what I hold, what do I do" beside
@@ -987,7 +963,6 @@ export async function planOwnedSquad() {
   const jobs = buildPlanOnlyJobs(payload);
   const key = ownedInputKey();
   const seq = ++ownedSeq;
-  ownedWaiters.clear();
   S.ownedPlanWeek = 0;
   S.ownedPlan = { state: "solving", result: null, error: "", key,
                  progress: { done: 0, total: jobs.length } };
@@ -995,16 +970,10 @@ export async function planOwnedSquad() {
 
   let data;
   try {
-    data = await new Promise((resolve, reject) => {
-      ownedWaiters.set(seq, {
-        resolve, reject,
-        progress: ({ done, total }) => {
-          if (seq !== ownedSeq) return;
-          S.ownedPlan.progress = { done, total };
-          renderChips();
-        },
-      });
-      ensureOwnedWorker().postMessage({ seq, jobs });
+    data = await runJobs(jobs, () => seq !== ownedSeq, ({ done, total }) => {
+      if (seq !== ownedSeq) return;
+      S.ownedPlan.progress = { done, total };
+      renderChips();
     });
   } catch (error) {
     if (seq !== ownedSeq) return;

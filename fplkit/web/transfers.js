@@ -499,6 +499,8 @@
     };
   }
 
+  const MIP_REL_GAP = 0.002;
+
   let highsPromise = null;
   function loadHighs(base) {
     if (root.FplSolver) return root.FplSolver.loadHighs(base);
@@ -510,7 +512,7 @@
   async function planTransfers(pool, opt, base) {
     const highs = await loadHighs(base);
     const { lp, objConstant, meta } = buildLp(pool, opt);
-    const result = highs.solve(lp, {});
+    const result = highs.solve(lp, { mip_rel_gap: opt.mipRelGap ?? MIP_REL_GAP });
     if (result.Status !== "Optimal") {
       throw new Error(
         `no legal transfer plan found (solver status: ${result.Status}). `
