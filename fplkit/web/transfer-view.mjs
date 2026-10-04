@@ -723,7 +723,8 @@ export function buildTransferPayload(squad = []) {
   // does not spend transfers, so a no-transfer plan may still field a free-hit
   // side, which is exactly the question "what can I do without transfers?".
   const mode = plan.transferMode;
-  const noTransferGws = mode === "none" ? [...gameweeks] : [];
+  const wildcardFirst = side === "own" && !!plan.wildcardNow;
+  const noTransferGws = mode === "none" ? gameweeks.filter((gw, i) => !(wildcardFirst && i === 0)) : [];
   const hitLimit = mode === "free" ? 0 : null;
 
   const poolPayload = pool.map((p) => ({ id: p.id, pos: p.pos, team: p.team, price: p.price,
@@ -739,7 +740,7 @@ export function buildTransferPayload(squad = []) {
     friction: rules.TRANSFER_FRICTION, ftWorth, maxFreeTransfers: rules.MAX_FREE_TRANSFERS,
     hitCost: rules.HIT_COST, bankValue: rules.BANK_VALUE, freeTransfersPerGw: rules.FREE_TRANSFERS_PER_GW,
     idleMovePenalty: rules.IDLE_MOVE_PENALTY,
-    noTransferGws, hitLimit, wildcardFirst: side === "own" && !!plan.wildcardNow,
+    noTransferGws, hitLimit, wildcardFirst,
   };
   return { pool: poolPayload, opt, variation, skipped, forceChips, pinned, sweepSlots,
            pointsByPlayer, gameweeks, chipLabels: rules.CHIP_LABELS, shape, mode,

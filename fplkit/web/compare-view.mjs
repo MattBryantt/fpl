@@ -316,7 +316,7 @@ const CHIP_SHORT = { bboost: "BB", "3xc": "TC", freehit: "FH", wildcard: "WC" };
 const TRANSFER_MODES = [
   ["plan", "as the plan likes", "Transfers and hits from GW2 on are the solver's to spend."],
   ["free", "free transfers only", "No points hits — the plan may only use transfers it has earned."],
-  ["none", "never change the side", "One fifteen for the whole window. The cleanest read on a chip, since nothing but the chip can move. A free hit still fields its own side, because that chip does not spend transfers."],
+  ["none", "never change the side", "One fifteen for the whole window. The cleanest read on a chip, since nothing but the chip can move. A free hit still fields its own side, because that chip does not spend transfers. With Wildcard in first week ticked, the wildcard rebuild is the one exception: no transfers after it."],
 ];
 
 /** The chips a solve could be made to play: legal in this window and not
