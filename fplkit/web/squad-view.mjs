@@ -169,7 +169,7 @@ export function readSettings() {
     views: { ...S.views },
     tab: S.tab, metrics: [...S.metrics], compareWith: S.compareWith,
     pos: S.pos, sort: S.sort, dir: S.dir,
-    include: [...S.include], exclude: [...S.exclude], poolOut: [...S.poolOut],
+    include: [...S.include], exclude: [...S.exclude], poolOut: [...S.poolOut], poolIn: [...S.poolIn],
     chipsUsed: [...S.chipsUsed],
   };
 }
@@ -252,6 +252,7 @@ export function applySettings(saved) {
   S.include = Array.isArray(saved.include) ? saved.include.map(Number) : [];
   S.exclude = Array.isArray(saved.exclude) ? saved.exclude.map(Number) : [];
   S.poolOut = Array.isArray(saved.poolOut) ? saved.poolOut.map(Number) : [];
+  S.poolIn = Array.isArray(saved.poolIn) ? saved.poolIn.map(Number) : [];
   S.chipsUsed = Array.isArray(saved.chipsUsed) ? saved.chipsUsed.slice() : [];
   renderChipsUsed();
   renderControlValues();
@@ -300,7 +301,7 @@ export function restoreDefaults() {
   const rules = S.snapshot?.rules;
   setChipEconDefaults(rules?.CHIP_HOLD_VALUE || DEFAULT_CHIP_HOLD, rules?.FT_VALUE ?? DEFAULT_FT_VALUE);
   document.documentElement.removeAttribute("data-theme");
-  S.include = []; S.exclude = []; S.poolOut = [];
+  S.include = []; S.exclude = []; S.poolOut = []; S.poolIn = [];
   S.chipsUsed = []; renderChipsUsed();
   setPosFilter("ALL");
   S.search = ""; $("#search").value = "";
@@ -1092,6 +1093,7 @@ export function rebuildPool(keepSquad = true) {
   S.include = S.include.filter((id) => S.byId.has(id));
   S.exclude = S.exclude.filter((id) => S.byId.has(id));
   S.poolOut = S.poolOut.filter((id) => S.byId.has(id));
+  S.poolIn = S.poolIn.filter((id) => S.byId.has(id));
   S.optimalPts = S.optimal.length === 15 ? squadTotal(S.optimal) : null;
 
   const m = data.meta;

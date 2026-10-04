@@ -571,7 +571,7 @@ export function transferInputKey() {
   // Banked transfers do count: a rebuild in season is a wildcard, and they
   // carry over it.
   return JSON.stringify([
-    S.include, S.exclude, S.poolOut, S.chipsUsed, S.chipPlan.opt,
+    S.include, S.exclude, S.poolOut, S.poolIn, S.chipsUsed, S.chipPlan.opt,
     $("#budget").value, $("#maxclub").value, S.meta?.preseason ? 0 : $("#freetransfers").value,
     $("#minstart").value, $("#formation").value, benchWeights(),
     transferGwCount(), noDecay(), S.gameweeks[0] ?? null,
@@ -602,7 +602,7 @@ export function plannerCandidates(squad = []) {
   // fifteen in the pool or the plan could not represent selling them.
   const keep = [...new Set([...squad, ...S.include])];
   const full = candidatePool(players, pointsByPlayer,
-    { keep, minMinutesProb: +$("#minstart").value, exclude: S.exclude, caps: rules.POOL_BY_POS,
+    { keep: [...keep, ...S.poolIn], minMinutesProb: +$("#minstart").value, exclude: S.exclude, caps: rules.POOL_BY_POS,
       pricePointCandidates: rules.PRICE_POINT_CANDIDATES });
   const cut = new Set(S.poolOut);
   const pool = full.filter((p) => !cut.has(p.id) || keep.includes(p.id));
@@ -925,7 +925,7 @@ export async function planTransfersAndChips() {
  *  fifteen you own, which this plan is anchored to. */
 export function ownedInputKey() {
   return JSON.stringify([
-    S.squad, S.include, S.exclude, S.poolOut, S.chipsUsed, S.chipPlan.own,
+    S.squad, S.include, S.exclude, S.poolOut, S.poolIn, S.chipsUsed, S.chipPlan.own,
     $("#budget").value, $("#maxclub").value, $("#freetransfers").value,
     $("#minstart").value, $("#formation").value, benchWeights(),
     transferGwCount(), noDecay(), S.gameweeks[0] ?? null,

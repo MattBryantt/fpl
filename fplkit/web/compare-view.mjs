@@ -651,9 +651,16 @@ function poolFoldHTML() {
   const cut = new Set(S.poolOut);
   const kept = new Set(keep);
   const total = (p) => (pointsByPlayer.get(p.id) || []).reduce((a, b) => a + b, 0);
-  const chip = (p) => `<button class="mini poolchip${cut.has(p.id) ? " cut" : ""}" data-poolcut="${p.id}"
+  const added = new Set(S.poolIn);
+  const chip = (p) => added.has(p.id) && !kept.has(p.id)
+    ? `<button class="mini poolchip" data-poolrm="${p.id}" title="added by you — press to remove">
+        + ${S.byId.get(p.id)?.name} £${fmt(p.price, 1)}</button>`
+    : `<button class="mini poolchip${cut.has(p.id) ? " cut" : ""}" data-poolcut="${p.id}"
     ${kept.has(p.id) ? "disabled" : ""} title="${kept.has(p.id) ? "in your squad or required" : ""}">
     ${S.byId.get(p.id)?.name} £${fmt(p.price, 1)}</button>`;
+  const inPool = new Set(full.map((p) => p.id));
+  const options = S.players.filter((p) => !inPool.has(p.id)).map((p) =>
+    `<option value="${p.name} · ${p.team} · ${p.pos}"></option>`).join("");
   const rows = ["GKP", "DEF", "MID", "FWD"].map((pos) => {
     const group = full.filter((p) => p.pos === pos).sort((a, b) => total(b) - total(a));
     return `<div class="poolrow"><b>${pos}</b> ${group.map(chip).join("")}</div>`;
@@ -666,6 +673,10 @@ function poolFoldHTML() {
       <div class="sub">Press a player to cut him from every plan below. Fewer players, faster solves.
         Press again to restore. ${cut.size ? `<button class="mini" id="poolReset">Restore all</button>` : ""}</div>
       ${rows}
+      <div class="chipbar" style="margin-top:8px">
+        <input type="text" id="poolAdd" list="poolAddList" placeholder="Add a player to the pool…">
+        <datalist id="poolAddList">${options}</datalist>
+      </div>
     </div>
   </details>`;
 }
@@ -765,6 +776,19 @@ export function renderChips() {
     saveSettingsRef();
     renderChips();
   }));
+  host.querySelectorAll("[data-poolrm]").forEach((b) => b.addEventListener("click", () => {
+    S.poolIn = S.poolIn.filter((x) => x !== +b.dataset.poolrm);
+    saveSettingsRef();
+    renderChips();
+  }));
+  $("#poolAdd")?.addEventListener("change", (e) => {
+    const p = S.players.find((x) => `${x.name} · ${x.team} · ${x.pos}` === e.target.value);
+    if (!p) return;
+    S.poolIn = [...new Set([...S.poolIn, p.id])];
+    S.poolOut = S.poolOut.filter((x) => x !== p.id);
+    saveSettingsRef();
+    renderChips();
+  });
   $("#poolReset")?.addEventListener("click", () => { S.poolOut = []; saveSettingsRef(); renderChips(); });
 
   // The chart's toggle and its fold both live inside #chipsBody, which this

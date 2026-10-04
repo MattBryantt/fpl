@@ -143,6 +143,8 @@ export const S = {
   // Players the user cut from the chips planner's candidate pool. Unlike exclude
   // they are dropped after the pool is picked, so nobody is promoted to fill in.
   poolOut: [],
+  // Players the user added to the chips planner's pool beyond the ones it picks itself.
+  poolIn: [],
   // Chips already played this half of the season, for the transfer-and-chip
   // plan -- a fact about the plan like include/exclude, so it travels the
   // same way (readSettings/syncableSettings), not through STORE directly.
