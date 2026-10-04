@@ -493,8 +493,12 @@ function renderWeekPitchInto(prefix, plan, weekIdx) {
   const benchOrder = Object.fromEntries(week.bench.map((b) => [b.id, b.slot]));
   const layout = squadLayout({ ids: fielded, lookup: S.byId, need: S.meta.squad_by_pos,
                                xiIds: week.starters, benchOrder });
+  const tags = {};
+  if (plan.opt.squad?.length === 15) {
+    for (const id of week.boughtIds) tags[id] = { kind: "in", text: "in" };
+  }
   box.innerHTML = pitchHTML({ layout, teams: S.snapshot?.teams, metrics: S.metrics,
-                             captain: week.captain, vice: week.vice, versus: true });
+                             captain: week.captain, vice: week.vice, versus: true, tags });
   wireShirts(box);
   // Rebuilt inside host.innerHTML on every render, so a fresh listener each
   // time is correct rather than a leak.
@@ -635,7 +639,7 @@ function renderOwnedPanelHTML(slots, forcible) {
     was solved — it answers the old ones.
     <button class="mini" id="ownedReplanBtn">Re-solve</button></div>` : ""}
   ${op.state === "ready" ? renderPlanHTML(op.result,
-      { prefix: "own", weekIdx: S.ownedPlanWeek, live: false, showPitch: false }) : ""}`;
+      { prefix: "own", weekIdx: S.ownedPlanWeek, live: false }) : ""}`;
 }
 
 /** Who the chips planner may pick from. Every solve scales with this list, so
@@ -866,6 +870,9 @@ export function renderChips() {
   // plans (see renderCompareChartHTML), drawn whenever either has an answer.
   renderComparePlanChart();
   if (ready) renderWeekPitchInto("", tp.result, S.planWeek);
+  if (S.ownedPlan.state === "ready" && S.ownedPlan.result) {
+    renderWeekPitchInto("own", S.ownedPlan.result, S.ownedPlanWeek);
+  }
 }
 import { setView as setViewRef, openPool as openPoolRef, poolOpen as poolOpenRef } from "/assets/squad-view.mjs";
 
