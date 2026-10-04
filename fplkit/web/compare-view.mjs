@@ -606,6 +606,17 @@ function renderChipStrategyFoldHTML(side, slots, forcible, busy) {
   </details>`;
 }
 
+const wildcardNowAvailable = () => (forcibleChipSlots().wildcard || []).includes(S.gameweeks[0]);
+
+function wildcardNow() {
+  const plan = S.chipPlan.own;
+  plan.chipSkip = plan.chipSkip.filter((c) => c !== "wildcard");
+  plan.forceChips = [...new Set([...plan.forceChips, "wildcard"])];
+  plan.chipWeek = { ...plan.chipWeek, wildcard: [S.gameweeks[0]] };
+  saveSettingsRef();
+  planOwnedSquad();
+}
+
 function renderOwnedPanelHTML(slots, forcible) {
   const op = S.ownedPlan;
   const missing = 15 - S.squad.length;
@@ -627,6 +638,8 @@ function renderOwnedPanelHTML(slots, forcible) {
     <button class="btn" id="planOwnedBtn" ${busy ? "disabled" : ""}>
       ${op.state === "ready" ? "Re-solve" : "Solve my squad"}
     </button>
+    ${wildcardNowAvailable() ? `<button class="btn ghost" id="wildcardNowBtn" ${busy ? "disabled" : ""}
+      title="Play the wildcard in the first gameweek, selling your players at their sell prices">Wildcard now</button>` : ""}
     <span class="optstatus ${op.state === "error" ? "err" : ""}">${statusText}</span>
   </div>
   ${stale ? `<div class="planstale">Your squad or the settings above have changed since this
@@ -854,6 +867,7 @@ export function renderChips() {
   });
   $("#planOwnedBtn")?.addEventListener("click", planOwnedSquad);
   $("#ownedReplanBtn")?.addEventListener("click", planOwnedSquad);
+  $("#wildcardNowBtn")?.addEventListener("click", wildcardNow);
 
   // After the markup, never inside it: an SVG sized against a container that
   // is not in the document has no width to size against. One chart for both
