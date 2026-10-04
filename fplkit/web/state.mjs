@@ -89,7 +89,7 @@ export const resolvePurchaseCodes = (byCode) => Object.fromEntries(
  *  means. A function rather than a shared literal, so the two sides start
  *  from independent objects instead of the same array by reference. */
 export function newChipPlanState() {
-  return { forceChips: [], chipWeek: {}, chipSkip: [], transferMode: "plan" };
+  return { forceChips: [], chipWeek: {}, chipSkip: [], transferMode: "plan", wildcardNow: false };
 }
 
 /** The two chipPlan fields worth remembering across a reload -- transferMode

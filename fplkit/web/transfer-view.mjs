@@ -739,7 +739,7 @@ export function buildTransferPayload(squad = []) {
     friction: rules.TRANSFER_FRICTION, ftWorth, maxFreeTransfers: rules.MAX_FREE_TRANSFERS,
     hitCost: rules.HIT_COST, bankValue: rules.BANK_VALUE, freeTransfersPerGw: rules.FREE_TRANSFERS_PER_GW,
     idleMovePenalty: rules.IDLE_MOVE_PENALTY,
-    noTransferGws, hitLimit,
+    noTransferGws, hitLimit, wildcardFirst: side === "own" && !!plan.wildcardNow,
   };
   return { pool: poolPayload, opt, variation, skipped, forceChips, pinned, sweepSlots,
            pointsByPlayer, gameweeks, chipLabels: rules.CHIP_LABELS, shape, mode,

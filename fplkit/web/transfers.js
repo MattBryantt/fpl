@@ -79,7 +79,7 @@
       halfLife, holdValue, friction, ftWorth, maxFreeTransfers,
       hitCost, bankValue, freeTransfersPerGw, idleMovePenalty,
       noTransferGws = [], banFirstGwTransfers = false, hitLimit = null,
-      forceChips = [],
+      forceChips = [], wildcardFirst = false,
     } = opt;
 
     const poolIds = new Set(pool.map((p) => p.id));
@@ -89,6 +89,7 @@
     if (missing.length) throw new Error(`owned players are not in the pool: ${missing.join(", ")}`);
     const ownedSet = new Set(owned);
     const preseason = owned.length === 0;
+    const wildcardGw = wildcardFirst && !preseason ? gameweeks[0] : null;
     // What a player raises when sold: his purchase price plus half the rise,
     // where that is known (see live.mjs's sellPrice), else his listed price.
     const sellOf = (p) => sellPrices[p.id] ?? p.price;
@@ -296,9 +297,9 @@
       // free-hit week makes none (BU is pinned to zero above).
       addCon(`spent_${gw}`, [T(1, SPENT(gw)), ...negTerms(moves)], "=", 0);
       // paid >= spent - ft
-      addCon(`paidmin_${gw}`, [T(1, HITS(gw)), T(-1, SPENT(gw)), T(1, FT(gw))], ">=", 0);
+      if (gw !== wildcardGw) addCon(`paidmin_${gw}`, [T(1, HITS(gw)), T(-1, SPENT(gw)), T(1, FT(gw))], ">=", 0);
       genBounds.set(SPENT(gw), [0, squadSize]);
-      genBounds.set(HITS(gw), [0, squadSize]);
+      genBounds.set(HITS(gw), [0, gw === wildcardGw ? 0 : squadSize]);
       bin.add(OVER(gw)); bin.add(UNDER(gw));
     }
 
@@ -310,8 +311,9 @@
       const nxt = step + 1 < gameweeks.length ? gameweeks[step + 1] : terminal;
       // raw = ft[gw] - spent[gw] + earned, earned = freeTransfersPerGw - freehit?
       // A from-scratch first week earns none, like a free hit week.
-      const rv = [T(1, FT(gw)), T(-1, SPENT(gw)), ...playedTerm("freehit", gw, -1)];
-      const rc = preseason && step === 0 ? 0 : freeTransfersPerGw;
+      const wc = gw === wildcardGw;
+      const rv = wc ? [T(1, FT(gw))] : [T(1, FT(gw)), T(-1, SPENT(gw)), ...playedTerm("freehit", gw, -1)];
+      const rc = (preseason && step === 0) || wc ? 0 : freeTransfersPerGw;
 
       // raw >= (max+1) - bigM*(1-over)  ->  rv - bigM*over >= (max+1) - bigM - rc
       addCon(`ftover1_${gw}`, [...rv, T(-bigM, OVER(gw))], ">=", (maxFreeTransfers + 1) - bigM - rc);

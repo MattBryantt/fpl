@@ -627,6 +627,8 @@ function renderOwnedPanelHTML(slots, forcible) {
     <button class="btn" id="planOwnedBtn" ${busy ? "disabled" : ""}>
       ${op.state === "ready" ? "Re-solve" : "Solve my squad"}
     </button>
+    <label class="sub" title="Play your wildcard in the first gameweek: unlimited free transfers, no hit, banked transfers kept. Players you keep stay at their sell price.">
+      <input type="checkbox" id="wildcardNow" ${S.chipPlan.own.wildcardNow ? "checked" : ""} ${busy ? "disabled" : ""}> Wildcard in first week</label>
     <span class="optstatus ${op.state === "error" ? "err" : ""}">${statusText}</span>
   </div>
   ${stale ? `<div class="planstale">Your squad or the settings above have changed since this
@@ -854,6 +856,10 @@ export function renderChips() {
   });
   $("#planOwnedBtn")?.addEventListener("click", planOwnedSquad);
   $("#ownedReplanBtn")?.addEventListener("click", planOwnedSquad);
+  $("#wildcardNow")?.addEventListener("change", (e) => {
+    S.chipPlan.own.wildcardNow = e.target.checked;
+    renderChips();
+  });
 
   // After the markup, never inside it: an SVG sized against a container that
   // is not in the document has no width to size against. One chart for both
