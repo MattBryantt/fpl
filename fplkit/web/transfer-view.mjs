@@ -512,20 +512,10 @@ export async function runWeekNearMisses(idx) {
    worth of players times a multi-gameweek horizon, not one gameweek, and
    mixing its "newest wins" sequence counter with the squad optimiser's would
    let an ordinary settings tweak silently cancel a transfer-plan solve
-   in flight, or the reverse. Capped to DEFAULT_TRANSFER_HORIZON gameweeks
-   independent of the board's own horizon slider (which runs to 12) because
-   the pool here is the union of top-points and top-value players per
-   position (up to ~190 before overlap), not the ~50 the squad optimiser
-   sees -- see transfers.py's own DEFAULT_TRANSFER_HORIZON for why 6 is where
-   the CLI stops too: long enough to bank a transfer for a fixture swing,
-   short enough that the last gameweek is not pure fiction.
-
-   The board's horizon slider may shorten it but never lengthen it, so picking
-   4 gameweeks up there does scope the plan, and picking 12 does not quietly
-   turn a forty-second solve into a ten-minute one. */
-const TRANSFER_HORIZON_CAP = 6;
+   in flight, or the reverse. The plan follows the board's horizon select, so a
+   longer horizon means a bigger MILP and a slower solve. */
 export const transferGwCount = () =>
-  Math.min(S.gameweeks.length, TRANSFER_HORIZON_CAP, +$("#horizon").value || TRANSFER_HORIZON_CAP);
+  Math.min(S.gameweeks.length, +$("#horizon").value || 6);
 
 let transferSeq = 0;
 
