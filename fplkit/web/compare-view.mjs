@@ -437,7 +437,7 @@ function toggleChipWeek(chip, gw, side) {
   }
   saveSettingsRef();
 }
-import { saveSettings as saveSettingsRef, renderChipsUsed } from "/assets/squad-view.mjs";
+import { saveSettings as saveSettingsRef } from "/assets/squad-view.mjs";
 
 function resetChipWeeks(chip, side) {
   const plan = S.chipPlan[side];
@@ -606,16 +606,10 @@ function renderChipStrategyFoldHTML(side, slots, forcible, busy) {
   </details>`;
 }
 
-const wildcardNowAvailable = () => {
-  const weeks = S.gameweeks.slice(0, transferGwCountRef());
-  return (chipSlots(S.meta.chip_windows || {}, weeks, [], S.snapshot.rules.CHIPS).wildcard || [])
-    .includes(S.gameweeks[0]);
-};
+const wildcardNowAvailable = () => (forcibleChipSlots().wildcard || []).includes(S.gameweeks[0]);
 
 function wildcardNow() {
   const plan = S.chipPlan.own;
-  S.chipsUsed = S.chipsUsed.filter((c) => c !== "wildcard");
-  renderChipsUsed();
   plan.chipSkip = plan.chipSkip.filter((c) => c !== "wildcard");
   plan.forceChips = [...new Set([...plan.forceChips, "wildcard"])];
   plan.chipWeek = { ...plan.chipWeek, wildcard: [S.gameweeks[0]] };
