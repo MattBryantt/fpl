@@ -27,33 +27,13 @@ the single biggest accuracy win, so it is worth the two minutes.
 Everything is cached on disk (`.cache/`), so repeated runs cost no quota: FPL
 data for 3 hours, odds for 6, Understat for 24. `--refresh` bypasses it.
 
-## Commands
+## Build
 
 ```bash
-python fpl.py serve                                       # interactive squad board in a browser
-python fpl.py snapshot                                    # freeze the projection so the board runs offline
-python fpl.py build --out dist                            # the whole board as static files
-python fpl.py plan                                        # start here: squad + path + risk
-python fpl.py plan --recency 10                           # weight recent form above early season
-python fpl.py transfers --squad out/squad.csv             # transfer and chip strategy, in-season
-python fpl.py horizon                                     # how much does the horizon matter?
-python fpl.py rank --pos MID --max-price 9.0 --limit 20   # ranked by projected points
-python fpl.py value --pos DEF                             # best points per £m
-python fpl.py compare Haaland Thiago --squad-test         # is the premium worth it?
-python fpl.py upgrade Saka --budget-extra 2.0             # what else could I buy?
-python fpl.py squad --budget 100                          # optimal legal 15, fixed horizon
-python fpl.py nearmiss                                    # who just missed it, and by how little
-python fpl.py fixtures --horizon 3                        # expected goals per fixture
-python fpl.py overrides Senesi                             # edit stats you think are wrong
-python fpl.py movers                                      # players whose numbers are from another club
-python fpl.py blindspots                                  # players the model can't see
+python scripts/build.py --out dist     # the whole board as static files
 ```
 
-Common flags: `--horizon N` (gameweeks), `--start-gw N`, `--full` (show the full
-points breakdown), `--csv name.csv` (write to `out/`), `--overrides file.csv`,
-`--refresh`. `plan` and `horizon` also take `--half-life N`; `transfers` takes
-`--squad`, `--free-transfers`, `--bank`, `--chips-used`, `--force-chip` and
-`--chip-value`.
+Flags: `--horizon N`, `--start-gw N`, `--recency N`, `--refresh`, `--snapshot file.json`.
 
 ## The squad board
 
@@ -332,7 +312,7 @@ The board runs the projection maths and the MILP **in the browser**, off
 became a build step that nobody had noticed was a build step. So make it one:
 
 ```bash
-python fpl.py build --out dist     # the whole board, as files
+python scripts/build.py --out dist     # the whole board, as files
 python -m http.server -d dist 8001 # check it, if you like
 ```
 
@@ -1534,8 +1514,7 @@ Other known limitations, roughly in order of how much they cost you:
 
 | File | Role |
 | --- | --- |
-| [fpl.py](fpl.py) | entry point |
-| [fplkit/cli.py](fplkit/cli.py) | commands, tables, filters |
+| [scripts/build.py](scripts/build.py) | entry point: builds the static site |
 | [fplkit/server.py](fplkit/server.py) | squad-board API, static assets, club shirts, sync |
 | [fplkit/snapshot.py](fplkit/snapshot.py) | freezes a projection into the file the browser runs on |
 | [fplkit/site.py](fplkit/site.py) | writes the whole board to a directory a static host can serve |

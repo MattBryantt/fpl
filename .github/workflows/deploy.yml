@@ -81,7 +81,7 @@ jobs:
           # so a missing secret must not fail the build.
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: |
-          python fpl.py build --out dist \
+          python scripts/build.py --out dist \
             ${{ (inputs.refresh && '--refresh') || '' }}
 
       # A build that produced no snapshot, or a snapshot with no players in it,
