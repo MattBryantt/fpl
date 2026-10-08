@@ -16,22 +16,17 @@ Sources are cached in `.cache/` (FPL 3h, odds 6h, Understat 24h); `--refresh` by
 ## Commands
 
 ```bash
-python fpl.py serve        # interactive squad board
-python fpl.py snapshot     # freeze the projection so the board runs offline
-python fpl.py build --out dist
-python fpl.py plan | transfers | horizon | rank | value | compare | upgrade
-python fpl.py squad | nearmiss | fixtures | overrides | movers | blindspots
+python scripts/build.py --out dist    # freeze the whole board as static files
+python -m http.server -d dist 8001    # check it
 ```
 
-Common flags: `--horizon N`, `--start-gw N`, `--full`, `--csv name.csv`,
-`--overrides file.csv`, `--refresh`. `plan`/`horizon` take `--half-life N`;
-`transfers` takes `--squad`, `--free-transfers`, `--bank`, `--chips-used`,
-`--force-chip`, `--chip-value`.
+`build.py` also takes `--horizon N`, `--start-gw N`, `--recency X`, `--snapshot file`
+and `--refresh` (bypass the source caches).
 
 ## Deploy
 
 The board runs the projection and MILP in the browser from `snapshot.json`, so
-`python fpl.py build --out dist` is all a static host needs (~4.8 MB).
+`python scripts/build.py --out dist` is all a static host needs (~4.8 MB).
 `.github/workflows/deploy.yml` builds it every six hours (The Odds API free tier
 allows ~240 runs a month at this rate) and publishes to Cloudflare Workers
 (`wrangler.jsonc`). The build refuses to publish a snapshot with under 300 players.
@@ -42,7 +37,7 @@ hides the controls that need them. `/api/sync` is served by `src/worker.js`.
 
 ## Layout
 
-- `fpl.py`, `fplkit/cli.py`: entry point and commands
+- `scripts/build.py`: entry point for the static build
 - `fplkit/server.py`, `site.py`, `snapshot.py`: local server, static build, frozen projection
 - `fplkit/model.py`, `poisson.py`, `planning.py`: the projection
 - `fplkit/optimise.py`, `transfers.py`: MILP squad selection and transfer/chip planning
