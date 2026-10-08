@@ -1,67 +1,3 @@
-"""Transfers and chips as one decision, solved over the whole window.
-
-There used to be a transfer schedule here, and it was deleted for a good
-reason. It produced this:
-
-    gw 4   transfer   Guéhi   -> Lacroix   +0.60
-    gw 5   transfer   Lacroix -> Guéhi     +0.40
-    gw 6   transfer   Guéhi   -> Lacroix   +0.59
-
-Two free transfers burned to end up where you started. The diagnosis at the
-time was that you cannot know your gameweek-six transfer in gameweek one, and
-that part is still true. But it was the wrong diagnosis of *that* output. Those
-three lines are not a model being over-confident about the future; they are a
-model that does not know a transfer is a resource. Each week it re-asked "what
-is the best squad for this week?" and paid whatever it cost to get there,
-because nothing in the objective charged it for spending.
-
-Three things have to be in the objective before a transfer plan means anything,
-and all three are mechanical rather than predictive:
-
-  1. **Transfers are a stock, not a flow.** One a gameweek, banked to a maximum
-     of five, and everything past the allowance costs four points. That is an
-     inventory problem with a hard cap, and it is the reason "hold this week and
-     do two next week" is a real move rather than a delay.
-  2. **A banked transfer is worth points you have not scored yet.** Holding
-     looks free to a solver that only counts points on the pitch, so it will
-     always spend. Pricing the bank -- and pricing it with diminishing returns,
-     because the fifth one can only be used in a week you also use the other
-     four -- is what makes rolling a decision the model can reach.
-  3. **Acting has to cost something.** Between two players a tenth of a point
-     apart, the model's own error is an order of magnitude larger than the gap.
-     A flat friction charge on every move buys nothing except a refusal to
-     trade on noise, which is precisely what the oscillating schedule was.
-
-With those in, the swap-and-swap-back disappears without being banned, which is
-the test that the fix is the right one rather than a patch over the symptom.
-
-The chips belong in the same problem rather than in a report next to it. Every
-one of them is a statement about the squad: a bench boost is worth playing only
-if the bench is worth fielding, and whether the bench is worth fielding is a
-transfer decision made three gameweeks earlier. A free hit is a squad you never
-own, bought out of what selling the one you do own would raise. Solving them
-separately gets both wrong. The wildcard is the exception and is not modelled at
-all -- see `config.CHIPS` for why.
-
-A chip the model declines to play is not the same as a chip it says nothing
-about, so `force_chips` makes the plan play one anyway and answers the other
-question a person actually asks: not "should I bench boost?" but "if I bench
-boost, what should the squad be?".
-
-What has *not* changed is the honesty about the horizon. The plan is re-decided
-every week with information this run does not have, so only the first
-gameweek's move is a decision; the rest is the shape that move is part of.
-`value_of_acting` puts a number on exactly that first decision by re-solving
-with this week banned, and the chip report says plainly when there is nothing
-in the fixture list to time a chip against.
-
-Formulation follows the FPL solver community's standard multi-period model
-(`sertalpbilal/FPL-Optimization-Tools`), including the free-transfer state
-machine and the friction and bank terms; the free-transfer values are its
-published defaults. Two things here differ deliberately, both noted at the
-constants below: the discount is gentler, and the horizon's final free-transfer
-balance is credited rather than transfers being banned in the last gameweek.
-"""
 
 from __future__ import annotations
 
@@ -96,47 +32,16 @@ from .config import (
 from .model import Projection
 from .planning import _best_xi_ids, fixture_counts, survival_curve
 
-# The plan's own half-life is 3 gameweeks, and three of the reasons it is that
-# short are optionality: a bad fixture in five gameweeks is not one you are
-# locked into, because you will have made transfers by then. This model makes
-# that optionality explicit -- it *is* the transfers -- so discounting at 3
-# again would charge for it twice, and the plan would refuse to look past the
-# fortnight it can already see.
-#
-# What is left to discount is genuine information decay: injuries, form and
-# fixtures that are not priced yet. 6.5 gameweeks is a per-gameweek factor of
-# 0.90, which is where the solver community's discount sits (0.84-0.90 across
-# the two most used implementations) once optionality is modelled rather than
-# assumed.
 TRANSFER_HALF_LIFE = 6.5
 
-# How far ahead to plan. Long enough that banking a transfer for a fixture swing
-# is representable, short enough that the last gameweek is not pure fiction.
 DEFAULT_TRANSFER_HORIZON = 6
 
-# The candidate pool. Every player-gameweek is a handful of binaries, so the
-# pool size sets the solve time; these caps keep it to a few thousand and still
-# leave every plausible pick in. Bench fodder survives on value rather than
-# points, which is why the pool is a union of two rankings.
 POOL_BY_POS = {"GKP": 12, "DEF": 45, "MID": 45, "FWD": 25}
 
-# A third ranking, per exact price rather than per position: the best player
-# at a specific price tag can rank outside the top-points and top-value cuts
-# above (beaten on points by pricier options, beaten on value by a cheaper
-# one) and still be the correct budget enabler at that price -- the plan
-# cannot buy a cheaper option than exists in its pool, so pruning him out can
-# make a squad the model builds provably worse than one built by hand.
 PRICE_POINT_CANDIDATES = 3
 
-# Captaincy is not a free choice in practice -- it goes to a premium attacker
-# almost every week -- so only the best players get a captain binary. Generous
-# enough that the constraint never binds on anything the model would pick.
 CAPTAIN_CANDIDATES = 40
 
-# Two players the projection cannot separate leave the solver indifferent
-# between holding one and buying the other, and it will return whichever branch
-# it reached first. This is too small to outweigh any real gain and large enough
-# to break the tie toward leaving the squad alone.
 IDLE_MOVE_PENALTY = 0.01
 
 SOLVER_SECONDS = 120
@@ -144,35 +49,28 @@ SOLVER_SECONDS = 120
 
 @dataclass
 class TransferPlan:
-    """A squad path: what to own each gameweek, and what it costs to get there."""
 
     gameweeks: list[int]
-    squads: dict[int, list[int]]  # gameweek -> the 15 owned (free-hit weeks excepted)
-    moves: pd.DataFrame  # one row per transfer: gw, out, in, prices
-    ledger: pd.DataFrame  # per gameweek: transfers, free, hits, chip, bank, xpts
-    lineups: pd.DataFrame  # per gameweek: XI, bench order, captain, chip
-    chips: pd.DataFrame  # chip, gw, what it is worth, whether that is signal
-    chip_options: pd.DataFrame  # chip x gameweek: what it would pay in each week
+    squads: dict[int, list[int]]
+    moves: pd.DataFrame
+    ledger: pd.DataFrame
+    lineups: pd.DataFrame
+    chips: pd.DataFrame
+    chip_options: pd.DataFrame
     objective: float
     status: str
-    horizon_points: float  # undiscounted XI points over the window, chips included
+    horizon_points: float
     notes: list[str] = field(default_factory=list)
 
     @property
     def this_week(self) -> pd.DataFrame:
-        """Only the first gameweek's moves -- the part that is a decision."""
         if self.moves.empty:
             return self.moves
         return self.moves[self.moves["gw"] == self.gameweeks[0]]
 
 
-# --------------------------------------------------------------------------- #
-# Inputs
-# --------------------------------------------------------------------------- #
-
 def decay_factors(gameweeks: list[int],
                   half_life: float | None = TRANSFER_HALF_LIFE) -> dict[int, float]:
-    """Geometric discount per gameweek, keyed by gameweek."""
     if half_life is None or math.isinf(half_life):
         return {gw: 1.0 for gw in gameweeks}
     return {gw: 0.5 ** (step / half_life) for step, gw in enumerate(gameweeks)}
@@ -180,13 +78,6 @@ def decay_factors(gameweeks: list[int],
 
 def expected_points(projection: Projection,
                     gameweeks: list[int] | None = None) -> pd.DataFrame:
-    """Per-player, per-gameweek points, discounted only for availability.
-
-    This is the raw projection multiplied by the survival curve, and nothing
-    else. The time discount is applied in the objective a gameweek at a time,
-    because the objective also has to discount hits and banked transfers, and
-    those are not per-player quantities.
-    """
     raw = (projection.per_fixture
            .pivot_table(index="fpl_id", columns="gw", values="xpts", aggfunc="sum"))
     gameweeks = gameweeks or sorted(projection.per_fixture["gw"].unique())
@@ -204,19 +95,6 @@ def candidate_pool(players: pd.DataFrame, points: pd.DataFrame,
                    exclude: list[int] | None = None,
                    caps: dict[str, int] | None = None,
                    price_point_candidates: int = PRICE_POINT_CANDIDATES) -> pd.DataFrame:
-    """Shrink the league to the players a plan could plausibly want.
-
-    Three rankings, unioned: total points over the window, points per million,
-    and points within each exact price. The first finds the players you build
-    around, the second finds the £4.0m defender who never plays but has to be
-    somewhere, and the third catches the specific price-point enabler that
-    the first two can each individually miss -- outscored on points by
-    pricier options and out-valued by a cheaper one, yet still the best
-    player available at his own price tag.
-
-    Anyone already owned is kept unconditionally, whatever he now looks like --
-    a plan that cannot see your own squad cannot tell you to sell it.
-    """
     caps = caps or POOL_BY_POS
     keep = set(keep or [])
 
@@ -250,31 +128,12 @@ def candidate_pool(players: pd.DataFrame, points: pd.DataFrame,
 
 
 def next_free_transfers(ft: int, spent: int, played_chip: bool = False) -> int:
-    """One step of the free-transfer state machine plan_transfers() solves as
-    a big-M MILP (see the `raw`/`over`/`under` constraints below `# --- the
-    free-transfer state machine ---`), written as a plain scalar so a caller
-    replaying a real transfer log does not need to re-derive it from the LP.
-
-    A free hit or a wildcard costs that gameweek's newly-earned transfer but
-    not, since 2024/25, anything already banked -- `played_chip` only zeroes
-    `earned`, and the caller passes `spent=0` for such a week because its
-    moves were free. Clamped to `[1, MAX_FREE_TRANSFERS]`, not `[0, ...]`: the
-    game guarantees at least one free transfer every week (a bank of zero
-    does not exist past the opening gameweek), which is why the LP's `under`
-    branch forces the floor at 1 rather than 0.
-
-    Kept in lockstep with the LP by scripts/verify-transfer-rules.py, which
-    checks the two agree over synthetic sequences.
-    """
     earned = FREE_TRANSFERS_PER_GW - (1 if played_chip else 0)
     raw = ft - spent + earned
     return max(1, min(MAX_FREE_TRANSFERS, raw))
 
 
 def sell_price(bought: float, now: float) -> float:
-    """What a player sells for: his purchase price plus half of any rise,
-    rounded down to £0.1m (`transfers_sell_on_fee`). A fall is taken in full.
-    Ported to live.mjs's sellPrice."""
     profit = round((now - bought) * 10)
     if profit <= 0:
         return round(now, 1)
@@ -282,13 +141,6 @@ def sell_price(bought: float, now: float) -> float:
 
 
 def free_transfer_value() -> dict[int, float]:
-    """Cumulative worth of holding s banked transfers, for s in 0..5.
-
-    The marginal values are the community solver's published defaults: the
-    second banked transfer is the most valuable one to have (it is what turns
-    a single move into a pair), and the fifth is worth least because it can
-    only ever be spent in a week the other four are spent too.
-    """
     value, running = {0: 0.0}, 0.0
     for state in range(1, MAX_FREE_TRANSFERS + 1):
         running += FT_VALUE_BY_STATE.get(state, FT_VALUE)
@@ -296,19 +148,8 @@ def free_transfer_value() -> dict[int, float]:
     return value
 
 
-# --------------------------------------------------------------------------- #
-# Chip windows
-# --------------------------------------------------------------------------- #
-
 def chip_slots(windows: dict[str, tuple[int, int]], gameweeks: list[int],
                already_used: list[str] | None = None) -> dict[str, list[int]]:
-    """Gameweeks in the horizon where each chip may legally be played.
-
-    A chip with no legal gameweek is dropped entirely rather than carried as a
-    variable that can only take one value, and so is any chip the model does not
-    handle -- which is how the wildcard's window comes back from the API and
-    goes no further.
-    """
     used = set(already_used or [])
     slots = {}
     for chip, (start, stop) in windows.items():
@@ -321,13 +162,6 @@ def chip_slots(windows: dict[str, tuple[int, int]], gameweeks: list[int],
 
 
 def fixture_variation(projection: Projection, gameweeks: list[int]) -> dict[int, str]:
-    """Which gameweeks in the window contain a double or a blank.
-
-    Chip value comes overwhelmingly from these, and they do not exist on the
-    calendar until cup rounds are drawn and games are postponed. A window with
-    none of them cannot rank one gameweek above another for a chip on anything
-    but noise, and this is how the plan knows to say so.
-    """
     counts = fixture_counts(projection).reindex(columns=gameweeks, fill_value=0)
     marks = {}
     for gw in gameweeks:
@@ -337,10 +171,6 @@ def fixture_variation(projection: Projection, gameweeks: list[int]) -> dict[int,
             marks[gw] = f"{doubles} double, {blanks} blank"
     return marks
 
-
-# --------------------------------------------------------------------------- #
-# The model
-# --------------------------------------------------------------------------- #
 
 def plan_transfers(
     projection: Projection,
@@ -371,55 +201,6 @@ def plan_transfers(
     pool: pd.DataFrame | None = None,
     points: pd.DataFrame | None = None,
 ) -> TransferPlan:
-    """Solve the squad path, the transfers along it and the chip timing together.
-
-    Args:
-        squad: the fifteen you own now. `None` means the first gameweek's
-            squad is chosen freely and nothing is charged for reaching it --
-            preseason, when transfers are unlimited, or a wildcard week, when
-            they are too. `budget` is then everything there is to spend: the
-            opening £100m, or what selling the old fifteen raises plus the bank.
-        bank: money not in the squad, in millions.
-        free_transfers: how many you have available for the first gameweek.
-            With no squad this is what carries over past the rebuild -- zero
-            before the season starts, whatever you had banked for a wildcard,
-            since neither a wildcard nor a free hit burns them any more.
-        sell_prices: what each owned player sells for, if that differs from his
-            listed price. FPL takes half of any rise back, rounded down to
-            £0.1m, so this matters the moment a squad has been held a while.
-        chip_hold: per-chip reservation price, overriding CHIP_HOLD_VALUE. A
-            chip is played only when this gameweek beats what it is worth held
-            for a well-timed one later. All zeroes turns the question back into
-            "when in this window is each chip best?", which is a different and
-            much weaker question.
-        friction: per-transfer charge, overriding TRANSFER_FRICTION.
-        ft_value_scale: scales what a banked free transfer is worth. Zero makes
-            holding free, which is the state the old oscillating schedule was
-            solved in.
-        ban_first_gw_transfers: force a roll this week. Used to price the
-            alternative to acting rather than to make a plan.
-        forbid_chips: chips the solve may not use, for pricing what a chip is
-            worth by taking it away.
-        force_chips: chips the solve must play somewhere in the window, which
-            answers "if I am playing this, what is the best squad and the best
-            gameweek for it?" rather than "should I play it?". A forced chip's
-            reservation price is dropped to zero: the reserve is a charge for
-            playing at all, and leaving it in would only push a chip you have
-            already decided to play into the last gameweek of the window, where
-            the discount makes the same charge cheapest.
-
-            Combined with `chip_windows={chip: (gw, gw)}`, this is how a
-            caller *pins* a chip to one specific gameweek rather than merely
-            requiring it somewhere in the window -- narrow the chip's legal
-            window to a single gameweek and force it, and the solve has no
-            other week left to consider. The CLI's `--pin-chip NAME=GW` and
-            the web board's chip-pinning controls both do exactly this.
-
-    Returns a `TransferPlan`. `objective` is the discounted total the solver
-    ranked on and is comparable only against another solve of the same window;
-    `horizon_points` is the plain undiscounted XI total, which is not what was
-    maximised and should not be used to compare two plans.
-    """
     gameweeks = list(projection.horizon)[:horizon]
     if not gameweeks:
         raise ValueError("no gameweeks in the projection horizon")
@@ -465,10 +246,6 @@ def plan_transfers(
     chips = chip_slots(chip_windows or {}, gameweeks, chips_used)
     for chip in (forbid_chips or []):
         chips.pop(chip, None)
-    # A free hit needs somewhere to hit. With no blanks or doubles on the
-    # calendar it is a week of unlimited transfers you have to hand back, which
-    # is worth approximately nothing and costs a full second squad's worth of
-    # binaries to discover. Forcing it says to spend those binaries anyway.
     variation = fixture_variation(projection, gameweeks)
     skipped = {}
     if "freehit" in chips and not variation and "freehit" not in forced:
@@ -486,7 +263,6 @@ def plan_transfers(
     first, last = gameweeks[0], gameweeks[-1]
     terminal = last + 1
 
-    # --- variables ---------------------------------------------------------
     in_squad = pulp.LpVariable.dicts("squad", (index, gameweeks), cat="Binary")
     in_xi = pulp.LpVariable.dicts("xi", (index, gameweeks), cat="Binary")
     in_slot = pulp.LpVariable.dicts("bench", (index, gameweeks, slots), cat="Binary")
@@ -515,7 +291,6 @@ def plan_transfers(
            for chip, allowed in chips.items()}
 
     def played(chip: str, gw: int):
-        """1 if `chip` is played in `gw`, as an expression usable anywhere."""
         return use[chip][gw] if chip in use and gw in use[chip] else 0
 
     triple = pulp.LpVariable.dicts("tc", (captain_pool, gameweeks), cat="Binary") \
@@ -523,7 +298,6 @@ def plan_transfers(
     free_hit_squad = pulp.LpVariable.dicts("fhsquad", (index, gameweeks), cat="Binary") \
         if "freehit" in chips else None
 
-    # --- squad legality ----------------------------------------------------
     for gw in gameweeks:
         problem += pulp.lpSum(in_squad[i][gw] for i in index) == SQUAD_SIZE
         for pos, count in SQUAD_BY_POS.items():
@@ -541,11 +315,6 @@ def plan_transfers(
             if fpl_id in by_id:
                 problem += in_squad[by_id[fpl_id]][gw] == 0
 
-    # --- the free-hit squad ------------------------------------------------
-    # A separate fifteen that exists for one gameweek and is handed back. It has
-    # to be legal and affordable on its own, out of what selling the real squad
-    # that week would raise, and it disappears entirely when the chip is not
-    # played.
     if free_hit_squad is not None:
         for gw in chips["freehit"]:
             flag = use["freehit"][gw]
@@ -562,7 +331,6 @@ def plan_transfers(
             for i in index:
                 problem += free_hit_squad[i][gw] <= played("freehit", gw)
 
-    # --- lineup ------------------------------------------------------------
     for gw in gameweeks:
         boost = played("bboost", gw)
         hit = played("freehit", gw)
@@ -570,7 +338,6 @@ def plan_transfers(
 
         for slot in slots:
             eligible = [i for i in index if (position[i] == "GKP") == (slot == "GKP")]
-            # Bench boost fields the whole squad, so there is no bench to order.
             problem += pulp.lpSum(in_slot[i][gw][slot] for i in eligible) == 1 - boost
             for i in index:
                 if i not in eligible:
@@ -581,8 +348,6 @@ def plan_transfers(
             problem += in_xi[i][gw] <= in_squad[i][gw] + hit
             problem += benched <= in_squad[i][gw] + hit
             if free_hit_squad is not None:
-                # Under a free hit the eleven come from the borrowed squad
-                # instead; either way exactly one of the two bounds binds.
                 problem += in_xi[i][gw] <= free_hit_squad[i][gw] + (1 - hit)
                 problem += benched <= free_hit_squad[i][gw] + (1 - hit)
             problem += in_xi[i][gw] + benched <= 1
@@ -590,17 +355,6 @@ def plan_transfers(
         for pos in ("GKP", "DEF", "MID", "FWD"):
             members = [i for i in index if position[i] == pos]
             problem += pulp.lpSum(in_xi[i][gw] for i in members) >= XI_MIN_BY_POS[pos]
-            # A bench-boosted week starts the whole squad, so the per-position
-            # ceiling that week is the squad's own count for that position --
-            # not the ordinary cap plus one.
-            #
-            # Those coincide under the default caps (XI_MAX_BY_POS equals
-            # SQUAD_BY_POS everywhere except keeper, where the +1 is the
-            # reserve), which is why "+ boost" stood for so long. They come
-            # apart the moment a caller pins the formation: 3-5-2 sets the
-            # defender cap to 3, and "3 + 1" cannot field the five defenders a
-            # bench boost is obliged to start, so the whole solve goes
-            # infeasible rather than dropping the shape for that one week.
             relax = SQUAD_BY_POS[pos] - XI_MAX_BY_POS[pos]
             problem += (pulp.lpSum(in_xi[i][gw] for i in members)
                         <= XI_MAX_BY_POS[pos] + relax * boost)
@@ -614,24 +368,18 @@ def plan_transfers(
             for i in captain_pool:
                 problem += triple[i][gw] <= is_captain[i][gw]
 
-    # --- transfers ---------------------------------------------------------
     for step, gw in enumerate(gameweeks):
         hit = played("freehit", gw)
         for i in index:
             previous = (in_squad[i][gameweeks[step - 1]] if step
                         else (1 if int(pool.at[i, "fpl_id"]) in owned else 0))
             if preseason and step == 0:
-                # Before the opening deadline the squad is a free choice, so
-                # there is nothing to transfer from and nothing to charge for.
                 problem += bought[i][gw] == 0
                 problem += sold[i][gw] == 0
                 continue
             problem += in_squad[i][gw] == previous + bought[i][gw] - sold[i][gw]
             problem += bought[i][gw] <= 1 - hit
             problem += sold[i][gw] <= 1 - hit
-            # Selling a player and buying him straight back is a null move, and
-            # the squad balance above cannot see it: it nets to zero. Ruling it
-            # out is what keeps `spent` an honest count of transfers made.
             problem += bought[i][gw] + sold[i][gw] <= 1
 
     banned = set(no_transfer_gws or [])
@@ -641,7 +389,6 @@ def plan_transfers(
         if gw in gameweeks:
             problem += pulp.lpSum(bought[i][gw] for i in index) == 0
 
-    # --- money -------------------------------------------------------------
     for step, gw in enumerate(gameweeks):
         raised = pulp.lpSum(sell[i] * sold[i][gw] for i in index)
         outlay = pulp.lpSum(price[i] * bought[i][gw] for i in index)
@@ -653,10 +400,6 @@ def plan_transfers(
         else:
             problem += in_bank[gw] == in_bank[gameweeks[step - 1]] + raised - outlay
 
-    # --- the free-transfer state machine -----------------------------------
-    # `spent` is what comes out of the allowance, and every transfer made comes
-    # out of it: a free-hit week makes none (`bought` is pinned to zero above),
-    # so it needs no exemption here.
     for gw in gameweeks:
         problem += spent[gw] == pulp.lpSum(bought[i][gw] for i in index)
         problem += paid[gw] >= spent[gw] - ft[gw]
@@ -666,10 +409,6 @@ def plan_transfers(
     big_m = 2 * MAX_FREE_TRANSFERS + SQUAD_SIZE
     for step, gw in enumerate(gameweeks):
         nxt = gameweeks[step + 1] if step + 1 < len(gameweeks) else terminal
-        # Playing a free hit costs you that gameweek's new free transfer, but
-        # since 2024/25 it no longer burns the ones you banked. A from-scratch
-        # first week is a wildcard (or the opening deadline) and earns none
-        # for the same reason; what was banked simply carries.
         earned = FREE_TRANSFERS_PER_GW - played("freehit", gw)
         if preseason and step == 0:
             earned = 0
@@ -693,30 +432,20 @@ def plan_transfers(
         problem += ft[gw] == pulp.lpSum(s * ft_state[gw][s]
                                         for s in range(MAX_FREE_TRANSFERS + 1))
 
-    # --- chips -------------------------------------------------------------
-    # Once each, and a forced chip exactly once: the solver still picks the
-    # gameweek and still builds the squad around it, it just may not decline.
     for chip, allowed in chips.items():
         times = pulp.lpSum(use[chip][gw] for gw in allowed)
         problem += (times == 1) if chip in forced else (times <= 1)
     for gw in gameweeks:
-        # One chip a gameweek, from the rules.
         active = [played(chip, gw) for chip in chips]
         if active:
             problem += pulp.lpSum(active) <= 1
     if hit_limit is not None:
         problem += pulp.lpSum(paid[gw] for gw in gameweeks) <= hit_limit
 
-    # --- objective ---------------------------------------------------------
     hold_value = dict(CHIP_HOLD_VALUE)
     hold_value.update(chip_hold or {})
     for chip in forced:
         hold_value[chip] = 0.0
-    # Both of these exist to be turned off. The claim this module makes is that
-    # pricing the bank and charging for acting are what stop a transfer plan
-    # oscillating, and a claim you cannot switch off is not a claim you have
-    # tested -- see scripts/verify-transfer-rules.py, which switches them off
-    # and watches the swap-and-swap-back come back.
     charge = TRANSFER_FRICTION if friction is None else friction
     ft_worth = {state: value * ft_value_scale
                 for state, value in free_transfer_value().items()}
@@ -731,15 +460,10 @@ def plan_transfers(
             xpts[i, gw] * (in_xi[i][gw]
                            + pulp.lpSum(slot_weight[s] * in_slot[i][gw][s] for s in slots))
             for i in index)
-        # Captain scores twice, and a third time under the triple-captain chip.
         scored += pulp.lpSum(xpts[i, gw] * is_captain[i][gw] for i in captain_pool)
         if triple is not None:
             scored += pulp.lpSum(xpts[i, gw] * triple[i][gw] for i in captain_pool)
 
-        # What playing a chip here gives up: the same chip, well timed, later in
-        # its window. Charged at this gameweek's discount so that the comparison
-        # is a clean "does this week beat a good week?" rather than a race
-        # between two different discount factors.
         forgone = pulp.lpSum(hold_value.get(chip, 0.0) * played(chip, gw)
                              for chip in chips)
 
@@ -753,10 +477,6 @@ def plan_transfers(
                 + BANK_VALUE * in_bank[gw])
         total.append(decay[gw] * week)
 
-    # Whatever is banked when the window closes is worth having, and crediting
-    # it is what lets the last gameweek be a normal one. The alternative -- the
-    # reference implementation's -- is to ban transfers in the final gameweeks
-    # so the missing credit cannot be exploited, which throws away a real move.
     total.append(decay[last] * (banked[terminal] - banked[last]))
 
     problem += pulp.lpSum(total)
@@ -783,16 +503,11 @@ def plan_transfers(
     )
 
 
-# --------------------------------------------------------------------------- #
-# Reading the solution back
-# --------------------------------------------------------------------------- #
-
 def _read_solution(*, pool, points, gameweeks, index, in_squad, in_xi, in_slot,
                    slots, slot_weight, is_captain, captain_pool, triple, bought, sold,
                    free_hit_squad, ft, spent, paid, in_bank, chips, use,
                    price, sell, decay, variation, skipped, forced, hold_value,
                    objective, status, preseason) -> TransferPlan:
-    """Turn solver variables into the tables a person reads."""
     name = {i: str(pool.at[i, "web_name"]) for i in index}
     team = {i: str(pool.at[i, "team_short"]) for i in index}
     position = {i: str(pool.at[i, "pos"]) for i in index}
@@ -845,15 +560,6 @@ def _read_solution(*, pool, points, gameweeks, index, in_squad, in_xi, in_slot,
             "xi_points": round(float(week_points), 1),
         })
 
-        # Which sale funded which purchase is not something the solver decides
-        # -- it moves a set of players out and a set in, and the budget is
-        # pooled. Pairing them up is presentation, so pair inside a position
-        # where that is possible, which is the only pairing that reads as a
-        # transfer rather than as an accident of sort order.
-        # A transfer is only worth what it earns from the gameweek it is made
-        # onward. Summing the whole window would charge the incoming player for
-        # gameweeks you did not own him in, and credit the outgoing one for the
-        # same, which reliably makes a good transfer look like a bad one.
         window = points.loc[:, [g for g in gameweeks if g >= gw]]
         arrived = [i for i in index if on(bought[i][gw])]
         for out_player, in_player in _pair_moves(
@@ -928,7 +634,6 @@ def _read_solution(*, pool, points, gameweeks, index, in_squad, in_xi, in_slot,
 
 def _pair_moves(out_players: list, in_players: list,
                 position: dict) -> list[tuple]:
-    """Match sales to purchases within a position, then whatever is left over."""
     pairs, leftover_out, remaining = [], [], list(in_players)
     for out_player in sorted(out_players):
         match = next((i for i in remaining if position[i] == position[out_player]), None)
@@ -947,26 +652,6 @@ def chip_payout_series(squads: dict[int, list[int]], points: pd.DataFrame,
                        gameweeks: list[int], positions: dict[int, str],
                        slot_weight: dict[object, float] | None = None,
                        ) -> dict[str, dict[int, float]]:
-    """What a bench boost and a triple captain would pay in *every* gameweek.
-
-    `{chip: {gw: points}}`, measured against the squad the plan holds that week.
-    This is the whole option set the solve ranked, not just the gameweek it
-    settled on -- "played in GW1" on its own is indistinguishable from a model
-    that only ever looked at GW1, and these numbers are what tell the two apart.
-
-    It is measured the same way in every gameweek, off the squad rather than off
-    the solved bench, because a bench-boosted gameweek has no bench to read.
-
-    A bench boost is worth the bench *net of what the bench already earns*. The
-    objective scores a benched player at his slot's weight -- he is the one who
-    comes on when a starter does not play -- so the chip only buys the remaining
-    `1 - weight` of him. Counting the gross bench instead overstates it by a
-    point or so, which is exactly the margin these numbers get compared to the
-    reservation price on, and it made the plan look like it was contradicting
-    itself: a chip shown as worth 14.3 against a reserve of 14, and held.
-
-    Ported to `chips.mjs`'s `chipPayouts`.
-    """
     weights = dict(DEFAULT_BENCH_SLOT_WEIGHTS)
     weights.update(slot_weight or {})
     outfield = [s for s in weights if s != "GKP"]
@@ -980,8 +665,6 @@ def chip_payout_series(squads: dict[int, list[int]], points: pd.DataFrame,
         starters, _ = _best_xi_ids(by_pos, column)
 
         benched = [i for i in held if i not in set(starters)]
-        # Slot order is the one the objective would give them: reserve keeper in
-        # his own slot, the rest best-first, since that is who comes on first.
         spare_gk = [i for i in benched if positions.get(i) == "GKP"]
         rest = sorted((i for i in benched if positions.get(i) != "GKP"),
                       key=lambda i: -float(column[i]))
@@ -997,20 +680,6 @@ def chip_payout_series(squads: dict[int, list[int]], points: pd.DataFrame,
 def _chip_report(chips, chip_by_gw, squads, points, gameweeks, positions,
                  variation, skipped, forced=(), hold_value=None,
                  slot_weight=None) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """What each chip is worth, and whether the gameweek it wants is a real choice.
-
-    The payouts come from `chip_payout_series`, which prices every gameweek in
-    the window rather than only the one the solve chose.
-
-    The second number is the honest one -- how much better the chosen gameweek
-    is than the median gameweek in the window. When that gap is small the chip
-    is being timed against noise, which is what happens all season until the cup
-    draws put doubles and blanks on the calendar.
-
-    Returns two frames. The first is one row per chip: where it went and whether
-    that is signal. The second is that option set laid out gameweek by gameweek,
-    against the reserve each chip has to clear.
-    """
     payouts = chip_payout_series(squads, points, gameweeks, positions, slot_weight)
 
     rows = [{"chip": CHIP_LABELS[chip], "gw": pd.NA, "worth": np.nan,
@@ -1027,16 +696,9 @@ def _chip_report(chips, chip_by_gw, squads, points, gameweeks, positions,
                          "verdict": "hold — beaten by keeping it"})
             continue
 
-        # The verdict leads with what the plan did, because a row that names a
-        # gameweek and then reads "hold" is a contradiction a reader has to
-        # unpick -- which is what this said before whenever a chip was played
-        # into a flat calendar.
         lead = "forced" if chip in forced else "play"
 
         if not series:
-            # A free hit has no payout of its own -- it pays through the squad
-            # it lets you buy for one week, which only shows up as the
-            # difference between two whole plans. `chip_values` measures it.
             rows.append({"chip": CHIP_LABELS[chip], "gw": gw, "worth": np.nan,
                          "edge": np.nan,
                          "verdict": f"{lead} — structural, use --chip-value"})
@@ -1053,9 +715,6 @@ def _chip_report(chips, chip_by_gw, squads, points, gameweeks, positions,
         rows.append({"chip": CHIP_LABELS[chip], "gw": gw, "worth": worth,
                      "edge": edge, "verdict": f"{lead} — {timing}"})
 
-    # The option set: every gameweek the chip could legally go in, priced. A
-    # gameweek outside the chip's window is blank rather than zero, because
-    # "cannot" and "would pay nothing" are different answers.
     reserve = dict(CHIP_HOLD_VALUE)
     reserve.update(hold_value or {})
     options = []
@@ -1077,26 +736,8 @@ def _chip_report(chips, chip_by_gw, squads, points, gameweeks, positions,
                                   + ["reserve", "played"])))
 
 
-# --------------------------------------------------------------------------- #
-# Pricing the decision
-# --------------------------------------------------------------------------- #
-
 def value_of_acting(projection: Projection, players: pd.DataFrame,
                     plan: TransferPlan | None = None, **kwargs) -> dict:
-    """What this week's move is worth against rolling the transfer instead.
-
-    Solving twice -- once freely, once with this gameweek's transfers banned --
-    is the only comparison that charges the move for what it consumes. The gain
-    already nets off the four points a hit costs, the friction, and the banked
-    transfer the move spends, because both solves are scored on the same
-    objective.
-
-    This is the number to act on. Everything past the first gameweek is a shape,
-    not an instruction: it will be re-solved next week with team news, price
-    moves and a fixture list that this run cannot see.
-
-    `plan` is the free solve, if the caller already has one.
-    """
     acting = plan or plan_transfers(projection, players, **kwargs)
     holding = plan_transfers(projection, players,
                              **{**kwargs, "ban_first_gw_transfers": True})
@@ -1111,20 +752,7 @@ def value_of_acting(projection: Projection, players: pd.DataFrame,
 def chip_values(projection: Projection, players: pd.DataFrame,
                 chip_windows: dict[str, tuple[int, int]] | None = None,
                 **kwargs) -> pd.DataFrame:
-    """Each chip's worth, measured by taking it away and re-solving.
-
-    A chip's value is not its payout. Playing a bench boost changes which
-    fifteen you buy in the weeks before it, and a plan that never gets the chip
-    would have bought a different fifteen -- cheaper bench, better XI. The only
-    honest measure is the difference between the best plan that has the chip and
-    the best plan that does not, which is what this computes, one chip at a time.
-
-    Expensive: one solve per chip plus a baseline.
-    """
     kwargs.pop("forbid_chips", None)
-    # A chip cannot be priced by taking it away while it is also being forced,
-    # so the one under the microscope drops off the forced list for its own
-    # solve. The rest stay forced, which keeps every comparison like for like.
     forced = list(kwargs.pop("force_chips", None) or [])
     full = plan_transfers(projection, players, chip_windows=chip_windows,
                           force_chips=forced, **kwargs)

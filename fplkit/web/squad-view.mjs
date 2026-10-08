@@ -1,12 +1,3 @@
-/* The Squad tab: chrome (settings panel, tabs, pool drawer), squad maths, the
- * pitch renderers, bench weights, chip economics, constraints, drafts, data
- * loading, and the compare-pitch ("the other squad"). This is the hub module
- * -- see REFACTOR.md for why: renderAll/setTab have to reach every other view
- * module, so this file and analysis-view.mjs/transfer-view.mjs/
- * explain-view.mjs/compare-view.mjs import each other in both directions.
- * That is a real cycle, not an oversight -- every cross-reference is used
- * inside a function body, never at module top-level, so it is safe: both
- * sides are fully evaluated before either is called. */
 "use strict";
 import {
   $, S, POS_ORDER, STORE, loadLocal, saveLocal, saveSquad, resolveSquadCodes, resolvePurchaseCodes,
@@ -30,15 +21,10 @@ import { scheduleSolve } from "/assets/transfer-view.mjs";
 import { renderLineup, renderEditBanner } from "/assets/explain-view.mjs";
 import { renderChips, markVersus, versusOpen, renderChipConstraints } from "/assets/compare-view.mjs";
 
-/* ------------------------------------------------------------------- chrome
-   Settings, tabs and the pool drawer. All three exist for the same reason: the
-   squad is the view now, and everything that used to sit permanently beside it
-   is a keystroke away instead of competing with it for the first screen. */
 let settingsOpen = false, moreOpen = false;
 
 export function renderChrome() {
   $("#settingsRow").classList.toggle("hidden", !settingsOpen);
-  // The extra rows are inside settings, so they can only be open when it is.
   $("#moreRow").classList.toggle("hidden", !(settingsOpen && moreOpen));
   $("#benchRow").classList.toggle("hidden", !(settingsOpen && moreOpen));
   $("#settingsBtn").setAttribute("aria-expanded", String(settingsOpen));
@@ -66,18 +52,12 @@ export function setTab(name) {
   }
   document.querySelectorAll(".tab[data-tab]").forEach((b) =>
     b.setAttribute("aria-selected", String(b.dataset.tab === name)));
-  // An SVG laid out against a hidden container is laid out against nothing, so
-  // the charts are drawn when their tab appears rather than while it is away.
-  // Guarded on the pool, because tabs are restored from settings before the
-  // snapshot has landed and there is nothing to draw yet.
   if (name === "analysis" && S.meta) {
     renderGwChart(); renderExposure(); renderTimeline(); renderFixtures(); renderNearMisses();
   }
   if (name === "chips" && S.meta) { renderChips(); }
 }
 
-/** Open the pool over the board. `pos` pre-filters it, which is what makes an
- *  empty slot on the pitch a shortcut rather than just another way in. */
 export function openPool(pos = null) {
   if (pos && pos !== S.pos) { setPosFilter(pos); renderPool(); saveSettings(); }
   $("#poolDrawer").classList.add("open");
@@ -96,11 +76,6 @@ export function closePool() {
 
 export const poolOpen = () => $("#poolDrawer").classList.contains("open");
 
-/* Which figures ride on a shirt. Up to three, chosen rather than fixed: the
-   first gets a bar of its own and the other two share a row beneath it, so the
-   order of selection is the order they appear. Rendered from the metric table
-   rather than written out in the markup, so adding a metric is one entry in
-   pitch.mjs and not three places that have to agree. */
 export function renderMetricBar() {
   $("#metricBar").innerHTML = METRIC_KEYS.map((key) => `
     <button data-metric="${key}" aria-pressed="${S.metrics.includes(key)}"
@@ -111,10 +86,6 @@ export function renderMetricBar() {
     : `${METRICS[lead].label} only — pick up to ${MAX_METRICS}`;
 }
 
-/** Toggle one metric on or off, keeping the list legal: at least one, never
-    more than three, always in the bar's own order. Asking for a fourth drops
-    the oldest rather than refusing, which is what a person means by clicking
-    it. */
 export function toggleMetric(key) {
   const has = S.metrics.includes(key);
   let next = has ? S.metrics.filter((k) => k !== key) : [...S.metrics, key];
@@ -123,14 +94,7 @@ export function toggleMetric(key) {
   S.metrics = cleanMetrics(next);
 }
 
-/** Every value label next to a slider, rewritten from the slider itself, so
-    restoring settings cannot leave a control saying one thing and reading
-    another. */
 export function renderControlValues() {
-  // The slider still shows the weighting it is set to, but says so in the past
-  // tense while the override is on -- a disabled control reading "0.79x" next
-  // to a board that is counting every fixture equally is the exact mismatch
-  // this function exists to prevent.
   const off = noDecay();
   $("#gwdecay").disabled = off;
   $("#nodecayWrap").classList.toggle("on", off);
@@ -155,11 +119,7 @@ export function renderControlValues() {
 export function readSettings() {
   return {
     controls: Object.fromEntries(SETTING_IDS.map((id) => [id, $("#" + id).value])),
-    // Not in SETTING_IDS: every id there is read and written through `.value`,
-    // and a checkbox's `.value` is the string "on" whether or not it is ticked.
     noDecay: noDecay(), calibrateOdds: calibrateOdds(),
-    // Likewise not a Settings control -- it lives on the Chips tab, which is
-    // rebuilt from state on every render rather than read back from the DOM.
     chipPlan: persistableChipPlan(),
     bench: Object.fromEntries(BENCH_KEYS.map((k) => [k, $(`#bw_${k}`).value])),
     benchTouched,
@@ -174,26 +134,13 @@ export function readSettings() {
   };
 }
 
-/** Reflects S.chipsUsed onto the four checkboxes -- the inverse of the
- *  change listener that reads them back into S.chipsUsed. */
 export function renderChipsUsed() {
   document.querySelectorAll("[data-chipused]").forEach((cb) => {
     cb.checked = S.chipsUsed.includes(cb.dataset.chipused);
   });
 }
 
-/* Coalesced, because dragging a slider fires input on every pixel and this is a
-   JSON stringify plus a synchronous localStorage write. */
 let settingsTimer = null;
-/** Snapshot of syncableSettings() as of the last save, so saveSettings() --
-    called from every settings-panel change, including ones that are purely
-    how this device is looking at the board (tab, sort, theme, which chart is
-    showing) -- only tells cross-device sync about it when the syncable
-    subset actually moved. Without this, switching tabs on a device that is
-    just sitting open re-pushes its current squad/edits/drafts under a fresh
-    timestamp, clobbering a genuine edit made on another device in the
-    meantime. Kept in sync with reality at boot and after every pull, both of
-    which set the syncable settings without going through saveSettings(). */
 export function saveSettings() {
   clearTimeout(settingsTimer);
   settingsTimer = setTimeout(() => saveLocal(STORE.settings, readSettings()), 250);
@@ -204,28 +151,18 @@ export function saveSettings() {
   }
 }
 
-/** Put a saved blob back on screen. Runs before the snapshot has loaded, so it
-    only sets values -- nothing here re-derives or re-solves; loadPool does that
-    once, afterwards, with the settings already in place. */
 export function applySettings(saved) {
   if (!saved || typeof saved !== "object") return;
   for (const id of SETTING_IDS) {
     const value = saved.controls?.[id];
     if (value !== undefined && value !== null) $("#" + id).value = value;
   }
-  // Settings saved before the decay slider stored the half-life itself, on a
-  // control that no longer exists. Carry the setting across rather than
-  // silently resetting somebody's weighting to the default.
   const legacyHl = +saved.controls?.halflife;
   if (saved.controls?.gwdecay === undefined && legacyHl > 0) {
     $("#gwdecay").value = Math.pow(0.5, 1 / legacyHl).toFixed(2);
   }
   $("#nodecay").checked = !!saved.noDecay;
   if (saved.calibrateOdds !== undefined) $("#oddscalib").checked = !!saved.calibrateOdds;
-  // chipPlan is the current shape; a blob saved before the two sides split
-  // apart has transferMode/chipSkip flat, which only ever meant the
-  // from-scratch side -- carried across the same way the old half-life
-  // control's value is above, rather than silently dropped.
   if (saved.chipPlan) applyChipPlanSettings(saved.chipPlan);
   else applyChipPlanSettings({ opt: { transferMode: saved.transferMode, chipSkip: saved.chipSkip } });
   if (saved.benchTouched && saved.bench) {
@@ -262,10 +199,6 @@ export function setView(which, mode) {
   const panes = VIEW_PANES[which];
   if (!panes) return;
   const table = mode === "table";
-  // The Chips tab's panes only exist once a plan has been solved, so a saved
-  // preference restored at load has nothing to act on yet. Record it anyway --
-  // renderChips reads S.views when it writes the markup, so the preference
-  // applies the moment the panes appear.
   const chart = $(panes[0]), tbl = $(panes[1]);
   chart?.classList.toggle("hidden", table);
   tbl?.classList.toggle("hidden", !table);
@@ -290,8 +223,6 @@ export function restoreDefaults() {
   $("#nodecay").checked = false;
   $("#oddscalib").checked = true;
   S.chipPlan = { opt: newChipPlanState(), own: newChipPlanState() };
-  // Recency's default is whatever the loaded snapshot was projected with --
-  // zeroing it would flag a sync the board does not actually need.
   $("#recency").value = String(S.meta?.recency || 0);
   $("#lastseason").value = String(S.meta?.previous ?? 1);
   benchTouched = false;
@@ -313,13 +244,11 @@ export function restoreDefaults() {
   S.compareWith = "optimal"; S.versus = [];
   setTab("squad");
   renderControlValues();
-  try { localStorage.removeItem(STORE.settings); } catch (_) { /* private mode */ }
+  try { localStorage.removeItem(STORE.settings); } catch (_) { }
   clampHorizon();
   rebuildPool(); renderAll(); scheduleSolve(0);
 }
 
-/* A saved horizon can outlive the snapshot that allowed it: a snapshot frozen at
-   8 gameweeks has nothing to say about 12, so the snapshot is the ceiling. */
 export function clampHorizon() {
   const max = S.snapshot?.gameweeks?.length;
   if (!max) return;
@@ -329,9 +258,6 @@ export function clampHorizon() {
   sel.value = String(allowed.length ? Math.max(...allowed) : max);
 }
 
-/* ------------------------------------------------------------ detailed positions
-   A player's own tags win over the seed; the seed wins over showing nothing.
-   Both are optional, so most players show only their base FPL position. */
 export function playerTags(player) {
   const own = S.posTags[player.id];
   if (own) return own;
@@ -347,9 +273,6 @@ export function togglePosTag(id, tag) {
 export const posTagBadges = (tags) => tags.map((t) =>
   `<span class="postagbadge" title="${POSITION_TAG_LABELS[t] || t}">${t}</span>`).join("");
 
-/* ---------------------------------------------------------------- squad maths
-   Formation enumeration, mirroring the server's rules exactly so the browser
-   and the optimiser never disagree about what a legal XI is. */
 export const FORMATIONS = (() => {
   const out = [];
   for (let d = 3; d <= 5; d++) for (let m = 2; m <= 5; m++) for (let f = 1; f <= 3; f++)
@@ -376,8 +299,6 @@ export function bestXI(ids, scoreOf) {
   return best || { ids: [], total: 0 };
 }
 
-// XI points for one gameweek, captain doubled — the same quantity the CLI
-// reports per gameweek.
 export const gwPoints = (ids, index) => {
   const xi = bestXI(ids, (p) => p.gw[index] || 0);
   if (!xi.ids.length) return 0;
@@ -385,9 +306,6 @@ export const gwPoints = (ids, index) => {
   return xi.total + captain;
 };
 
-// Starting XI, bench order and captain for one gameweek — the fixed squad does
-// not change without a transfer, but who starts and who captains is a weekly
-// call made with that week's own fixture, same as the CLI's `plan.lineups`.
 export function gwLineup(ids, index) {
   const xi = bestXI(ids, (p) => p.gw[index] || 0);
   if (!xi.ids.length) return null;
@@ -441,32 +359,16 @@ export function exposure(ids) {
   return { top: rows.slice(0, 8), share: total ? held / total : 0 };
 }
 
-/* Last season's PPG is a rate over however many games he happened to play, and
-   it lies hardest exactly where people trust it most: three cameo appearances
-   and a goal reads 4.0. Greying the thin ones says "this number exists but do
-   not lean on it" without hiding a figure the user asked to see.
-
-   Thin is a *share* of a full workload, not a fixed 900 minutes: the totals
-   behind a snapshot are last season's complete 38 matches right up until the
-   new season starts, and six matches a fortnight later. Against a constant,
-   every player in the league goes grey the week it rolls over and stays that
-   way until Christmas. */
 const thinMinutes = () =>
   (S.meta?.season_minutes ?? 38 * 90) * (S.meta?.established_share ?? 0.26);
 const ppgClass = (p) => (!p.ppg ? "muted-cell"
   : (p.minutes_last || 0) < thinMinutes() ? "thin-cell" : "");
 
-/* PPG and xPPG have different denominators, which is most of why the model
-   looks pessimistic next to last season: FPL divides by the games a player
-   appeared in, xPPG divides by his club's fixtures. Haaland's 6.8 is 6.3 once
-   the three games he missed are counted. The tooltip carries both so the
-   comparison beside it is an honest one. */
 const ppgTitle = (p) => !p.ppg ? "no appearances last season"
   : `${fmt(p.ppg, 1)} per appearance over ${p.apps_last} games\n`
     + `${fmt(p.ppg_fixture, 2)} per fixture — same basis as xPPG (${fmt(p.xppg, 2)})\n`
     + `${Math.round(p.minutes_last)} minutes`;
 
-/* ------------------------------------------------------------------- render */
 export function renderPool() {
   const term = S.search.toLowerCase();
   let rows = S.players.filter((p) =>
@@ -515,10 +417,6 @@ export function renderPool() {
   $("#poolcount").textContent = `${rows.length} shown`;
 }
 
-/* Captain and vice are the XI's two best plan-weighted players — the same rule
-   the projection already applies when it doubles the top score, said out loud on
-   the shirt. Vice is not free information: it is who the double falls to when
-   the captain does not play, which is a reason to look at the fixture beside it. */
 export function captaincy(ids) {
   const ranked = planXI(ids).ids
     .map((id) => S.byId.get(id))
@@ -534,8 +432,6 @@ export function renderSquad() {
   });
   const { captain, vice } = captaincy(S.squad);
 
-  // A player the other pitch does not want is marked here too, so the diff reads
-  // from either side rather than only from the solver's.
   const other = comparisonSquad();
   const tags = {};
   if (other && other.ids.length && S.squad.length) {
@@ -559,8 +455,6 @@ export function renderSquad() {
 
   const v = validity(S.squad);
   const budget = +$("#budget").value;
-  // The squad is worth what it sells for, not what it is listed at: a player
-  // who has risen since you bought him gives back half the rise on the way out.
   const worth = squadSellValue(S.squad);
   $("#tCost").textContent = "£" + fmt(worth, 1);
   $("#tCost").title = worth < v.cost - 0.05
@@ -568,8 +462,6 @@ export function renderSquad() {
   const meter = $("#budMeter");
   meter.classList.toggle("over", worth > budget);
   meter.firstElementChild.style.width = Math.min(100, (worth / budget) * 100) + "%";
-  // What is left, which is the number you buy the next player with -- and the
-  // one the cost alone makes you do arithmetic for.
   const bank = budget - worth;
   $("#tBank").textContent = S.squad.length
     ? (bank < 0 ? `£${fmt(-bank, 1)}m over budget` : `£${fmt(bank, 1)}m in the bank`)
@@ -590,8 +482,6 @@ export function renderSquad() {
     delta.textContent = `${15 - S.squad.length} slots still empty`;
   } else { delta.textContent = ""; }
 
-  // The XI's per-match rate, captain doubled, over the gameweeks that actually
-  // contain a fixture. Reads directly against the PPG figures beside each name.
   const xiIds = planXI(S.squad).ids;
   const xiGames = Math.max(...xiIds.map((id) => S.byId.get(id)?.games || 0), 0);
   const xiRate = xiIds.reduce((a, id) => a + (S.byId.get(id)?.xppg || 0), 0)
@@ -619,8 +509,6 @@ export function renderSquad() {
     }
   }
 }
-/** Buy price per owned player and the bank, for when the live import is stale
- *  (a wildcard week, say). Editing either keeps the other money figure fixed. */
 function renderSquadMoney(bank) {
   const box = $("#squadMoney");
   box.hidden = !S.squad.length;
@@ -647,16 +535,6 @@ document.addEventListener("change", (e) => {
   saveSquad(); scheduleSolve(); renderAll();
 });
 
-// The solver ranks the bench, because the slots are not interchangeable: the
-// first substitute comes on whenever a starter blanks, the third rarely does.
-export const BENCH_LABEL = { GKP: "GK sub", 1: "1st sub", 2: "2nd sub", 3: "3rd sub" };
-
-/* Which bench slot each substitute occupies, ordered the way the solver would.
-   Computed here rather than carried over from the last solve: the moment your
-   draft stops being the optimal squad, the solver's ordering describes a
-   different fifteen, and a "1st sub" badge on a player who is no longer in that
-   squad is simply wrong. Best available outfielder first, reserve keeper apart —
-   the same ranking the objective's slot profile produces. */
 export function benchSlots(ids) {
   const xi = new Set(planXI(ids).ids);
   const rest = ids.filter((id) => !xi.has(id)).map((id) => S.byId.get(id)).filter(Boolean);
@@ -668,17 +546,6 @@ export function benchSlots(ids) {
   return order;
 }
 
-export const id2role = (id, xi, captain, order) => {
-  if (id === captain) return "C";
-  if (xi.has(id)) return "XI";
-  return BENCH_LABEL[order?.[id]] || "sub";
-};
-
-/* ------------------------------------------------------- bench slot weights
-   The objective prices each bench slot separately, so the board exposes each
-   one separately. The four sliders are the source of truth that goes to the
-   server; the "overall" slider is a convenience that rewrites all four from the
-   default shape, and reads back as the scale those four currently imply. */
 export const BENCH_PROFILE = { GKP: 0.25, "1": 2.0, "2": 0.85, "3": 0.35 };
 export const BENCH_KEYS = Object.keys(BENCH_PROFILE);
 const PROFILE_SUM = BENCH_KEYS.reduce((a, k) => a + BENCH_PROFILE[k], 0);
@@ -689,7 +556,6 @@ export const benchWeights = () =>
 export function renderBenchWeights() {
   const w = benchWeights();
   for (const k of BENCH_KEYS) $(`#bwv_${k}`).textContent = w[k].toFixed(3);
-  // The scale these four imply, so the overall slider never contradicts them.
   const scale = BENCH_KEYS.reduce((a, k) => a + w[k], 0) / PROFILE_SUM;
   $("#benchw").value = Math.min(1, scale);
   $("#bwval").textContent = scale.toFixed(2) + (scale > 1 ? "+" : "");
@@ -704,17 +570,10 @@ export function setBenchScale(scale) {
   $("#bwval").textContent = (+scale).toFixed(2);
 }
 
-// Bench weights. The overall slider rewrites all four from the default shape;
-// the four write only themselves and then correct what the overall one reads.
 let benchTouched = false;
 export function getBenchTouched() { return benchTouched; }
 export function setBenchTouched(v) { benchTouched = v; }
 
-/* --------------------------------------------------------- chip economics
-   What a chip is judged against if left unplayed, and what a banked transfer
-   is worth beyond the tabulated first few -- CHIP_HOLD_VALUE and FT_VALUE in
-   fplkit/config.py. Same "sliders are the source of truth, snapshot supplies
-   the default until touched" pattern as the bench weights above. */
 export const HOLD_KEYS = ["bboost", "3xc", "freehit"];
 export const HOLD_INPUT_ID = { bboost: "holdBboost", "3xc": "holdTc", freehit: "holdFreehit" };
 
@@ -736,15 +595,6 @@ export function setChipEconDefaults(hold, ftValue) {
   renderChipEconValues();
 }
 
-/* ------------------------------------------------------------- constraints
-   Require and bar are optimiser constraints, not squad edits: they say what the
-   solver must respect next time you press "Fill optimal", and leave whatever you
-   are currently drafting alone. A player can be one or the other, never both. */
-/* First gameweek and recency are the two settings the browser cannot apply.
-   Horizon and half-life only reweight points that are already known, but these
-   two change which fixtures exist and what the underlying rates are, so both
-   mean "re-project", and re-projecting means the laptop. They are wired to Sync
-   rather than left looking like ordinary knobs that quietly do nothing. */
 export const startGw = () => $("#startgw").value ? +$("#startgw").value : null;
 
 export const parseFormation = (text) => {
@@ -761,7 +611,6 @@ export function toggleConstraint(id, which) {
   renderPool(); renderConstraints(); renderChipConstraints(); scheduleSolve(0);
 }
 
-/** Lift a required/barred mark off a player, from wherever it was clicked. */
 export function dropConstraint(id) {
   S.include = S.include.filter((x) => x !== id);
   S.exclude = S.exclude.filter((x) => x !== id);
@@ -784,12 +633,6 @@ export function renderConstraints() {
     : `<span class="sub">none set</span>`;
 }
 
-/* ----------------------------------------------------------------- drafts
-   Series colours are the categorical slots in fixed order, assigned by the
-   draft's position in the saved list -- never by rank, so ticking a draft off
-   never repaints the others. Capped at three saved drafts on screen at once
-   (four series with the live draft): past four the palette's adjacent pairs
-   stop clearing the colourblind gate on this chart form. */
 export const SERIES_SLOTS = [
   { light: "#2a78d6", dark: "#3987e5" },
   { light: "#eb6834", dark: "#d95926" },
@@ -798,12 +641,6 @@ export const SERIES_SLOTS = [
 ];
 export const MAX_COMPARE = 3;
 
-/* Colour follows the squad, not the row it sits on. Two drafts holding the same
-   fifteen players are the same thing wearing two names -- they draw one line, so
-   they must also carry one colour in the list, the table and the legend. Keying
-   the slot on a signature of the squad rather than on list position is what
-   guarantees that, and it also means unticking one draft never repaints the
-   others. */
 export const squadSig = (ids) => (ids || []).filter((id) => S.byId.has(id)).slice().sort().join(",");
 
 export function slotMap() {
@@ -837,17 +674,8 @@ export function draftMetrics(ids) {
   };
 }
 
-/* Drafts are local first and pushed to the laptop opportunistically. Saving has
-   to work on a train, so it cannot depend on a request succeeding; but the CLI
-   reads out/drafts.json, so the laptop's copy should not rot either. Merging by
-   name and keeping the newer saved_at means editing the same draft on both
-   sides converges instead of one silently winning. */
 const persistDrafts = () => { saveLocal(STORE.drafts, S.drafts); markSynced(); };
 
-/* Reconciling with the laptop happens on Sync, not on load. Doing it on load
-   meant every offline open fired a request that could only fail — handled, but
-   a red line in the console and a pointless wait on a flaky connection. Sync is
-   already the moment the two sides meet; this belongs there. */
 export async function syncDrafts() {
   let remote = [];
   try {
@@ -858,8 +686,6 @@ export async function syncDrafts() {
     S.draftsPath = data.path;
   } catch (_) { return; }
 
-  // Merge by name, newer saved_at wins, so editing the same draft on the phone
-  // and on the laptop converges instead of one side silently losing.
   const merged = new Map(S.drafts.map((d) => [d.name, d]));
   for (const d of remote) {
     const mine = merged.get(d.name);
@@ -874,15 +700,11 @@ export async function syncDrafts() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(draft),
       });
-    } catch (_) { break; }      // laptop went away mid-push; local is still right
+    } catch (_) { break; }
   }
   renderDrafts();
 }
 
-/** Save the squad on screen under `name`, overwriting any existing draft of
- *  the same name. Shared by the Drafts tab's own input and the Chips tab's
- *  "Your squad" panel, which needs the same save without living on the same
- *  tab as #draftName. */
 export function saveDraftAs(name) {
   name = name.trim();
   if (!name) return alert("Give the draft a name first.");
@@ -914,7 +736,7 @@ export async function deleteDraft(name) {
   persistDrafts();
   try {
     await api(`/api/drafts/${encodeURIComponent(name)}`, { method: "DELETE" });
-  } catch (_) { /* offline; it is gone here, and stays gone locally */ }
+  } catch (_) { }
   if (S.compareWith === `draft:${name}`) S.compareWith = "optimal";
   renderDrafts(); renderSquad(); renderCompare(); renderGwChart();
 }
@@ -939,16 +761,8 @@ export function toggleCompare(name) {
   renderDrafts(); renderGwChart();
 }
 
-/* Saved drafts are also candidates for the right-hand pitch, so the picker is
-   rebuilt whenever the list changes rather than only on a full render --
-   otherwise a draft you just saved cannot be compared against until something
-   else happens to redraw the board. */
 export function renderDrafts() {
   renderCompareOptions();
-  // The drafts list and the pool are fetched in parallel and the drafts always
-  // win, being a small local file against a projection. Scoring a draft needs
-  // the pool's rules, so on a cold server this ran first and threw; loadPool's
-  // renderAll paints the list a moment later either way.
   if (!S.meta) return;
   const box = $("#draftList");
   box.innerHTML = "";
@@ -964,8 +778,6 @@ export function renderDrafts() {
     const row = document.createElement("div");
     row.className = "draftrow" + (selected ? " sel" : "");
     const ctx = d.context || {};
-    // Half a slider step of tolerance, so a draft saved under the old
-    // half-life control is not flagged for a rounding difference nobody chose.
     const savedDecay = ctxDecay(ctx);
     const drift = ctx.horizon && (ctx.horizon !== +$("#horizon").value
       || (savedDecay !== null && Math.abs(savedDecay - gwDecay()) > 0.005));
@@ -1012,7 +824,6 @@ export function renderComparison() {
     <td>${Math.round(r.m.coverage * 100)}%</td>
     <td>${r.m.legal ? "✓" : (r.m.missing > 0 ? `${r.m.missing} short` : "illegal")}</td>`;
 
-  // Squad differences, relative to the current draft.
   const baseline = new Set(S.squad);
   const diffs = rows.slice(1).map((r) => {
     const theirs = new Set(r.m.ids);
@@ -1035,18 +846,6 @@ export function renderComparison() {
     ${diffs ? `<div class="diffgrid">${diffs}</div>` : ""}`;
 }
 
-/* --------------------------------------------------------------------- data
-   The board runs on a frozen projection, not on a live server. The laptop does
-   the one thing only it can -- fetch three sources and run the pandas pipeline
-   -- and writes the answer to snapshot.json; everything after that, including
-   the optimiser and the stat editor, happens here. That is what lets the page
-   work on a phone with the laptop shut, and it also means there is exactly one
-   code path rather than an online one and an offline one that drift.
-
-   The cost is honest and visible: the data is as fresh as the last sync, and
-   the header says when that was. */
-// Must match DATA_CACHE in sw.js — the page writes this cache and the worker
-// reads it, which is the whole point of the arrangement below.
 const DATA_CACHE = "fpl-data-v1";
 
 export async function loadSnapshot(path = "/snapshot.json") {
@@ -1055,31 +854,18 @@ export async function loadSnapshot(path = "/snapshot.json") {
     const detail = await res.json().catch(() => ({}));
     throw new Error(detail.error || detail.detail || `snapshot unavailable (${res.status})`);
   }
-  // The page caches the snapshot, not the service worker, for two reasons that
-  // each independently break the obvious approach. On a first visit this fetch
-  // happens before the worker is controlling the page, so it never passes
-  // through it — the shell would cache and the data would not, which is the
-  // worst possible half-installed state. And when a token is configured the
-  // worker cannot authenticate a request of its own; only the page holds it.
   try {
     (await caches.open(DATA_CACHE)).put(path, res.clone());
-  } catch (_) { /* no Cache API — private mode, or plain http off localhost */ }
+  } catch (_) { }
   return res.json();
 }
 
-/** Rebuild the derived pool from the snapshot for the settings on screen.
-    Pure and fast -- a few milliseconds for 573 players -- so it runs on every
-    horizon or half-life change instead of a two-second round trip. */
 export function rebuildPool(keepSquad = true) {
   const data = derivePool(S.snapshot, S.edits, planOpts(), S.fixtureEdits);
 
   S.players = data.players; S.gameweeks = data.gameweeks; S.meta = data.meta;
   S.byId = new Map(data.players.map((p) => [p.id, p]));
   S.byCode = new Map(data.players.map((p) => [p.code, p.id]));
-  // One-time: the squad saved on disk is codes (see saveSquad/resolveSquadCodes),
-  // and this is the first point in boot where S.byCode exists to resolve them
-  // against. A season rollover surfaces here as a shorter resolved list than
-  // pending, rather than as the squad silently vanishing on the next filter.
   if (S.squadCodesPending) {
     S.squad = resolveSquadCodes(S.squadCodesPending);
     S.purchase = resolvePurchaseCodes(S.purchaseCodesPending);
@@ -1088,8 +874,6 @@ export function rebuildPool(keepSquad = true) {
   if (!keepSquad) S.squad = [];
   S.squad = S.squad.filter((id) => S.byId.has(id));
   S.optimal = S.optimal.filter((id) => S.byId.has(id));
-  // Saved constraints can name a player who has since left the pool; a require
-  // the solver cannot satisfy would make every solve fail with no chip to drop.
   S.include = S.include.filter((id) => S.byId.has(id));
   S.exclude = S.exclude.filter((id) => S.byId.has(id));
   S.poolOut = S.poolOut.filter((id) => S.byId.has(id));
@@ -1112,8 +896,6 @@ export function rebuildPool(keepSquad = true) {
   }
   sel.value = String(m.start_gw);
 
-  // Defaults come from the snapshot's own rules block, so the sliders and the
-  // objective cannot disagree about what "default" means -- until you touch them.
   if (!benchTouched && m.bench_slot_weights) {
     for (const k of BENCH_KEYS) {
       if (m.bench_slot_weights[k] != null) $(`#bw_${k}`).value = m.bench_slot_weights[k];
@@ -1134,12 +916,8 @@ export function renderFreshness() {
     `Snapshot <b>${label}</b> · frozen at GW${m.start_gw}, ${m.snapshot_horizon} gameweeks`
     + (m.recency ? ` · recency ${m.recency}gw` : "")
     + (m.previous != null && m.previous !== 1 ? ` · last season ×${(+m.previous).toFixed(2)}` : "")
-    // Silence here would be the trap: a device left on ?nopull=1 keeps looking
-    // normal while quietly ignoring every change made anywhere else.
     + (SKIP_PULL ? ` · <b>not syncing down</b> (nopull=1)` : "")
     + (ADOPT_REMOTE ? ` · <b>adopted the remote copy wholesale</b> (adoptremote=1)` : "");
-  // The horizon can only ever be shortened: a snapshot taken at 12 has nothing
-  // to say about 14, so offering it would be offering a wrong answer.
   for (const option of $("#horizon").options) {
     option.disabled = +option.value > m.snapshot_horizon;
   }
@@ -1166,8 +944,6 @@ export async function loadPool(keepSquad = true) {
   scheduleSolve(0);
 }
 
-/** The slider's static-host path: snap to the nearest pre-built weight and load
-    that snapshot. With a laptop behind the page, Sync handles any value. */
 export async function setLastSeason() {
   if (serverPresent !== false) return sync(false);
   const pct = Math.round(+$("#lastseason").value * 4) * 25;
@@ -1181,8 +957,6 @@ export async function setLastSeason() {
   scheduleSolve(0);
 }
 
-/** Re-project on the laptop and pick up the result. The only thing here that
-    needs the server, and the only thing that cannot work offline. */
 export async function sync(refresh = false) {
   const btn = $("#syncBtn");
   btn.disabled = true;
@@ -1198,8 +972,6 @@ export async function sync(refresh = false) {
       const detail = await res.json().catch(() => ({}));
       throw new Error(detail.detail || `sync failed (${res.status})`);
     }
-    // loadSnapshot writes the offline cache as it goes, so the fresh projection
-    // is on the device before you walk away from the laptop.
     S.snapshot = await loadSnapshot();
     rebuildPool();
     renderAll();
@@ -1212,11 +984,6 @@ export async function sync(refresh = false) {
   }
 }
 
-/* ------------------------------------------------------------ the other squad
-   The right-hand pitch. It is the solver's answer by default, because that is
-   the comparison the board exists to make, but any saved draft can take its
-   place -- the interesting question is often "is this better than the one I had
-   yesterday?", and that used to be answerable only through a line chart. */
 export function comparisonSquad() {
   if (S.compareWith === "none") return null;
   if (S.compareWith.startsWith("draft:")) {
@@ -1232,8 +999,6 @@ export function comparisonSquad() {
            cost: S.optimalCost ?? S.optimal.reduce((a, id) => a + (S.byId.get(id)?.price || 0), 0) };
 }
 
-/** The picker above the right pitch: the solver, every draft you have saved,
-    and the option of no second squad at all on a narrow screen. */
 export function renderCompareOptions() {
   const select = $("#compareWith");
   const options = [
@@ -1248,9 +1013,6 @@ export function renderCompareOptions() {
 }
 
 export const squadCost = (ids) => ids.reduce((a, id) => a + (S.byId.get(id)?.price || 0), 0);
-/** What an owned player sells for: half of any rise since he was bought is
- *  kept by the game, rounded down to £0.1m; a fall is his in full. A player
- *  with no recorded purchase price is taken as bought at today's price. */
 export const sellPrice = (id) => {
   const now = S.byId.get(id)?.price || 0;
   const bought = S.purchase[id];
@@ -1279,16 +1041,11 @@ export function renderOptStatus() {
   const ready = S.optimal.length === 15;
   $("#optResolve").disabled = !showing;
   $("#optimise").disabled = !ready;
-  // How far your squad is from the solver's, on the tab, so it is visible from
-  // whichever section you happen to be reading.
   const diff = ready ? optDiff() : null;
   $("#tabOptCount").textContent =
     !diff || !S.squad.length ? "" : diff.incoming.length ? String(diff.incoming.length) : "✓";
 }
 
-/* The settings the solver's answer is an answer *to*. The controls that
-   produced it are behind a button, and a squad with no statement of what it was
-   optimised for is a squad you have to take on trust. */
 export function optSettingsText() {
   const bits = [
     `${$("#horizon").value} gameweeks`,
@@ -1332,8 +1089,6 @@ export function renderCompare() {
     return;
   }
 
-  // With nothing drafted there is nothing to diff against, and marking all
-  // fifteen as incoming says only "this squad exists".
   const mine = new Set(S.squad);
   const tags = {};
   if (S.squad.length) {
@@ -1361,10 +1116,6 @@ export function renderCompare() {
   renderSwap(other);
 }
 
-/* The trade, priced. Outs and ins are paired by position and then by rank
-   within it, because that is the swap you would actually make: the defender you
-   drop is replaced by a defender, and pairing them puts the two numbers that
-   decide it on one line instead of in two lists. */
 export function renderSwap(other) {
   const box = $("#swapBox");
   if (!other || !other.ids.length) {
@@ -1402,8 +1153,6 @@ export function renderSwap(other) {
     return;
   }
 
-  // Pair within a position, longest side first, so nothing is dropped from the
-  // table when the two squads have different shapes.
   const pairs = [];
   const pool = [...ins];
   for (const out of outs) {
@@ -1459,10 +1208,6 @@ export function renderSwap(other) {
     </div>`;
 }
 
-/* One player at a time. The draft has to stay fifteen and legal by position, so
-   bringing a player in drops the weakest player you hold in the same position
-   that the solver does not want either -- never one it kept, which would just
-   undo itself on the next click. */
 export function swapIn(id) {
   const p = S.byId.get(id);
   if (!p || S.squad.includes(id)) return;
@@ -1484,16 +1229,11 @@ export function swapIn(id) {
 }
 
 export function renderAll() {
-  // Order matters once: the squad pitch marks its own players against whatever
-  // the comparison holds, so the picker has to be settled before it draws.
   renderCompareOptions();
   renderPool(); renderSquad(); renderCompare(); renderConstraints();
   renderLineup();
   renderDrafts();
   $("#tabDraftCount").textContent = S.drafts.length ? String(S.drafts.length) : "";
-  // The charts are the one part that cannot be drawn out of sight: an SVG sized
-  // against a hidden container has no width to size against. setTab draws them
-  // when the tab appears, so here they are drawn only if it already has.
   if (S.tab === "analysis") {
     renderGwChart(); renderExposure(); renderTimeline(); renderFixtures(); renderNearMisses();
   }

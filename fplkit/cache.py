@@ -1,7 +1,3 @@
-"""Disk cache for HTTP responses, so repeated runs do not re-hit the APIs.
-
-The Odds API free tier is 500 requests a month, so caching is not a nicety.
-"""
 
 from __future__ import annotations
 
@@ -26,7 +22,6 @@ def cached_json(
     ttl_seconds: float,
     force_refresh: bool = False,
 ) -> Any:
-    """Return `fetch()`'s result, memoised on disk under (namespace, key)."""
     path = _key_path(namespace, key)
 
     if not force_refresh and path.exists():
@@ -35,7 +30,7 @@ def cached_json(
             if time.time() - payload["fetched_at"] < ttl_seconds:
                 return payload["data"]
         except (json.JSONDecodeError, KeyError, OSError):
-            pass  # corrupt or partial cache entry; just refetch
+            pass
 
     data = fetch()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -44,11 +39,6 @@ def cached_json(
 
 
 def inspect(namespace: str) -> list[dict]:
-    """What is currently cached for a source, and how old it is.
-
-    Used by the provenance page so it can report the state of the actual cache
-    rather than describe what it is supposed to contain.
-    """
     target = CACHE_DIR / namespace
     if not target.exists():
         return []
@@ -69,7 +59,6 @@ def inspect(namespace: str) -> list[dict]:
 
 
 def clear(namespace: str | None = None) -> int:
-    """Delete cached entries; returns the number of files removed."""
     target = CACHE_DIR / namespace if namespace else CACHE_DIR
     if not target.exists():
         return 0

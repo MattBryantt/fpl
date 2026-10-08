@@ -4,10 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>FPL squad board</title>
-<!-- Added to the home screen this launches without Safari's chrome, which is
-     most of what makes it feel like an app rather than a bookmark. The two
-     theme-colors match the light and dark page backgrounds so the status bar
-     blends into the board instead of sitting on a white strip above it. -->
+
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="FPL board">
@@ -15,22 +12,16 @@
 <meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
 <link rel="apple-touch-icon" href="/icon.png">
-<!-- The saved theme has to land before the first paint, or a light board on a
-     dark phone opens with a black flash. Everything else in the saved settings
-     is applied by the module below; only this one is worth an inline script. -->
+
 <script>
   try {
     const theme = JSON.parse(localStorage.getItem("fpl.settings") || "{}").theme;
     if (theme === "dark" || theme === "light") {
       document.documentElement.setAttribute("data-theme", theme);
     }
-  } catch (_) { /* private mode, or nothing saved yet */ }
+  } catch (_) { }
 </script>
 <style>
-/* Palette from the data-viz reference instance. Both modes are selected, not
-   flipped: the dark column is the same hues re-stepped for the dark surface.
-   Validated with scripts/validate_palette.js -- all checks pass in both modes
-   (worst CVD dE 24.7 light / 26.8 dark against a target of 8). */
 :root {
   color-scheme: light;
   --surface-1: #fcfcfb;
@@ -89,11 +80,7 @@
 }
 
 * { box-sizing: border-box; }
-/* The stat editor is an off-canvas panel parked at translateX(100%), which
-   otherwise widens the document and gives the whole page a sideways scroll on a
-   phone. `clip` removes that without creating a scroll container the way
-   `hidden` would. Verified that the drawer is the only thing outside the
-   viewport, so this hides no real overflow. */
+
 html, body { overflow-x: clip; }
 body {
   margin: 0;
@@ -105,10 +92,6 @@ h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 h2 { font-size: 13px; margin: 0 0 12px; font-weight: 600; color: var(--text-secondary); }
 button, select, input { font: inherit; color: inherit; }
 
-/* Safe-area insets, because the home-screen build runs under a translucent
-   status bar (viewport-fit=cover). Without these the header sits behind the
-   clock on a notched phone. env() resolves to 0 everywhere else, so the desktop
-   padding is unchanged. */
 .wrap {
   max-width: 1600px; margin: 0 auto;
   padding: calc(20px + env(safe-area-inset-top)) calc(20px + env(safe-area-inset-right))
@@ -116,8 +99,7 @@ button, select, input { font: inherit; color: inherit; }
 }
 header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }
 .sub { color: var(--muted); font-size: 12.5px; }
-/* A snapshot's age is silent risk until it crosses one of these lines --
-   see STALE_WARN_HOURS/STALE_BAD_HOURS in board.mjs. */
+
 #freshness.warn { color: var(--warning); font-weight: 600; }
 #freshness.bad { color: var(--critical); font-weight: 700; font-size: 13.5px; }
 .card {
@@ -127,7 +109,6 @@ header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margi
   padding: 16px;
 }
 
-/* One filter row above everything it scopes. */
 .controls {
   display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-end;
   margin: 14px 0 16px; padding: 14px 16px;
@@ -148,26 +129,14 @@ select, input[type=search], input[type=number] {
 .btn.ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
 .btn:disabled { opacity: 0.5; cursor: default; }
 
-/* A checkbox wearing a button's clothes, and it reads as pressed when it is on.
-   It sits in Settings beside the decay slider it overrides: the two are one
-   setting asked twice -- "how fast does a fixture lose value with distance?"
-   and "does it lose value at all?" -- and a control that disables another
-   control belongs next to it, not in a different part of the page. */
 .btn.chk { display: inline-flex; align-items: center; gap: 6px; user-select: none; }
 .btn.chk input { margin: 0; cursor: pointer; }
 .btn.chk.on { border-color: var(--series-1); color: var(--text-primary); }
-/* `.ctl label` is the small uppercase caption above a slider, and would claim
-   this one purely for being a <label> inside a .ctl. It is a button. */
+
 .ctl label.btn { font-size: inherit; text-transform: none; letter-spacing: normal; }
 
-/* min-width:0 is load-bearing, not defensive. A grid item's default
-   min-width:auto refuses to shrink below its content's min-content width, so a
-   card whose contents are wider than its track holds itself open and spills.
-   `overflow-x: clip` on the page then hides the evidence: the document reports
-   no overflow while the right-hand column is cut off mid-word. */
 .charts > .card { min-width: 0; }
 
-/* Pool */
 .poolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
 .chip {
   background: transparent; border: 1px solid var(--border); border-radius: 999px;
@@ -195,7 +164,6 @@ tbody tr.picked { opacity: 0.4; }
 .add:hover { background: var(--series-1); color: #fff; border-color: var(--series-1); }
 .flag { font-size: 10px; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
 
-/* Squad */
 .hero { font-size: 48px; font-weight: 600; line-height: 1.05; letter-spacing: -0.02em; }
 .hero.empty { font-size: 22px; color: var(--muted); font-weight: 500; }
 .delta { font-size: 12px; margin-top: 2px; }
@@ -205,9 +173,6 @@ tbody tr.picked { opacity: 0.4; }
 .meter > div { height: 100%; background: var(--series-1); border-radius: 4px; }
 .meter.over > div { background: var(--critical); }
 
-/* Nearly in. The bar is the point of the table: the gaps are small numbers a
-   couple of decimals apart, and a column of "0.04 0.12 0.31" does not say at a
-   glance that the first two men are basically in and the third is not. */
 .nearmiss td, .nearmiss th { white-space: nowrap; }
 .nearmiss th, .nearmiss td { cursor: default; }
 .nearmiss tbody tr { cursor: pointer; }
@@ -224,12 +189,9 @@ td.thin-cell { color: var(--muted); }
 td.muted-cell { color: var(--axis); }
 .optstatus { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
 .optstatus.err { color: var(--critical); }
-/* A solve in flight fades its own answer rather than clearing it: the previous
-   squad is still the best thing to be looking at until the next one lands. */
+
 #comparePitch.pending { opacity: 0.45; transition: opacity .15s; }
 
-/* Bench weights: four sliders in a row, each labelled with the weight the
-   objective actually uses for that slot. */
 .benchgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 200px));
   gap: 10px 18px; width: 100%; justify-content: start; }
 .bslot { display: flex; flex-direction: column; gap: 3px; }
@@ -246,10 +208,6 @@ td.muted-cell { color: var(--axis); }
 .issue.ok { color: var(--good); }
 .issue.bad { color: var(--critical); }
 
-/* Charts */
-/* Two charts to a row on a wide screen, one on a narrow one -- and never three
-   tracks for two cards, which is what a smaller minimum produced: the pair sat
-   in two thirds of the width with the last third empty. */
 .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); gap: 16px; margin-top: 16px; }
 @media (max-width: 900px) { .charts { grid-template-columns: 1fr; } }
 .cardhead { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 10px; }
@@ -267,19 +225,11 @@ svg { display: block; max-width: 100%; height: auto; }
 }
 .tip b { font-weight: 600; }
 .tip .r { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-/* Utility class, so it has to beat any component rule that also sets display
-   regardless of source order -- .loading below is exactly that case, and left
-   unqualified the overlay stays up and swallows every click. */
+
 .hidden { display: none !important; }
-/* Controls that ask the laptop to do something. On a static host there is no
-   laptop, so they are removed rather than left to fail — see detectServer(). */
+
 body.noserver .needs-server { display: none !important; }
 
-/* ------------------------------------------------------------------ phones
-   The board is usable on a phone, which mainly means three things: nothing may
-   force the page itself to scroll sideways, the columns that only make sense
-   side by side have to stack, and every tap target has to clear ~24px. Wide
-   content (the timeline, the pool) scrolls inside its own container instead. */
 @media (max-width: 720px) {
   .wrap {
     padding: calc(12px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right))
@@ -293,20 +243,17 @@ body.noserver .needs-server { display: none !important; }
   .card { padding: 13px; }
   .hero { font-size: 38px; }
   .scroll { max-height: none; }
-  /* A phone is the narrowest a pitch ever gets, and five defenders still have to
-     fit across it without wrapping into a sixth row that means nothing. */
+
   .pitch { padding: 22px 4px 16px; gap: 10px; }
   .pitchrow { gap: 3px; }
   .pcard { --card: clamp(50px, 18vw, 68px); }
-  /* The club abbreviation is the first thing to go: the kit already says it,
-     and the name it was crowding does not repeat anywhere else on the shirt. */
+
   .pname i { display: none; }
   .pcardvs { display: none; }
   .metricbar button { padding: 6px 9px; }
   .tabs { gap: 0; }
   .tab { padding: 9px 10px; font-size: 13px; }
-  /* The pool keeps name, position, price and points; the rest is available by
-     sorting or in the editor, and four columns is what fits legibly. */
+
   #pool [data-req], #pool [data-ban] { display: none; }
   .namecell { gap: 5px; }
   #pool th:nth-child(3), #pool td:nth-child(3),
@@ -321,7 +268,7 @@ body.noserver .needs-server { display: none !important; }
   .cmp table { font-size: 12px; }
   header .btn { padding: 6px 10px; font-size: 12.5px; }
 }
-/* Touch targets: a 22px button is fine for a mouse and not for a thumb. */
+
 @media (pointer: coarse) {
   .add, .editbtn { width: 30px; height: 30px; font-size: 14px; }
   .slot .rm { font-size: 20px; padding: 0 8px; }
@@ -330,7 +277,6 @@ body.noserver .needs-server { display: none !important; }
   input[type=checkbox] { width: 20px; height: 20px; }
 }
 
-/* Drafts */
 .draftbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 .draftbar input[type=text] { min-width: 170px; }
 .draftlist { display: flex; flex-direction: column; gap: 6px; }
@@ -357,7 +303,6 @@ body.noserver .needs-server { display: none !important; }
 .diffcol ul { margin: 0; padding-left: 16px; font-size: 12.5px; color: var(--text-secondary); }
 .diffcol .none { color: var(--muted); font-size: 12.5px; }
 
-/* Stat editor */
 .drawer {
   position: fixed; top: 0; right: 0; bottom: 0; width: 380px; max-width: 92vw;
   background: var(--surface-1); border-left: 1px solid var(--border);
@@ -380,10 +325,6 @@ body.noserver .needs-server { display: none !important; }
 .field input[type=number] { width: 76px; text-align: right; font-variant-numeric: tabular-nums; }
 .field.changed label::after { content: " ●"; color: var(--series-1); }
 
-/* Per-match editor. One row per gameweek, collapsed to the lever that actually
-   gets used — start probability — with the rest a disclosure away. Twelve
-   gameweeks times eight fields is ninety-six controls; showing them all would
-   make the common edit harder, not easier. */
 .matchhead { display: flex; align-items: baseline; justify-content: space-between;
   gap: 8px; margin: 20px 0 6px; border-top: 1px solid var(--border); padding-top: 14px; }
 .matchhead h4 { margin: 0; font-size: 13px; font-weight: 600; }
@@ -413,11 +354,6 @@ body.noserver .needs-server { display: none !important; }
 .editpts { font-size: 12.5px; color: var(--text-secondary); margin: 6px 0 0; }
 .editpts b { font-size: 17px; color: var(--text-primary); }
 
-/* --- the explain panel -----------------------------------------------------
-   A breakdown is only an explanation if it adds up in front of you, so every
-   figure here is printed as well as drawn: the bar is for comparing at a
-   glance, the number beside it is the value, and no quantity is reachable only
-   through length or colour. */
 .exsec { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
 .exhead { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .exhead h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
@@ -444,10 +380,6 @@ body.noserver .needs-server { display: none !important; }
 .extable td:first-child, .extable th:first-child { text-align: left; }
 .extable tr.faded td { color: var(--muted); }
 
-/* --- team lineups ----------------------------------------------------------
-   A roster, so it is read down rather than across: name and role on the left,
-   the two numbers that matter on the right, and a bar for expected minutes so
-   the shape of a rotation is visible without reading every row. */
 .lineupctl { display: flex; gap: 8px; align-items: center; }
 .lineupctl select {
   padding: 5px 8px; font: inherit; font-size: 12.5px; border-radius: 6px;
@@ -478,8 +410,7 @@ body.noserver .needs-server { display: none !important; }
   font-size: 10px; color: var(--muted); border: 1px solid var(--border);
   border-radius: 4px; padding: 0 4px;
 }
-/* Detailed position (LW, CB, ...) shown wherever the base FPL position is --
-   a small badge rather than a column, since most players do not have one. */
+
 .postagbadge {
   font-size: 9.5px; font-weight: 600; color: var(--series-2);
   border: 1px solid var(--series-2); border-radius: 4px; padding: 0 4px;
@@ -517,7 +448,6 @@ body.noserver .needs-server { display: none !important; }
 .fixtable tr.fixedited { box-shadow: inset 3px 0 0 var(--series-2); }
 .fixtable .editbtn { width: 22px; height: 22px; font-size: 12px; line-height: 1; padding: 0; }
 
-/* --- ask ------------------------------------------------------------------ */
 .asklog { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
 .asklog:empty { display: none; }
 .askmsg { font-size: 12px; line-height: 1.5; border-radius: 7px; padding: 7px 9px; }
@@ -548,7 +478,7 @@ body.noserver .needs-server { display: none !important; }
 .editbtn:hover { background: var(--series-2); color: #fff; border-color: var(--series-2); }
 .editbtn.on { background: var(--good); color: #fff; border-color: var(--good); }
 .editbtn.off { background: var(--critical); color: #fff; border-color: var(--critical); }
-/* Hover previews the action: green for require, red for bar. */
+
 .editbtn[data-req]:hover { background: var(--good); border-color: var(--good); }
 .editbtn[data-ban]:hover { background: var(--critical); border-color: var(--critical); }
 .banner {
@@ -559,27 +489,12 @@ body.noserver .needs-server { display: none !important; }
 .empty-note { color: var(--muted); font-size: 13px; padding: 22px 0; text-align: center; }
 .loading { position: fixed; inset: 0; display: grid; place-items: center; background: var(--page); z-index: 50; }
 .stale { opacity: 0.45; transition: opacity .15s; }
-/* Marks the two controls that cannot be applied in the browser: they change the
-   projection rather than how it is weighted, so they need the laptop. */
+
 .needs { font-size: 9px; letter-spacing: 0.06em; padding: 1px 4px; border-radius: 3px;
   border: 1px solid var(--border); color: var(--muted); vertical-align: 1px; }
 .ctl input[type=range].needsync { accent-color: var(--series-2); }
 #freshness { font-variant-numeric: tabular-nums; }
 
-/* ==========================================================================
-   The squad view
-   ==========================================================================
-   The board used to be three columns of numbers, which is the right shape for
-   comparing players and the wrong one for looking at a team. A squad is eleven
-   positions and four substitutes, and every app that shows one shows it as a
-   pitch, because that is the arrangement the thing being described actually
-   has. The numbers did not go anywhere -- the pool is a drawer, the charts are
-   a tab -- but the first thing on screen is now the team.
-
-   The turf is drawn rather than themed. A shirt has to sit on the same
-   background in light and dark mode or the kit images stop reading, so the
-   pitch keeps its own colours in both and every label on it is a pill with its
-   own contrast rather than page text laid on green. */
 .summary {
   display: grid; grid-template-columns: minmax(210px, 1.1fr) repeat(3, minmax(0, 1fr));
   gap: 12px; align-items: stretch; margin: 14px 0 12px;
@@ -597,8 +512,6 @@ body.noserver .needs-server { display: none !important; }
   .summary .hero { font-size: 34px; }
 }
 
-/* Tabs. The squad is the view; everything that used to compete with it for the
-   same screen is one tap away and none of it is gone. */
 .tabs {
   display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0 14px;
   border-bottom: 1px solid var(--border); padding-bottom: 0;
@@ -618,7 +531,7 @@ body.noserver .needs-server { display: none !important; }
 
 .pitchhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 .pitchhead .grow { flex: 1; }
-/* Segmented control for the one number a shirt has room for. */
+
 .metricbar { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--border);
   border-radius: 8px; overflow: hidden; }
 .metricbar button {
@@ -641,9 +554,7 @@ body.noserver .needs-server { display: none !important; }
     linear-gradient(180deg, rgba(255,255,255,0.10), rgba(0,0,0,0.10)),
     repeating-linear-gradient(180deg, var(--turf-a) 0 40px, var(--turf-b) 40px 80px);
 }
-/* Dark mode gets a darker turf rather than the same green dimmed: a bright
-   pitch is the one element that would glow out of a dark board, and the shirts
-   sit on it either way. */
+
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme="light"])) .pitch {
     --turf-a: #1d4f33; --turf-b: #19452c; --line: rgba(255,255,255,0.26);
@@ -652,8 +563,7 @@ body.noserver .needs-server { display: none !important; }
 :root[data-theme="dark"] .pitch {
   --turf-a: #1d4f33; --turf-b: #19452c; --line: rgba(255,255,255,0.26);
 }
-/* The goalmouth and the halfway line, drawn rather than imported. Purely
-   decorative, so they are pseudo-elements and never in the accessibility tree. */
+
 .pitch::before {
   content: ""; position: absolute; top: -34px; left: 50%; transform: translateX(-50%);
   width: min(280px, 56%); height: 74px;
@@ -682,8 +592,7 @@ body.noserver .needs-server { display: none !important; }
 .shirt img.kit { width: 100%; height: 100%; object-fit: contain;
   filter: drop-shadow(0 2px 3px rgba(0,0,0,0.35)); }
 .shirt:hover img.kit { transform: translateY(-1px); }
-/* The lettered tile that stands in for a shirt that would not load. Sized to the
-   same box, so a club with no image never moves the row. */
+
 .kitfallback {
   display: none; place-items: center; width: 78%; aspect-ratio: 1 / 1.15;
   border-radius: 6px; background: rgba(0,0,0,0.42); color: #fff;
@@ -691,8 +600,7 @@ body.noserver .needs-server { display: none !important; }
 }
 .shirt.nokit img.kit { display: none; }
 .shirt.nokit .kitfallback { display: grid; }
-/* The same box a shirt occupies, so an empty slot beside a filled one does not
-   sit its name pill 20px higher than its neighbour's. */
+
 .shirt.ghost {
   border: 2px dashed rgba(255,255,255,0.55); border-radius: 8px;
   width: 100%; aspect-ratio: 5 / 6;
@@ -702,18 +610,13 @@ body.noserver .needs-server { display: none !important; }
 .pcard.empty .pname { background: rgba(255,255,255,0.72); color: #1a1a19; }
 .pcard.empty .pval { background: rgba(0,0,0,0.35); }
 
-/* Name and number are pills rather than text on grass: the turf is a fixed
-   colour in both themes, so these carry their own contrast instead of
-   inheriting a page colour that only works against one of them. */
 .pname {
   width: 100%; margin-top: 4px; padding: 2px 3px; border-radius: 4px 4px 0 0;
   background: #fbfbf9; color: #0b0b0b; font-size: 9.5px; font-weight: 600;
   text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   letter-spacing: -0.01em;
 }
-/* The club, on the name pill rather than in a metric slot. It is the one piece
-   of context you read constantly and never sort by, and the kit only tells you
-   which club if you happen to know the kit. */
+
 .pname i { font-style: normal; font-weight: 500; color: #6f6d67; font-size: 8.5px; }
 .pval {
   width: 100%; padding: 1px 3px;
@@ -721,9 +624,7 @@ body.noserver .needs-server { display: none !important; }
   font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .pcard > .pval:last-child { border-radius: 0 0 4px 4px; }
-/* The second and third figures, sharing a row under the first. Hairline-split
-   rather than labelled: the metric bar above the pitch names them in the same
-   order, and a label per cell would cost more room than the numbers. */
+
 .psub {
   width: 100%; display: flex; border-radius: 0 0 4px 4px; overflow: hidden;
   background: var(--mid); color: var(--text-secondary);
@@ -733,8 +634,7 @@ body.noserver .needs-server { display: none !important; }
   font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .psub .pcell + .pcell { border-left: 1px solid var(--border); }
-/* On the turf the sub-row cannot borrow the page's surface colour -- it would be
-   a grey block on green. It gets its own, dark enough for white numerals. */
+
 .pitch .psub { background: rgba(11,11,11,0.66); color: #fbfbf9; }
 .pitch .psub .pcell + .pcell { border-left-color: rgba(255,255,255,0.18); }
 .pslot {
@@ -756,8 +656,7 @@ body.noserver .needs-server { display: none !important; }
 }
 .statusmark.doubt { background: #fab219; color: #241a00; }
 .statusmark.out { background: #d03b3b; }
-/* An edited player is marked on the name rather than on the kit: the corners
-   are spoken for, and a dot in front of a name is where a change reads. */
+
 .editmark { color: var(--series-2); font-size: 12px; line-height: 1; }
 .pcardrm, .pcardswap {
   position: absolute; bottom: 0; right: -2px; width: 20px; height: 20px;
@@ -767,15 +666,11 @@ body.noserver .needs-server { display: none !important; }
 }
 .pcardswap { top: -4px; bottom: auto; right: -4px; background: var(--good); opacity: 1; }
 .pcard:hover .pcardrm, .pcard:focus-within .pcardrm { opacity: 1; }
-/* A thumb needs the buttons permanently visible, and a 3px gap between shirts
-   means they cannot also hang outside the card -- they would sit on the
-   neighbour. Inside the corners, and the compare button gives way entirely on a
-   phone, where the pool's own ⇄ is the way in. */
+
 @media (pointer: coarse) {
   .pcardrm, .pcardvs { opacity: 1; width: 22px; height: 22px; }
 }
 
-/* The diff, when a pitch is showing the solver's answer rather than yours. */
 .pcard.isin .pname { box-shadow: 0 0 0 2px var(--good); }
 .pcard.isout { opacity: 0.55; }
 .ptag {
@@ -785,9 +680,6 @@ body.noserver .needs-server { display: none !important; }
 .ptag.in { background: #0ca30c; color: #fff; }
 .ptag.out { background: rgba(0,0,0,0.5); color: #fff; }
 
-/* Left/right nudge on the team-lineup pitch, so a row can be reordered to
-   look like how the club actually lines up rather than however the model's
-   own point-scoring happened to sort it. */
 .pnudge { display: flex; gap: 3px; margin-top: 3px; justify-content: center; }
 .pnudgebtn {
   width: 18px; height: 16px; border-radius: 3px; border: 0; cursor: pointer;
@@ -805,17 +697,11 @@ body.noserver .needs-server { display: none !important; }
   color: var(--muted); margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap;
 }
 .benchnote { text-transform: none; letter-spacing: 0; }
-/* `subsrow`, not `benchrow`: the lineup table has had a `benchrow` class on its
-   non-starters since long before there was a pitch, and a `display: flex` landing
-   on a <tr> collapses that row into the first column of the one above it. Two
-   things called the same thing in one stylesheet is a bug waiting for the second
-   one to be written. */
+
 .subsrow { display: flex; justify-content: center; gap: clamp(6px, 2vw, 20px); flex-wrap: wrap; }
-/* A group with no bench slots to line up under reads as a list, so it starts
-   where a list starts. */
+
 .subsrow.loose { justify-content: flex-start; }
-/* Off the turf the pills would be an island of fixed colour in a themed card, so
-   on the bench they take the page's own. */
+
 .subsrow .pname { background: var(--mid); color: var(--text-primary); }
 .subsrow .pcard.empty .pname { background: var(--mid); color: var(--text-secondary); }
 .subsrow .shirt.ghost { border-color: var(--axis); }
@@ -823,19 +709,11 @@ body.noserver .needs-server { display: none !important; }
 
 .pitchfoot { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
 
-/* ------------------------------------------------------------ two pitches
-   A pitch needs about 600px and the page has 1600, which was most of the
-   complaint: the rest was grass. So the second half holds a second squad --
-   the solver's answer, or any draft you saved -- and the comparison stops
-   being a thing you hold in your head between two screens. */
 .pitchpair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
 .pitchpair.solo { grid-template-columns: minmax(0, 1fr); max-width: 760px; }
 @media (max-width: 1080px) { .pitchpair { grid-template-columns: minmax(0, 1fr); } }
 .pitchside { min-width: 0; display: flex; flex-direction: column; }
 
-/* Pitch on the left, the editable list of who's on it on the right -- the
-   two are one picture of the same lineup, so they read left-to-right rather
-   than stacked. */
 .lineuplayout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 420px); gap: 16px; align-items: start; }
 @media (max-width: 900px) { .lineuplayout { grid-template-columns: minmax(0, 1fr); } }
 .sidehead {
@@ -851,8 +729,6 @@ body.noserver .needs-server { display: none !important; }
 .sidehead .grow { flex: 1; }
 .sidehead select { font-size: 12.5px; padding: 4px 7px; min-width: 0; }
 
-/* The swap, as a table. Colour marks the direction and the word says it, and
-   every row carries the two numbers the trade is actually made on. */
 .swaptable { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 4px; }
 .swaptable th {
   font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
@@ -869,7 +745,6 @@ body.noserver .needs-server { display: none !important; }
 .swaptable .gain { color: var(--good); }
 .swaptable .loss { color: var(--critical); }
 
-/* Chips tab */
 .chipbar { display: flex; align-items: center; gap: 12px; }
 .chipforce {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
@@ -898,9 +773,6 @@ table.seasons td:first-child, table.seasons th:first-child { text-align: left; c
 .chiptable tr.picked > td { background: var(--hover); }
 .chiptable tr.haschip > td:first-child { font-weight: 600; }
 
-/* The one chip table: a chip per row, a gameweek per column, so "which week is
-   this chip worth playing?" is read across and "which chip wants this week?" is
-   read down. Every figure is points, so one alignment rule covers the lot. */
 .chiptable.worth td:nth-child(n+2):not(.read) {
   text-align: right; font-variant-numeric: tabular-nums;
 }
@@ -909,10 +781,7 @@ table.seasons td:first-child, table.seasons th:first-child { text-align: left; c
   padding-left: 14px; min-width: 190px; text-align: left;
 }
 .chiptable.worth td.read { color: var(--text-secondary); font-size: 12.5px; }
-/* Estimated figures never look like re-solved ones. Muted plus a dotted rule is
-   two encodings, so the distinction survives a greyscale print or a colourblind
-   reader -- it is the difference between a number you can act on and one you
-   cannot read across, so it cannot rest on weight alone. */
+
 .chiptable.worth td.est { color: var(--muted); border-bottom-style: dotted; }
 .chiptable.worth td.on {
   font-weight: 700; color: var(--text-primary);
@@ -924,8 +793,7 @@ table.seasons td:first-child, table.seasons th:first-child { text-align: left; c
   display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
   margin-top: 8px; font-size: 12px; color: var(--muted);
 }
-/* The footnote, as a definition list: a reader scanning for "what does Hold
-   mean?" finds the term, not a sentence four lines into a paragraph. */
+
 .chipnote dl {
   display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px;
   margin: 8px 0 0; align-items: baseline;
@@ -941,9 +809,6 @@ table.seasons td:first-child, table.seasons th:first-child { text-align: left; c
   box-shadow: inset 0 0 0 1px var(--series-1); vertical-align: -1px; margin-right: 5px;
 }
 
-/* Everything that is not the headline answer folds away. The tab had six blocks
-   stacked on one page and no way to tell which one answered your question; the
-   two solve-on-demand ones are now shut until asked for. */
 .chipfold {
   margin-top: 14px; border: 1px solid var(--border); border-radius: 8px; padding: 0 12px;
 }
@@ -963,9 +828,6 @@ table.seasons td:first-child, table.seasons th:first-child { text-align: left; c
 .poolchip.cut { text-decoration: line-through; opacity: 0.45; }
 .poolchip:disabled { opacity: 0.7; border-style: dashed; cursor: default; }
 
-/* Week selector above the plan pitch. The plan is six gameweeks long and the
-   chip is rarely in the first, so which week is on the pitch has to be both
-   visible and changeable without re-solving. */
 .weekpick { display: flex; gap: 6px; flex-wrap: wrap; }
 .weekpick .mini { display: inline-flex; align-items: center; gap: 5px; }
 .weekpick .mini.on { background: var(--series-1); color: #fff; border-color: var(--series-1); }
@@ -990,15 +852,14 @@ table.seasons td:first-child, table.seasons th:first-child { text-align: left; c
   font-size: 13px; color: var(--text-secondary);
 }
 .chiprow select { flex: 0 0 auto; max-width: 62%; }
-/* What the next press costs, beside the control that changes it. */
+
 .solvecost {
   font-size: 12px; color: var(--text-secondary); padding: 6px 0 0;
   border-top: 1px solid var(--border); margin-top: 2px;
 }
 .solvecost b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
 .solvecost.busy { opacity: 0.5; }
-/* A signed delta riding beside the figure it qualifies, recessive so the figure
-   still reads first. */
+
 .chiptable .shift { color: var(--muted); font-size: 11.5px; }
 .cchips { display: flex; gap: 5px; flex-wrap: wrap; }
 .movetable td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
@@ -1012,8 +873,6 @@ table.seasons td:first-child, table.seasons th:first-child { text-align: left; c
 .dirtag.in { background: var(--good); }
 .dirtag.out { background: var(--muted); }
 
-/* Head to head. Two players, every number the board holds on either, and the
-   gap between them signed the way the better one reads. */
 .pcardvs {
   position: absolute; bottom: 0; left: -2px; width: 20px; height: 20px;
   border-radius: 50%; border: 0; cursor: pointer; line-height: 1; padding: 0;
@@ -1042,8 +901,6 @@ table.seasons td:first-child, table.seasons th:first-child { text-align: left; c
 .vshead { display: flex; align-items: center; gap: 8px; }
 .vshead img { width: 26px; height: 33px; object-fit: contain; }
 
-/* The pool, now a drawer. It kept every column, every filter and both
-   constraint buttons -- it changed where it lives, not what it does. */
 .pooldrawer {
   position: fixed; top: 0; right: 0; bottom: 0; width: 720px; max-width: 96vw;
   background: var(--surface-1); border-left: 1px solid var(--border);
@@ -1056,23 +913,13 @@ table.seasons td:first-child, table.seasons th:first-child { text-align: left; c
 .pooldrawer .scroll { max-height: none; }
 @media (max-width: 720px) { .pooldrawer { padding: 14px; } }
 
-/* Settings live behind a button now: they scope the whole board, and a board
-   whose first screen is a squad should open on the squad. */
 .settingscard { margin-bottom: 14px; }
 .appbtn { display: inline-flex; align-items: center; gap: 6px; }
 </style>
 </head>
 <body>
 <div class="loading" id="loading">Projecting…</div>
-<!-- A classic script, not a module, and deliberately first: it has to survive
-     the failure it exists to report. A module that fails to parse, or whose
-     import 404s, never runs a line of its own error handling, and the board
-     then sits on "Projecting…" forever with the reason visible only in a
-     console — which on a phone is a console you cannot open. This paints the
-     error onto the loading screen instead, so the device that hit the problem
-     is the one that tells you what it was. It also watchdogs the load: still
-     on the loading screen after fifteen seconds is itself a diagnosis, and
-     "waiting" and "died silently" look identical without it. -->
+
 <script>
 (function () {
   var reported = false;
@@ -1089,8 +936,6 @@ table.seasons td:first-child, table.seasons th:first-child { text-align: left; c
       + '</pre><p style="font:12px system-ui;opacity:.7">Reload to try again. If this '
       + 'persists, this text is the thing worth reporting.</p></div>';
   }
-  // Capturing, because a failed script/module fetch fires an error event that
-  // does not bubble — the phase is the whole reason this catches it at all.
   addEventListener("error", function (event) {
     if (event.target && event.target !== window && event.target.src) {
       report("Failed to load a file the board needs", event.target.src);
@@ -1292,9 +1137,6 @@ its first week rather than spending them.">Free transfers</label>
   <button class="btn ghost" id="clearEdits">Discard all edits</button>
 </div>
 
-<!-- The four numbers that describe a squad, above the squad they describe. They
-     used to be tiles inside the draft column; a pitch is the widest thing on
-     the page, so they sit across the top of it instead. -->
 <div class="summary">
   <div class="card">
     <div class="sumlab">Projected XI points, captain doubled</div>
@@ -1335,9 +1177,6 @@ its first week rather than spending them.">Free transfers</label>
     <button class="btn" id="addPlayer">Add players</button>
   </div>
 
-  <!-- Two squads, side by side. The left one is yours; the right one is
-       whatever you want to hold it against -- the solver's answer to the
-       settings in force, or any draft you saved. -->
   <div class="pitchpair" id="pitchPair">
     <div class="pitchside">
       <div class="sidehead">
@@ -1369,8 +1208,6 @@ its first week rather than spending them.">Free transfers</label>
 
   <div class="issues" id="issues"></div>
 
-  <!-- The trade itself, with the numbers it is made on. The pitches say who;
-       this says what it costs and what it buys. -->
   <div class="card" id="swapCard" style="margin-top:16px">
     <div class="cardhead">
       <div>
@@ -1495,10 +1332,7 @@ that same club's other, priced fixtures; off, it is the xG ratings with no such 
       <button class="toggle" id="lineupEdited">Only edited clubs</button>
     </div>
   </div>
-  <!-- The same pitch, drawn from expected minutes rather than from a draft:
-       the eleven this club is likeliest to field, the four next in line
-       beneath them. The table beside it keeps every number and the whole
-       squad, editable inline; this is the shape of the rotation at a glance. -->
+
   <div class="lineuplayout">
     <div class="pitchside"><div id="lineupPitch"></div></div>
     <div id="lineupBox"></div>
@@ -1587,10 +1421,6 @@ every one the moment it has it; raising it makes banking more attractive.">Trans
 
 </div>
 
-<!-- The pool, on call. It is where a squad comes from, so it opens from the
-     "Add players" button and from any empty slot on the pitch — pre-filtered to
-     the position of the slot you tapped, because the reason you opened it is
-     usually the reason it should already be filtered. -->
 <aside class="pooldrawer" id="poolDrawer" aria-label="Player pool" aria-hidden="true">
     <div class="poolhead">
       <h2 style="margin:0">Player pool</h2><span class="sub" id="poolcount"></span>
@@ -1625,8 +1455,6 @@ every one the moment it has it; raising it makes banking more attractive.">Trans
     </div>
 </aside>
 
-<!-- Head to head. Two players, every number the board holds on either, and the
-     gap between them — the browser's answer to `fpl.py compare`. -->
 <aside class="pooldrawer" id="vsDrawer" aria-label="Compare two players" aria-hidden="true"
        style="width:560px">
   <div class="poolhead">
@@ -1702,11 +1530,6 @@ every one the moment it has it; raising it makes banking more attractive.">Trans
 
 <div class="tip" id="tip"></div>
 
-<!-- The MILP itself always runs in the worker, but its candidate arithmetic does
-     not need a solver: "how many players would a near-miss sweep have to test?"
-     is a sort and a scan, and the button has to be able to answer it before you
-     press it rather than after. A classic script, so the same file serves the
-     page and the worker; nothing here touches the WASM. -->
 <script src="/assets/solver.js"></script>
 
 <script type="module">
@@ -1746,10 +1569,6 @@ import {
   toggleVersus, versusOpen, closeVersus, renderVersus, renderComparePlanChart,
 } from "/assets/compare-view.mjs";
 
-/* A rolling local backup of S.edits (see snapshotEditsHistory in state.mjs),
-   independent of sync entirely -- sync only protects against one device
-   clobbering another; it does nothing for "the merge logic itself has a bug"
-   or "I want yesterday's numbers back". */
 function restoreFromHistory() {
   const history = loadLocal(STORE.editsHistory, []);
   if (!history.length) { alert("No history saved on this device yet."); return; }
@@ -1760,16 +1579,12 @@ function restoreFromHistory() {
   const entry = history.slice().reverse()[+pick];
   if (!entry) { alert("Not a valid number."); return; }
   const restored = JSON.parse(entry.snapshot);
-  // Union of before and after ids -- an id dropped by the restore needs the
-  // same touch-and-delete stamp as any other edit removal, or a later merge
-  // could resurrect it from a device that still has the pre-restore value.
   const ids = new Set([...Object.keys(S.edits), ...Object.keys(restored)].map(Number));
   S.edits = restored;
   recomputeEdited([...ids], { solveDelay: 0 });
   renderAll();
 }
 
-/* ------------------------------------------------------------------- events */
 $("#pool").addEventListener("click", (e) => {
   const edit = e.target.closest("[data-edit]");
   if (edit) return openEditor(+edit.dataset.edit);
@@ -1785,15 +1600,8 @@ $("#pool").addEventListener("click", (e) => {
   if (S.squad.includes(id) || S.squad.length >= 15) return;
   S.squad.push(id);
   saveSquad(); renderAll();
-  // The fifteenth pick is the end of the job the drawer was opened for, so it
-  // gets out of the way and shows you the team you just finished.
   if (S.squad.length === 15) closePool();
 });
-/* The pitch is one delegated listener per pitch, because its contents are
-   rewritten wholesale on every render. Four things are clickable on a shirt:
-   the shirt itself (open the numbers behind him), the × (drop him), the → on
-   the solver's pitch (take him), and an empty slot (open the pool at that
-   position, which is the shortest path from "I need a defender" to having one). */
 $("#squadPitch").addEventListener("click", (e) => {
   const add = e.target.closest("[data-add-pos]");
   if (add) return openPool(add.dataset.addPos || null);
@@ -1810,8 +1618,6 @@ $("#squadPitch").addEventListener("click", (e) => {
 });
 $("#nearRun").addEventListener("click", runNearMisses);
 $("#nearClub").addEventListener("click", () => {
-  // A different candidate set is a different answer, so the old one goes rather
-  // than sitting under a button that now says something else.
   S.nearMiss = { ...S.nearMiss, perClub: !S.nearMiss.perClub, state: "idle", rows: [] };
   renderNearMisses();
 });
@@ -1923,17 +1729,11 @@ $("#edReset").addEventListener("click", resetEditor);
 $("#moreBtn").addEventListener("click", toggleMoreOptions);
 $("#resetSettings").addEventListener("click", restoreDefaults);
 
-/* One pair of listeners per control card rather than a saveSettings() bolted on
-   to twenty handlers -- a knob added later is then saved without anyone having
-   to remember to save it. Buttons and the pool's own controls are not form
-   input, so those few call saveSettings() where they change state. */
 document.querySelectorAll(".card.controls").forEach((card) => {
   card.addEventListener("input", saveSettings);
   card.addEventListener("change", saveSettings);
 });
 
-// Bench weights. The overall slider rewrites all four from the default shape;
-// the four write only themselves and then correct what the overall one reads.
 $("#benchw").addEventListener("input", (e) => {
   setBenchTouched(true);
   setBenchScale(+e.target.value);
@@ -1955,10 +1755,6 @@ $("#benchReset").addEventListener("click", () => {
   scheduleSolve();
 });
 
-// Chip economics. A slider drag only updates its own label and marks the plan
-// stale through the same debounce as every other setting -- renderChips()
-// (fired from scheduleSolve) is what shows the "settings changed" banner; a
-// full re-solve is minutes of work and stays behind the Re-plan button.
 for (const k of HOLD_KEYS) {
   $(`#${HOLD_INPUT_ID[k]}`).addEventListener("input", () => {
     setChipEconTouched(true);
@@ -2060,8 +1856,6 @@ $("#clearEdits").addEventListener("click", async () => {
 $("#editHistory").addEventListener("click", restoreFromHistory);
 addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  // Innermost first: the editor opens over the pool, so Escape should peel one
-  // layer rather than dismiss both and lose the search you had typed.
   if ($("#drawer").classList.contains("open")) closeEditor();
   else if (versusOpen()) closeVersus();
   else if (poolOpen()) closePool();
@@ -2070,10 +1864,6 @@ $("#optimise").addEventListener("click", copyOptimal);
 $("#horizon").addEventListener("change", () => { rebuildPool(); renderAll(); scheduleSolve(0); });
 $("#gwdecay").addEventListener("input", (e) => { $("#hlval").textContent = decayLabel(+e.target.value); });
 $("#gwdecay").addEventListener("change", () => { rebuildPool(); renderAll(); scheduleSolve(0); });
-// Rebuilds the pool exactly as the slider does -- the override changes what
-// every projected total means, not just how one chart is drawn. The chip plan
-// is left to go stale rather than re-solved: this one is minutes of work, and
-// a solve nobody asked for is worse than a banner saying the answer is old.
 $("#nodecay").addEventListener("change", () => {
   renderControlValues(); saveSettings();
   rebuildPool(); renderAll(); scheduleSolve(0);
@@ -2098,36 +1888,16 @@ $("#theme").addEventListener("click", () => {
 });
 addEventListener("resize", () => {
   renderGwChart(); renderExposure();
-  // Only when it is on screen and has something to draw -- the plan chart lives
-  // behind a solve, and re-drawing an SVG in a hidden panel sizes it to zero.
   if (S.tab === "chips" && (S.transferPlan.result || S.ownedPlan.result)) renderComparePlanChart();
 });
 
 if (TOKEN) $("#dataLink").href = "/data?t=" + encodeURIComponent(TOKEN);
 
-/* The service worker is what makes this survive the laptop being off: it caches
-   the shell and the last snapshot, so opening the board on a train is the same
-   as opening it at the desk. Registration is deliberately not awaited — the
-   board works on the first visit without it, and only needs it on the second. */
 if ("serviceWorker" in navigator) {
-  /* Take an update the moment it is ready, rather than on the visit after next.
-     The shell is served cache-first, so a reload after a code change gets the
-     *old* page from the old worker while the new one installs quietly behind
-     it -- which means two reloads to see a change, with nothing on screen
-     explaining why the first one did nothing.
-
-     Worse than the wait: for the moment the caches disagree, the page and the
-     modules it imports can come from different versions of the shell, and an
-     `import` of something the older board.mjs does not export takes the whole
-     script down rather than degrading. Reloading the instant a new worker takes
-     charge closes that window instead of hoping nobody lands in it. */
   const hadController = !!navigator.serviceWorker.controller;
   let reloading = false;
 
   navigator.serviceWorker.addEventListener("controllerchange", () => {
-    // On a first visit there was no controller, and the new worker claiming
-    // this page is not a change to it -- reloading there would be a pointless
-    // flash on the one visit that is already showing current code.
     if (!hadController || reloading) return;
     reloading = true;
     location.reload();
@@ -2135,9 +1905,6 @@ if ("serviceWorker" in navigator) {
 
   addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js").then((registration) => {
-      // Ask now instead of waiting for the browser's own update schedule, which
-      // can be up to a day and is the difference between shipping a fix and
-      // shipping it eventually.
       registration.update().catch(() => {});
     }).catch((error) => {
       console.warn("offline support unavailable:", error.message);
@@ -2145,18 +1912,9 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-// Settings first, then the pool: derivePool reads the horizon and the half-life
-// straight off the controls, so restoring them afterwards would mean deriving
-// the whole pool twice on every load.
 applySettings(loadLocal(STORE.settings, null));
 setLastSyncableSettings(JSON.stringify(syncableSettings()));
-// The chrome is drawn whether or not there was anything saved: a first visit has
-// no settings blob and still needs a metric bar, a tab and a settings button
-// that agrees with what is on screen.
 renderMetricBar(); renderChrome(); setTab(S.tab);
-// The pull is handed loadPool's promise rather than racing it: a merge needs
-// the snapshot to validate incoming overrides against, and without this it
-// reliably lost every one of them. See pullSyncState.
 const projectionReady = loadPool();
 detectServer();
 pullSyncState(projectionReady);

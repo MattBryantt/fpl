@@ -1,26 +1,3 @@
-/* The squad, drawn as a team rather than listed as a table.
- *
- * This is a pure renderer: it takes a squad, the pool rows behind it and a few
- * decisions already made elsewhere (which eleven start, who is captain, how the
- * bench is ordered) and returns HTML. It computes none of them itself, because
- * the board's own `bestXI`, `benchSlots` and the solver already agree on those
- * answers and a second opinion here would be a second source of truth.
- *
- * Two things it does own, because they are presentation:
- *
- *   * the *shape* of the pitch — one row per position, the XI laid out the way
- *     a formation is written, with the bench beneath it rather than mixed in;
- *   * what the numbers under each name are. A shirt holds up to three: the
- *     first on a bar of its own, the other two sharing a row beneath it. Which
- *     three is a setting rather than a decision the page makes for you — xPts to
- *     rank on, xPPG to compare on, price to budget with, and the rest for the
- *     question you happen to be asking.
- *
- * Shirts come from /shirts/<club code>.png, which the server mirrors off the
- * FPL CDN and caches on disk. They are decorative: `wireShirts` swaps in a
- * lettered tile the moment one fails, so a missing image costs a picture and
- * never a player.
- */
 
 const POS_ORDER = ["GKP", "DEF", "MID", "FWD"];
 
@@ -30,18 +7,12 @@ const fmt = (v, d = 1) =>
 const escape = (s) => String(s ?? "").replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-/** The shirt file for one player: the club's code, and the keeper variant for a
- *  goalkeeper — every club's keeper plays in a different kit from his outfield
- *  team-mates, which on a pitch view is how you spot him without reading. */
 export function shirtUrl(teams, player) {
   const code = teams?.[player.team]?.code;
   if (!code) return "";
   return `/shirts/${code}${player.pos === "GKP" ? "_1" : ""}.png`;
 }
 
-/* An opponent label is written for a table -- "Nott'm Forest (H)" -- and a shirt
-   has room for about six characters. The clubs are already in the snapshot with
-   their three-letter names, so shorten against that rather than truncating. */
 function shortOpponent(label, teams) {
   if (!label) return "—";
   return label.split(" + ").map((leg) => {
@@ -53,9 +24,6 @@ function shortOpponent(label, teams) {
   }).join("+");
 }
 
-/** What the number under each name means. `home` is the header the segmented
- *  control shows; `title` is what a hover says, because a bare figure on a shirt
- *  is only readable if you can find out what it is. */
 export const METRICS = {
   xpts: {
     label: "xPts", head: "Plan-weighted points over the horizon",
@@ -103,14 +71,8 @@ export const METRICS = {
 
 export const METRIC_KEYS = Object.keys(METRICS);
 
-/* Three is the ceiling, and it is a legibility limit rather than a round
-   number: a shirt is about 68px wide, the first figure gets a bar of its own and
-   the other two share a row beneath it, and a fourth would have to be smaller
-   than the smallest type on the page. */
 export const MAX_METRICS = 3;
 
-/** Normalise whatever is stored to a usable list: known keys, in the order the
- *  metric bar shows them, at least one and at most three. */
 export function cleanMetrics(keys) {
   const wanted = (Array.isArray(keys) ? keys : [keys])
     .filter((k) => METRIC_KEYS.includes(k));
@@ -118,18 +80,6 @@ export function cleanMetrics(keys) {
   return ordered.length ? ordered.slice(0, MAX_METRICS) : ["xpts"];
 }
 
-/** Where every player in a squad goes on the pitch.
- *
- *  A complete squad has an eleven and a bench, and is laid out as one. An
- *  incomplete one has neither, and pretending otherwise would demote players to
- *  a bench that does not exist yet — so it is drawn as fifteen slots by
- *  position, which is what you are actually filling in.
- *
- *  `rowOrder`, if given, replaces the default best-first sort within each
- *  position row: `(pos, members) => sorted members`. The lineup pitch uses it
- *  to lay a row out left-to-right by where a player actually plays, rather
- *  than by how well he scores -- see index.html's laneComparator.
- */
 export function squadLayout({ ids, lookup, need, xiIds, benchOrder, rowOrder }) {
   const owned = ids.map((id) => lookup.get(id)).filter(Boolean);
   const xi = new Set(xiIds || []);
@@ -168,9 +118,6 @@ export function squadLayout({ ids, lookup, need, xiIds, benchOrder, rowOrder }) 
   return { rows, bench, shape, complete };
 }
 
-/* Status is worth a mark on the shirt rather than a column somewhere else: an
-   injury doubt is the single thing most likely to make a squad wrong, and on a
-   pitch there is room for it exactly where the eye already is. */
 const STATUS_MARK = {
   d: { cls: "doubt", text: "?" },
   i: { cls: "out", text: "!" },
@@ -188,17 +135,10 @@ function card(player, opts) {
   const summary = keys.map((k) => `${METRICS[k].label} ${METRICS[k].get(player, teams)}`)
     .join(" · ");
 
-  // The first figure gets a bar to itself and the rest share a row under it.
-  // Three numbers on a 68px shirt is the point of the exercise -- one was the
-  // complaint -- but they still have to be readable, so they are not equals.
   const [lead, ...rest] = keys;
   const cell = (k) => `<span class="pcell" title="${escape(METRICS[k].head)}"
     >${escape(METRICS[k].get(player, teams))}</span>`;
 
-  // The buttons live in a wrapper around the shirt rather than around the whole
-  // card: anchored to the card they drifted down past the numbers, and anchored
-  // inside the shirt they would be buttons inside a button. Four corners, four
-  // things, no two in the same one.
   return `
   <div class="pcard${tag ? " is" + tag.kind : ""}" data-id="${player.id}">
     <div class="shirtwrap">
@@ -245,12 +185,6 @@ const emptyCard = (pos, badge) => `
     ${badge ? `<div class="pslot">${escape(badge)}</div>` : ""}
   </button>`;
 
-/** The whole pitch: the eleven in rows, the bench under it.
- *
- *  `tags` maps a player id to {kind, text} — the in/out marking the optimal
- *  squad is read through. Colour never carries it alone: a tagged shirt gets the
- *  word as well, for the same reason the list it replaces did.
- */
 export function pitchHTML({ layout, teams, metrics = ["xpts"], captain = null,
                             vice = null, tags = null, remove = false, swap = false,
                             versus = false, benchLabels = true, reorder = false }) {
@@ -261,8 +195,6 @@ export function pitchHTML({ layout, teams, metrics = ["xpts"], captain = null,
     swap: swap && tags?.[player.id]?.kind === "in",
   });
 
-  // Nudging a lone keeper does nothing, so the keeper row skips it even when
-  // the pitch as a whole allows reordering.
   const rows = layout.rows.map((row) => `
     <div class="pitchrow" data-pos="${row.pos}">
       ${row.slots.map((slot) => (slot.player
@@ -283,27 +215,6 @@ export function pitchHTML({ layout, teams, metrics = ["xpts"], captain = null,
   return `<div class="pitch">${rows}</div>${bench}`;
 }
 
-/** A loose group of shirts with no pitch under them — the players the solver
- *  dropped, which belong beside its squad without being part of it. */
-export function cardsHTML(players, { teams, metrics = ["xpts"], tags = null,
-                                     swap = false, versus = false, badge = null } = {}) {
-  return `<div class="subsrow loose">${players.map((player) => card(player, {
-    teams, metrics, captain: null, vice: null, versus,
-    badge: badge ? badge(player) : "",
-    tag: tags?.[player.id] || null,
-    remove: false,
-    swap: swap && tags?.[player.id]?.kind === "in",
-  })).join("")}</div>`;
-}
-
-/** Turn a failed shirt into a lettered tile.
- *
- *  Called after the HTML lands rather than wired inline, so the module stays a
- *  string builder and the page keeps one place where handlers are attached. A
- *  broken-image icon on eleven shirts is worse than no shirts at all, and the
- *  case is real: a club promoted between a snapshot and a sync has no mirrored
- *  image until the laptop next fetches one.
- */
 export function wireShirts(root) {
   for (const img of root.querySelectorAll("img.kit")) {
     if (img.complete && img.naturalWidth === 0) {

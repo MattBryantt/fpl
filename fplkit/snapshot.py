@@ -1,30 +1,3 @@
-"""Freeze a projection into a file the browser can work from with nothing behind it.
-
-The board's front end already did most of its arithmetic locally -- best XI,
-legality, the budget meter, every chart -- because a projection is expensive and
-a click is not. This takes that the rest of the way: everything the optimiser
-and the stat editor need travels in one JSON file, so the page can pick a squad,
-recompute an override and re-solve the MILP on a phone with the laptop shut.
-
-What cannot travel is the projection itself. It needs pandas, three network
-sources and a Nelder-Mead fit per fixture, and its inputs change when odds move.
-So the split is: the laptop projects, the phone consumes. `generated_at` is
-carried so the board can say how stale it is rather than quietly implying it is
-live.
-
-Two things are deliberately *not* frozen at export time:
-
-  * **Horizon.** The snapshot carries per-gameweek points out to its full
-    horizon and the browser sums however many it wants. Shortening a horizon is
-    a truncation, not a re-projection.
-  * **Half-life.** The decay and survival curves are cheap closed forms, so the
-    browser applies them. Only `hazard` has to come along, because it needs a
-    birth date the browser has no reason to hold.
-
-Recency weighting is the exception that cannot be deferred: it changes the
-underlying rates, so a snapshot is taken at one recency setting and the board
-disables the slider until the next sync.
-"""
 
 from __future__ import annotations
 
@@ -68,23 +41,14 @@ from .transfers import (
 
 SNAPSHOT_PATH = OUT_DIR / "snapshot.json"
 
-# The horizon to freeze at. Longer than anyone plans to, because the browser can
-# only ever truncate: a snapshot taken at 8 can never answer a question about 12.
 SNAPSHOT_HORIZON = 12
 
-# Every input `_player_fixture_points` reads. Wider than OVERRIDABLE, which is
-# only the subset a user may argue with -- p_sub and p60 are derived, never
-# typed, but the scoring code needs them and the browser cannot re-derive p_sub
-# from anything it holds.
 SCORING_FIELDS = [
     "p_start", "mins_if_start", "p_sub", "p_play", "p60", "exp_minutes",
     "npxg_per90", "xa_per90", "dc_per90", "bonus_per90", "saves_per90",
     "yellow_per90", "penalties_order", "price",
 ]
 
-# The unshrunk rate each of these started from -- last season's actual per-90
-# numbers, before shrinkage pulled them toward the positional average. Only
-# the rate stats have one; there is no "raw" price or penalty order.
 RAW_FIELDS = [
     "npxg_per90", "xa_per90", "dc_per90", "bonus_per90", "saves_per90",
     "yellow_per90",
@@ -92,12 +56,6 @@ RAW_FIELDS = [
 
 
 def _rules() -> dict[str, Any]:
-    """The scoring constants, read out of config so the JS cannot drift from it.
-
-    Hand-copying these into JavaScript would work exactly until the first time
-    somebody changed a scoring rule in one place. Shipping them means a rule
-    change reaches the phone through the next sync instead of through memory.
-    """
     return {
         "GOAL_POINTS": config.GOAL_POINTS,
         "CLEAN_SHEET_POINTS": config.CLEAN_SHEET_POINTS,
@@ -115,12 +73,8 @@ def _rules() -> dict[str, Any]:
         "ASSUMED_START_MINUTES": config.ASSUMED_START_MINUTES,
         "ASSUMED_SUB_MINUTES": config.ASSUMED_SUB_MINUTES,
         "P60_GIVEN_START": config.P60_GIVEN_START,
-        # The curve that turns a shift length into P(reaches 60 | starts), so
-        # the phone can price a hooked-on-the-hour starter the same way.
         "P60_MIDPOINT_MINUTES": config.P60_MIDPOINT_MINUTES,
         "P60_SLOPE_MINUTES": config.P60_SLOPE_MINUTES,
-        # The minutes pool, so the browser can put a club back to eleven
-        # starters after an override the same way the model does.
         "MAX_P_START": model.MAX_P_START,
         "MAX_MINS_IF_START": model.MAX_MINS_IF_START,
         "MAX_MINUTES_SCALE": model.MAX_MINUTES_SCALE,
@@ -140,9 +94,6 @@ def _rules() -> dict[str, Any]:
         "CHIP_LABELS": dict(CHIP_LABELS),
         "CHIP_HOLD_VALUE": dict(CHIP_HOLD_VALUE),
         "TRANSFER_HALF_LIFE": TRANSFER_HALF_LIFE,
-        # The transfer-and-chip planner's own constants -- see transfers.py's
-        # module docstring for why each exists. Carried the same way as every
-        # other rule here: nothing hand-copied into transfers.js.
         "POOL_BY_POS": dict(POOL_BY_POS),
         "PRICE_POINT_CANDIDATES": PRICE_POINT_CANDIDATES,
         "CAPTAIN_CANDIDATES": CAPTAIN_CANDIDATES,
@@ -157,18 +108,11 @@ def _rules() -> dict[str, Any]:
     }
 
 
-# Display fields are rounded hard -- nobody reads the seventh decimal of an
-# ownership percentage, and there are thousands of them. The handful of numbers
-# the scoring model actually computes *from* are not: rounding a lambda or a
-# per-90 rate puts a floor on how closely the browser can reproduce the
-# projection, and at 6dp that floor was ~3e-6 points per gameweek. Ten decimals
-# costs about 2 KB gzipped over the whole file and drops it below 1e-9.
 DISPLAY_DP = 6
 INPUT_DP = 10
 
 
 def _num(value: Any, default: float | None = 0.0, dp: int = DISPLAY_DP) -> Any:
-    """JSON has no NaN. Anything that is not a finite number becomes `default`."""
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -184,14 +128,6 @@ def _per90(total: Any, minutes: Any) -> float | None:
 
 
 def _seasons(player: dict, basis: Any) -> dict[str, Any]:
-    """What he actually did, this season and last, side by side and unshrunk.
-
-    The rates the model scores with pool the two (see model.PREVIOUS_SEASON_
-    MATCHES); these are the two halves before pooling, so the editor can show
-    "last season 0.45 npxG/90, this season 0.71" next to the number the
-    slider opens on. Preseason the FPL totals in hand *are* last season's,
-    so `now` is empty and `prev` is read from them.
-    """
     understat = "npxG" if _num(player.get("us_minutes"), 0.0) > 0 else None
     def block(minutes, starts, matches, npxg, xa, us_minutes, dc, saves, bonus):
         minutes = _num(minutes, 0.0)
@@ -208,8 +144,6 @@ def _seasons(player: dict, basis: Any) -> dict[str, Any]:
                  player.get("prev_saves"), player.get("prev_bonus"))
     matches = (basis.club_matches.get(player.get("team"), 0.0)
                if basis is not None and not basis.preseason else 0.0)
-    # This season's attacking rate is Understat's where it has him, else the
-    # FPL API's own xG less the penalty share, as attach_rates falls back.
     us_now = _num(player.get("cur_us_minutes"), 0.0)
     now = block(player.get("minutes"), player.get("starts"), matches,
                 player.get("cur_npxG") if us_now else
@@ -218,7 +152,6 @@ def _seasons(player: dict, basis: Any) -> dict[str, Any]:
                 us_now or player.get("minutes"),
                 player.get("defensive_contribution"), player.get("saves"), player.get("bonus"))
     if basis is not None and basis.preseason:
-        # The totals are last season's; `prev_*` never loaded.
         last = block(player.get("minutes"), player.get("starts"), 38,
                      player.get("npxG"), player.get("xA"), player.get("us_minutes"),
                      player.get("defensive_contribution"), player.get("saves"),
@@ -228,13 +161,6 @@ def _seasons(player: dict, basis: Any) -> dict[str, Any]:
 
 
 def _teams(force_refresh: bool = False) -> dict[str, Any]:
-    """Club name -> short name and FPL club code.
-
-    The code is the one the shirt images are filed under, and it is not the team
-    id: Arsenal are team 1 and code 3, and the two diverge again every time a
-    club is promoted. Keyed by the club name the player rows already carry, so
-    the pitch can find a shirt without a second join.
-    """
     return {
         str(team["name"]): {"short": str(team["short_name"]),
                             "code": int(team["code"])}
@@ -245,7 +171,6 @@ def _teams(force_refresh: bool = False) -> dict[str, Any]:
 def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
           recency: float = 0.0, previous: float = 0.25,
           force_refresh: bool = False) -> dict:
-    """Run the projection and reduce it to what the browser needs."""
     projection = project(horizon=horizon, start_gw=start_gw,
                          recency_half_life=recency or None,
                          previous_weight=previous,
@@ -257,16 +182,11 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
     gameweeks = [int(gw) for gw in raw.columns]
     hazard = injury_hazard(players)
 
-    # Expected clean sheets per gameweek, not just summed over the horizon. The
-    # board lets you shorten the horizon without a sync, and that has to be a
-    # truncation of something -- a single total for 12 gameweeks cannot answer
-    # what the first 6 are worth.
     clean_sheets = (projection.per_fixture
                     .pivot_table(index="fpl_id", columns="gw",
                                  values="exp_clean_sheets", aggfunc="sum")
                     .reindex(columns=gameweeks).fillna(0.0))
 
-    # Opponent labels for the tooltips, joined on a double gameweek.
     per_fixture = projection.per_fixture.copy()
     per_fixture["label"] = np.where(
         per_fixture["was_home"], per_fixture["opponent"] + " (H)",
@@ -289,10 +209,6 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
 
         row = {
             "id": fpl_id,
-            # Stable across seasons, unlike `id` (FPL reassigns element ids at
-            # every rollover) -- squad state is persisted keyed on this so a
-            # saved squad survives the id reshuffle instead of silently
-            # evaporating, which is what happened to squads keyed on `id`.
             "code": int(player["code"]),
             "name": str(player["web_name"]),
             "full_name": str(player["full_name"]),
@@ -300,24 +216,12 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
             "team": str(player["team"]),
             "team_short": str(player["team_short"]),
             "owned": _num(pd.to_numeric(player["selected_by_percent"], errors="coerce")),
-            # Last completed season's points per game, straight from the FPL
-            # API. Pre-season that is exactly what bootstrap-static serves, and
-            # it is the number most people actually carry in their heads -- so
-            # the board shows it next to the model's xPPG rather than asking you
-            # to hold one of them in memory while reading the other.
             "ppg": _num(player.get("points_per_game")),
             "minutes_last": _num(player.get("minutes"), dp=0),
-            # The season total as well, because PPG alone cannot be put on the
-            # same footing as xPPG: one divides by appearances, the other by
-            # fixtures, and only total/38 bridges them.
             "pts_last": _num(player.get("total_points"), dp=0),
             "price_change": _num(player.get("exp_price_change"), None),
             "confidence": str(player.get("confidence", "")),
             "recency": _num(player.get("recency"), None),
-            # The two halves p_start was blended from. Not used in scoring -- the
-            # blend already happened -- but shown in the editor, because "the
-            # model has him at 0.41 and he has started the last six" is the
-            # single most useful thing to know before overriding him.
             "start_long_run": _num(player.get("start_long_run"), None, dp=INPUT_DP),
             "start_recent": _num(player.get("start_recent"), None, dp=INPUT_DP),
             "moved": bool(player.get("moved_club", False)),
@@ -330,8 +234,6 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
             "opp": labels,
             "hazard": _num(hazard.iloc[position], dp=INPUT_DP),
         }
-        # The scoring inputs, flat on the row: the browser treats a player as the
-        # thing you feed to playerFixturePoints, exactly as the Python does.
         for field in SCORING_FIELDS:
             row[field] = _num(player.get(field), dp=INPUT_DP)
         for field in RAW_FIELDS:
@@ -343,10 +245,6 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
          "home_team": str(f["home_team"]), "away_team": str(f["away_team"]),
          "lam_home": _num(f["lam_home"], dp=INPUT_DP),
          "lam_away": _num(f["lam_away"], dp=INPUT_DP),
-         # The xG-ratings figure before odds-calibration nudged it -- equal to
-         # lam_home/lam_away on a priced fixture (odds already override the
-         # ratings entirely there) and to what the board falls back to when its
-         # "calibrate to odds" toggle is off.
          "lam_home_uncalibrated": _num(f["lam_home_uncalibrated"], dp=INPUT_DP),
          "lam_away_uncalibrated": _num(f["lam_away_uncalibrated"], dp=INPUT_DP),
          "source": str(f["lam_source"])}
@@ -364,11 +262,6 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
               if bool(projection.fixtures.loc[projection.fixtures["gw"] == gw,
                                               "has_odds"].any())]
 
-    # The single half-season set that applies to this window -- not the union
-    # of both halves, which would erase the mid-season expiry that makes chip
-    # timing urgent. Every chip the API reports is carried, including ones the
-    # planner does not model; `chip_slots` is what decides which of them become
-    # variables, and it reads `CHIPS`, not this.
     chip_windows = {chip: list(window) for chip, window in
                     fpl_api.chip_windows(gameweeks[0], force_refresh).items()}
 
@@ -385,22 +278,13 @@ def build(horizon: int = SNAPSHOT_HORIZON, start_gw: int | None = None,
             "start_gw": gameweeks[0],
             "horizon": len(gameweeks),
             "recency": recency,
-            # The last-season weight this was projected with, and what the
-            # calendar fade left of it -- the board's slider needs the first
-            # to know whether it is out of date, the editor the second.
             "previous": previous,
             "previous_weight": _num(basis.previous_weight if basis else None, None),
             "odds_coverage": round(projection.odds_coverage, 3),
             "odds_note": projection.odds_note,
-            # Sources that fell back or were dropped on this build, in words.
             "notes": list(projection.notes),
             "priced_gws": priced,
             "total_managers": fpl_api.total_managers(),
-            # How far into the season the totals behind this snapshot are. The
-            # board greys a thin PPG, and "thin" is a share of a full workload
-            # rather than a fixed 900 minutes -- otherwise the moment a season
-            # rolls over the board greys every player in the league and keeps
-            # doing it until Christmas.
             "season_minutes": _num(basis.fpl_minutes if basis else None, None, dp=0),
             "preseason": bool(basis.preseason) if basis else None,
             "established_share": ESTABLISHED_SHARE,

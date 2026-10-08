@@ -1,22 +1,3 @@
-"""Measure how much of an attacking rate carries into the next season.
-
-The shrinkage prior decides the model's whole behaviour at the top of the table.
-`_shrink` blends a player's own rate with the positional average at weight
-`M / (M + k)`, so k is the number that says how much of a season to believe --
-and it had been set to 1200 for every rate from a recalled figure rather than
-from the three seasons of Understat sitting in the cache.
-
-This fits k directly, by minimising the squared error of `w.own + (1-w).prior`
-against what each player actually did the following season. That is not a
-diagnostic of the shrinkage; it *is* the shrinkage, solved rather than assumed.
-
-    python scripts/calibrate-shrinkage.py
-
-Re-run it when a season ends. If the numbers have moved, move
-NPXG_PRIOR_MINUTES and XA_PRIOR_MINUTES in fplkit/model.py to match -- they are
-constants in the code but measurements in origin, and the comment beside them
-should keep saying which.
-"""
 
 from __future__ import annotations
 
@@ -34,13 +15,12 @@ from fplkit.model import (MOVER_PRIOR_MULTIPLIER, NPXG_PRIOR_MINUTES,  # noqa: E
 from fplkit.sources import understat  # noqa: E402
 
 SEASONS = ("2023", "2024", "2025")
-MIN_FIRST = 300     # enough of a first season to be evidence of anything
-MIN_SECOND = 900    # enough of a second season to be worth scoring against
+MIN_FIRST = 300
+MIN_SECOND = 900
 BOOTSTRAP = 500
 
 
 def load() -> pd.DataFrame:
-    """Consecutive season pairs for the same player, joined on Understat's id."""
     seasons = {}
     for season in SEASONS:
         df = understat.player_stats(season=season)
@@ -58,7 +38,6 @@ def load() -> pd.DataFrame:
 
 
 def fit_k(own: np.ndarray, nxt: np.ndarray, minutes: np.ndarray) -> float:
-    """The prior weight that best predicts next season from this one."""
     prior = float(np.average(own, weights=minutes))
 
     def loss(k: float) -> float:
@@ -102,7 +81,6 @@ def main() -> int:
     report(both, "xa_per90", XA_PRIOR_MINUTES)
     print()
 
-    # Splitting npxG into volume x conversion looks promising and is not.
     print("Is npxG/90 worth splitting into shot volume and conversion?")
     report(both, "shots_per90", 0)
     report(both, "xg_per_shot", 0)
@@ -117,7 +95,6 @@ def main() -> int:
     print("       is worth. Splitting them buys nothing, so the model does not.")
     print()
 
-    # The mover penalty, which this sample is too small to settle.
     moved = (both["us_team_list_1"].str[-1] != both["us_team_list_2"].str[-1])
     print(f"Club changers (n={int(moved.sum())}), against a charged "
           f"{MOVER_PRIOR_MULTIPLIER}x prior:")

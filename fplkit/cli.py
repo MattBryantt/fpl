@@ -1,4 +1,3 @@
-"""Command line interface."""
 
 from __future__ import annotations
 
@@ -77,19 +76,12 @@ FLOAT_FORMATS = {
 }
 
 
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
-
 def _columns(args) -> list[str]:
-    """Compact by default; the full points breakdown behind --full."""
     return FULL_COLUMNS if getattr(args, "full", False) else COMPACT_COLUMNS
 
 
 def _render(df: pd.DataFrame, title: str, columns: list[str] | None = None,
             default_format: str = "{:.2f}") -> None:
-    """`default_format` covers columns FLOAT_FORMATS cannot name -- the chip
-    option table's one-per-gameweek columns are built from the horizon."""
     columns = [c for c in (columns or df.columns) if c in df.columns]
     table = Table(title=title, header_style="bold cyan", title_style="bold")
     for column in columns:
@@ -188,7 +180,6 @@ def _filter(df: pd.DataFrame, args) -> pd.DataFrame:
 
 
 def _resolve(players: pd.DataFrame, query: str) -> pd.Series:
-    """Find one player from a loose name, disambiguating by price if needed."""
     exact = players[players["web_name"].str.lower() == query.strip().lower()]
     if len(exact) == 1:
         return exact.iloc[0]
@@ -225,10 +216,6 @@ def _print_squad(squad, label: str, extra_columns: list[str] | None = None) -> N
     )
 
 
-# --------------------------------------------------------------------------- #
-# Commands
-# --------------------------------------------------------------------------- #
-
 def cmd_rank(args) -> None:
     projection = _run_projection(args)
     df = _filter(projection.players, args)
@@ -238,7 +225,6 @@ def cmd_rank(args) -> None:
 
 
 def cmd_value(args) -> None:
-    """Points per million, restricted to players who will actually play."""
     projection = _run_projection(args)
     df = _filter(projection.players, args)
     df = df[df["p_start"] >= args.min_start]
@@ -328,7 +314,6 @@ def cmd_squad(args) -> None:
 
 
 def cmd_nearmiss(args) -> None:
-    """Who was one decision away from the optimal fifteen, and by how much."""
     projection = _run_projection(args)
     players = projection.players
     include = [int(_resolve(players, name)["fpl_id"]) for name in (args.include or [])]
@@ -354,10 +339,6 @@ def cmd_nearmiss(args) -> None:
         console.print("[yellow]nobody left to test — the pool is the squad.[/yellow]")
         return
 
-    # Forcing a man in can shuffle four others once the money moves, and a
-    # terminal column wide enough for all four leaves none for the numbers.
-    # The first name is the one he actually displaces (see `near_misses`); the
-    # rest are the reshuffle that paid for it, and the CSV keeps them all.
     def _short(names: str) -> str:
         parts = [n for n in names.split(", ") if n]
         return parts[0] + (f" +{len(parts) - 1}" if len(parts) > 2 else
@@ -395,7 +376,6 @@ def cmd_nearmiss(args) -> None:
 
 
 def cmd_upgrade(args) -> None:
-    """For one player, what every affordable alternative would cost or gain."""
     projection = _run_projection(args)
     players = projection.players
     target = _resolve(players, args.player)
@@ -435,7 +415,6 @@ def cmd_fixtures(args) -> None:
 
 
 def cmd_plan(args) -> None:
-    """An initial squad plus the reasoning around it: where it goes, what it risks."""
     projection = _run_projection(args)
     players = projection.players
     include = [int(_resolve(players, name)["fpl_id"]) for name in (args.include or [])]
@@ -536,7 +515,6 @@ def cmd_plan(args) -> None:
 
 
 def _print_transfer_path(path, show_lineups: bool = False) -> None:
-    """The transfer ledger, the moves, and what the chips are worth."""
     _render(path.ledger, "Transfer path — free transfers, hits and chips by gameweek",
             ["gw", "chip", "transfers", "free", "hits", "bank", "xi_xpts", "weight"])
     console.print(
@@ -598,15 +576,6 @@ def _print_transfer_path(path, show_lineups: bool = False) -> None:
 
 
 def _parse_pin_chip(text: str) -> tuple[str, int]:
-    """Parses one `--pin-chip` argument, `NAME=GW`.
-
-    A pin is `chip_windows={chip: (gw, gw)}` plus `force_chips=[chip]` --
-    narrowing a chip's legal window to one gameweek and forcing it to be
-    played is exactly what the web board's chip-pinning controls already do
-    (see index.html's toggleChipWeek/buildTransferPayload); this is the same
-    thing from the command line, not a new idea plan_transfers() needs to
-    learn. See its docstring for the underlying mechanism.
-    """
     name, _, gw = text.partition("=")
     if not gw or name not in CHIPS:
         raise argparse.ArgumentTypeError(
@@ -618,11 +587,6 @@ def _parse_pin_chip(text: str) -> tuple[str, int]:
 
 
 def _load_squad(players: pd.DataFrame, path: str | None) -> tuple[list[int], dict]:
-    """Read the fifteen you own from a CSV, with purchase prices if given.
-
-    Accepts whatever `plan --csv` writes, so the usual route is to plan a squad,
-    keep the file, and feed it back in once the season is running.
-    """
     if not path:
         return [], {}
     df = pd.read_csv(path)
@@ -642,7 +606,6 @@ def _load_squad(players: pd.DataFrame, path: str | None) -> tuple[list[int], dic
 
 
 def cmd_transfers(args) -> None:
-    """Transfers and chips over the window, under the actual rules."""
     args.horizon = max(args.horizon, args.transfer_horizon)
     projection = _run_projection(args)
     players = projection.players
@@ -664,7 +627,6 @@ def cmd_transfers(args) -> None:
         if chip not in force_chips:
             force_chips.append(chip)
 
-    # Before the opening deadline nothing is banked; a wildcard keeps what was.
     free_transfers = 0 if not owned and projection.basis.preseason else args.free_transfers
     settings = dict(
         horizon=args.transfer_horizon, budget=args.budget, squad=owned or None,
@@ -687,7 +649,6 @@ def cmd_transfers(args) -> None:
         f", discounting at a {args.transfer_half_life:g}-gameweek half-life.\n")
     _print_transfer_path(path, show_lineups=args.lineups)
 
-    # Only the first gameweek is a decision. Price it.
     if owned:
         console.print()
         with console.status("[cyan]pricing this week's move against rolling…"):
@@ -728,7 +689,6 @@ def cmd_transfers(args) -> None:
 
 
 def cmd_horizon(args) -> None:
-    """How much the recommended squad depends on how far ahead you look."""
     projection = _run_projection(args)
     with console.status("[cyan]solving a squad at every horizon…"):
         table = horizon_sensitivity(
@@ -771,7 +731,6 @@ def cmd_horizon(args) -> None:
 
 
 def cmd_movers(args) -> None:
-    """Players whose past numbers were produced at a different club."""
     projection = _run_projection(args)
     df = projection.players
     movers = df[df["moved_club"] & (df["minutes"] >= args.min_minutes)].copy()
@@ -792,13 +751,6 @@ def cmd_movers(args) -> None:
 
 
 def cmd_flags(args) -> None:
-    """Players whose minutes assumption is worth a second look before trusting it.
-
-    Distinct from `blindspots`: those players have no evidence at all. These
-    have evidence, but something about it -- an inconsistent shift length, a
-    club move, a fitness doubt -- makes the average a shakier summary than
-    usual. See model._minutes_flags.
-    """
     projection = _run_projection(args)
     df = projection.players
     flagged = df[df["mins_flags"] != ""].copy()
@@ -817,12 +769,6 @@ def cmd_flags(args) -> None:
 
 
 def cmd_blindspots(args) -> None:
-    """Players the model cannot see, and a template for telling it what you think.
-
-    Every projection is only as good as its minutes assumption, and for a summer
-    signing there is no minutes history at all. This lists them and writes an
-    overrides CSV you can edit and feed back in with --overrides.
-    """
     projection = _run_projection(args)
     blind = projection.players[projection.players["needs_override"]].copy()
     blind = blind.sort_values("price", ascending=False).head(args.limit)
@@ -859,7 +805,6 @@ def cmd_blindspots(args) -> None:
 
 
 def cmd_overrides(args) -> None:
-    """Show what can be overridden, and write a template for named players."""
     rows = [{"field": field, "min": low, "max": high} for field, (low, high) in OVERRIDABLE.items()]
     _render(pd.DataFrame(rows), "Overridable model inputs", ["field", "min", "max"])
     console.print(
@@ -887,12 +832,11 @@ def cmd_overrides(args) -> None:
 
 
 def _local_ip() -> str:
-    """Best guess at this machine's address on the local network."""
     import socket
 
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        probe.connect(("10.255.255.255", 1))  # never sent; just picks the route
+        probe.connect(("10.255.255.255", 1))
         return probe.getsockname()[0]
     except OSError:
         return "127.0.0.1"
@@ -901,7 +845,6 @@ def _local_ip() -> str:
 
 
 def _print_qr(url: str) -> None:
-    """Terminal QR so a phone can join without typing a long token."""
     try:
         import qrcode
     except ImportError:
@@ -914,7 +857,6 @@ def _print_qr(url: str) -> None:
 
 
 def cmd_snapshot(args) -> None:
-    """Freeze the projection into the file the offline board runs on."""
     from . import snapshot as snapshot_module
 
     with console.status("[cyan]projecting and freezing…"):
@@ -934,7 +876,6 @@ def cmd_snapshot(args) -> None:
 
 
 def cmd_build(args) -> None:
-    """Freeze the board into a directory any static host can serve."""
     from . import site
     from . import snapshot as snapshot_module
 
@@ -971,7 +912,6 @@ def cmd_build(args) -> None:
 
 
 def cmd_serve(args) -> None:
-    """Run the drafting board."""
     import secrets
     import string
 
@@ -982,8 +922,6 @@ def cmd_serve(args) -> None:
     if args.lan:
         host, loopback = "0.0.0.0", False
 
-    # The board writes files and spends API quota, so anything beyond loopback
-    # needs a token. Refuse rather than quietly exposing it.
     token = args.token or os.environ.get("FPL_TOKEN") or None
     if not loopback and not token:
         if args.insecure:
@@ -991,10 +929,6 @@ def cmd_serve(args) -> None:
                           "address — anyone who can reach this port can use "
                           "and modify your data[/red]")
         else:
-            # Letters and digits only. token_urlsafe emits "-" and "_", and a
-            # token like "aB_cd_" turns into italics the moment the link is
-            # pasted into anything that renders markdown -- the underscores are
-            # eaten and the link arrives with a token that no longer matches.
             alphabet = string.ascii_letters + string.digits
             token = "".join(secrets.choice(alphabet) for _ in range(16))
             console.print("[dim]no --token given, generated one for this run[/dim]")
@@ -1028,10 +962,6 @@ def cmd_cache(args) -> None:
     removed = cache.clear(args.namespace)
     console.print(f"removed {removed} cached files")
 
-
-# --------------------------------------------------------------------------- #
-# Argument parsing
-# --------------------------------------------------------------------------- #
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(

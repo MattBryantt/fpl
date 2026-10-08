@@ -1,19 +1,3 @@
-/* Proves the browser's MILP is the same MILP.
- *
- * scripts/solver-cases.json holds randomised settings solved by CBC through
- * fplkit/optimise.py. Every one is re-solved here by the vendored HiGHS WASM
- * build — the exact file the phone loads — and the two must agree.
- *
- * The bar is the *objective*, not the squad. Ties are real: two different
- * fifteens can score identically, and which one a solver returns is an
- * implementation detail neither of them promises. An objective that matches to
- * within the LP's own printed precision means the browser found an optimum, and
- * that is the property the board actually depends on. Squad agreement is
- * reported too, because in practice ties are rare and a sudden crop of them
- * would be worth knowing about.
- *
- * Run: node scripts/verify-solver-port.mjs
- */
 
 import fs from "fs";
 import path from "path";
@@ -24,12 +8,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, "..");
 const require = createRequire(import.meta.url);
 
-// The vendored copy, not the one in node_modules: testing a different build
-// from the one that ships would prove nothing about what the phone runs.
 const FplSolver = require(path.join(ROOT, "fplkit/web/solver.js"));
 
-// LP text is printed to 6dp and HiGHS's own MIP gap is ~1e-6 relative, so an
-// objective around 200 can legitimately land a few 1e-5 away from CBC's.
 const TOL = 5e-4;
 
 const cases = JSON.parse(fs.readFileSync(path.join(ROOT, "scripts/solver-cases.json")));

@@ -1,14 +1,3 @@
-/* Proves the browser rebalances a club the same way the model does.
- *
- * Overriding a player's minutes obliges his club to give those minutes up from
- * somewhere. Python does that in `model.renormalise_minutes`; the board does it
- * in `board.mjs:renormaliseMinutes`, because on a phone there is nothing else to
- * do it. If the two disagree, the lineup on screen is not the lineup the
- * projection was built from, and every number downstream of it is quietly
- * describing a different team.
- *
- * Run: node scripts/verify-lineup-port.mjs
- */
 
 import fs from "fs";
 import path from "path";
@@ -18,15 +7,6 @@ import { derivePool, clubLineup } from "../fplkit/web/board.mjs";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, "..");
 
-/* Two tolerances, tracked apart, because they are set by different things and
-   reporting one against the other's limit is how a real failure hides behind a
-   rounding artefact.
-
-   Per player: the reference stores p_start at 9dp, so agreement cannot read
-   tighter than that. The bisection itself converges to machine precision.
-
-   Per club: a sum over ~30 players, each carried at the snapshot's 10dp, so the
-   accumulated rounding is a couple of orders of magnitude looser. */
 const TOL_PLAYER = 5.01e-9;
 const TOL_CLUB = 1e-6;
 

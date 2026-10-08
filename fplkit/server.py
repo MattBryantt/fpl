@@ -1,13 +1,3 @@
-"""Local web server for the drafting UI.
-
-The split between server and browser is deliberate. The server does the two
-things only Python can do -- run the projection pipeline and solve the squad
-MILP -- and hands the browser a complete pool of players with their per-gameweek
-points already computed. Everything the draft interaction touches (adding a
-player, checking the club limit, recomputing the best XI, redrawing the
-timeline) then happens client-side with no round trip, so the UI responds
-instantly instead of waiting on a 2-second projection for every click.
-"""
 
 from __future__ import annotations
 
@@ -49,33 +39,14 @@ from .sources import fpl_api, history, understat
 
 app = FastAPI(title="FPL drafting board")
 
-# Set by serve() when the board is reachable from anywhere but this machine.
-# None means no check, which is only the default because the default bind is
-# loopback -- see serve().
 AUTH_TOKEN: str | None = None
 
-# Paths that must stay open for a browser to bootstrap itself: the page has to
-# load before its script can attach the token header, and it reads the token
-# from the query string on that first request. Its assets and service worker are
-# in the same position, and none of them are data. /snapshot.json *is* the data,
-# so it stays behind the check.
-# Club shirts are open for a second reason on top of not being data: an <img>
-# cannot carry the token header the way fetch() does, so gating them would leave
-# an authorised board with an empty pitch.
 OPEN_PATHS = {"/", "/data", "/icon.png", "/sw.js", "/manifest.webmanifest"}
 OPEN_PREFIXES = ("/assets/", "/shirts/")
 
 
 @app.middleware("http")
 async def require_token(request: Request, call_next):
-    """Gate every endpoint behind a shared token when one is configured.
-
-    The board has write endpoints -- it saves drafts, writes an overrides CSV to
-    disk and can force a refetch that spends Odds API quota -- so putting it on a
-    network without a check in front would let anyone who finds the port use all
-    of that. The token is checked on the header the app sends, or on a query
-    parameter so a link or QR code can carry it on the first load.
-    """
     if AUTH_TOKEN is None:
         return await call_next(request)
 
@@ -86,8 +57,6 @@ async def require_token(request: Request, call_next):
 
     if (request.url.path in OPEN_PATHS
             or request.url.path.startswith(OPEN_PREFIXES)):
-        # Send the page, but with nothing in it -- the script cannot run without
-        # a token anyway, and a bare 401 in a browser is a dead end.
         return HTMLResponse(UNAUTHORISED_PAGE, status_code=401)
     return JSONResponse({"detail": "missing or invalid token"}, status_code=401)
 
@@ -120,8 +89,6 @@ WEB_DIR = ROOT / "fplkit" / "web"
 OVERRIDES_PATH = OUT_DIR / "overrides.csv"
 DRAFTS_PATH = OUT_DIR / "drafts.json"
 
-# Projections are expensive (a couple of seconds) and pure, so they are cached
-# for the life of the process. The UI changes horizon and half-life freely.
 _projection_cache: dict[tuple, Any] = {}
 _pool_cache: dict[tuple, dict] = {}
 
@@ -137,7 +104,6 @@ def _get_projection(start_gw: int | None, horizon: int, recency: float = 0.0,
 
 
 def _clean(value: Any) -> Any:
-    """JSON has no NaN or numpy scalars; strip both."""
     if isinstance(value, (np.integer,)):
         return int(value)
     if isinstance(value, (np.floating, float)):
@@ -164,8 +130,6 @@ def _build_pool(start_gw: int | None, horizon: int, half_life: float | None,
     raw, weighted = weighted_points(projection, half_life)
     gameweeks = [int(gw) for gw in raw.columns]
 
-    # Opponent labels per player per gameweek, for tooltips. A double gameweek
-    # yields two, joined.
     fixtures = projection.per_fixture.copy()
     fixtures["label"] = np.where(fixtures["was_home"],
                                  fixtures["opponent"] + " (H)",
@@ -188,10 +152,6 @@ def _build_pool(start_gw: int | None, horizon: int, half_life: float | None,
 
         rows.append({
             "id": fpl_id,
-            # Stable across seasons, unlike `id` (FPL reassigns element ids at
-            # every rollover) -- squad state is persisted keyed on this so a
-            # saved squad survives the id reshuffle instead of silently
-            # evaporating, which is what happened to squads keyed on `id`.
             "code": int(player["code"]),
             "name": str(player["web_name"]),
             "full_name": str(player["full_name"]),
@@ -213,8 +173,6 @@ def _build_pool(start_gw: int | None, horizon: int, half_life: float | None,
             "news": str(player["news"] or ""),
             "gw": per_gw,
             "opp": labels,
-            # The model inputs a user may disagree with, so the editor can open
-            # showing what the model currently believes without a round trip.
             "inputs": {field: _clean(player[field])
                        for field in OVERRIDABLE if field in player.index},
         })
@@ -248,7 +206,6 @@ def _build_pool(start_gw: int | None, horizon: int, half_life: float | None,
 
 def _plan_weight_player(projection, half_life: float | None, fpl_id: int,
                         per_gw: list[float]) -> float:
-    """Apply the same decay and survival curve a full plan run would."""
     players = projection.players
     row = players[players["fpl_id"] == fpl_id]
     hazard = float(injury_hazard(row).iloc[0])
@@ -259,26 +216,11 @@ def _plan_weight_player(projection, half_life: float | None, fpl_id: int,
 
 def _apply_edits(projection, half_life: float | None,
                  edits: dict[int, dict[str, float]]) -> pd.DataFrame:
-    """Plan-weighted player table with the user's edited players patched in.
-
-    Only edited players are recomputed, so the optimiser sees the same numbers
-    the browser is showing without paying for a full re-projection.
-
-    The inputs go through `apply_overrides` rather than being written column by
-    column. That matters for more than tidiness: several of the fields are not
-    independent. Raising p_start also raises p_play, p60 and exp_minutes, and
-    the optimiser filters its pool on p_play -- so patching p_start alone left
-    an edited fringe player with a big xpts_plan and a stale p_play, and the
-    solver dropped him at `min_minutes_prob` no matter how far the slider moved.
-    """
     players = apply_plan_weighting(projection, half_life)
     live = {int(i): f for i, f in edits.items() if f}
     if not live:
         return players
 
-    # Season-level fields go through the table path; the per-match ones are
-    # applied per fixture inside reproject_player, so they must not travel in
-    # this frame -- a dict in a DataFrame cell is not a number.
     season = [{"fpl_id": i, **{k: v for k, v in f.items() if k != "gw"}}
               for i, f in live.items()]
     season = [row for row in season if len(row) > 1]
@@ -298,15 +240,6 @@ def _apply_edits(projection, half_life: float | None,
 
 
 def _check_overridable(fields) -> None:
-    """Reject field names the model does not know, rather than ignoring them.
-
-    `apply_overrides` skips anything it does not recognise, so a typo in a
-    saved CSV or a stale field name would otherwise read as "the override did
-    nothing" with no way to tell that from "the override had no effect".
-
-    `gw` is the one reserved key: it holds per-match overrides, whose fields are
-    checked the same way one level down.
-    """
     known = set(OVERRIDABLE) | {f"{f}_mult" for f in OVERRIDABLE}
     unknown = set(fields) - known - {"gw"}
     if unknown:
@@ -320,11 +253,6 @@ def _check_overridable(fields) -> None:
 
 class PoolRequest(BaseModel):
     horizon: int = Field(8, ge=1, le=20)
-    # null means no decay -- every gameweek in the horizon at full value. JSON
-    # has no infinity, and the board's slider has that setting at its top stop.
-    # There is no upper bound below that: the slider's last few positions work
-    # out to half-lives of dozens of gameweeks, which is the whole point of
-    # having them, and a large half-life is only ever a gentler discount.
     half_life: Annotated[float, Field(gt=0)] | None = DEFAULT_HALF_LIFE
     start_gw: int | None = None
     recency: float = Field(0.0, ge=0, le=38)
@@ -334,8 +262,6 @@ class PoolRequest(BaseModel):
 class OptimiseRequest(PoolRequest):
     budget: float = Field(DEFAULT_BUDGET, gt=0, le=200)
     bench_weight: float = Field(DEFAULT_BENCH_WEIGHT, ge=0, le=1)
-    # Absolute weight per bench slot, keyed "GKP"/"1"/"2"/"3". Supersedes
-    # bench_weight when given; omit to keep the scaled default profile.
     bench_slot_weights: dict[str, float] | None = None
     ownership_weight: float = Field(0.0, ge=0, le=2)
     min_start: float = Field(0.3, ge=0, le=1)
@@ -348,8 +274,6 @@ class OptimiseRequest(PoolRequest):
 
 class EditRequest(PoolRequest):
     fpl_id: int
-    # Values are floats, except the reserved `gw` key, whose value maps a
-    # gameweek to its own field dict.
     overrides: dict[str, Any] = {}
 
 
@@ -383,9 +307,6 @@ def pool(horizon: int = 8, half_life: float | None = DEFAULT_HALF_LIFE,
 
 @app.get("/api/live/{team_id}")
 def live_team(team_id: int, gw: int | None = None) -> dict:
-    """A manager's real squad, bank, free transfers and chips used, read
-    straight from FPL's own public API -- no login, so no per-player selling
-    price (see fpl_api.live_squad's docstring for what that means)."""
     try:
         return fpl_api.live_squad(team_id, gw)
     except requests.HTTPError as error:
@@ -396,7 +317,6 @@ def live_team(team_id: int, gw: int | None = None) -> dict:
 
 @app.post("/api/edit")
 def edit_player(request: EditRequest) -> dict:
-    """Recompute one player after changing his inputs."""
     projection = _get_projection(request.start_gw, request.horizon, request.recency,
                                  request.previous)
     _check_overridable(request.overrides)
@@ -409,14 +329,6 @@ def edit_player(request: EditRequest) -> dict:
     return result
 
 
-# --------------------------------------------------------------------------- #
-# Asking questions about a player
-# --------------------------------------------------------------------------- #
-
-# What each number in the dossier means, sent alongside it. A language model
-# handed `xpts_defcon: 2.1` has no way to know that is a threshold term rather
-# than a rate, and will confidently say something wrong about it. Explaining the
-# schema is most of what keeps the answers tied to the model.
 DOSSIER_GUIDE = """
 Every number you are given comes from the projection itself. Field meanings:
 
@@ -478,16 +390,6 @@ AI_PROBE_TTL = 30.0
 
 
 def _ai_status() -> dict:
-    """Whether a question can actually be answered, and by what.
-
-    Probed rather than assumed. Offering an ask box that turns out to have
-    nothing behind it wastes the one interaction the user came for, and the
-    common case -- the default local Ollama, not installed -- is exactly the one
-    a configuration check alone would call available.
-
-    Cached briefly, because the drawer asks this every time it opens and a dead
-    endpoint costs a connection timeout to discover.
-    """
     global _AI_PROBE
     now = time.monotonic()
     if _AI_PROBE and now - _AI_PROBE[0] < AI_PROBE_TTL:
@@ -498,8 +400,6 @@ def _ai_status() -> dict:
         "model": config.AI_MODEL,
         "base_url": config.AI_BASE_URL,
         "hosted": hosted,
-        # Named so the UI can be honest about where the numbers go. A local
-        # Ollama keeps them on the machine; anything with a key does not.
         "local": not hosted and ("127.0.0.1" in config.AI_BASE_URL
                                  or "localhost" in config.AI_BASE_URL),
     }
@@ -525,13 +425,6 @@ def _round(value: Any, dp: int = 3) -> Any:
 
 def _player_dossier(projection, fpl_id: int, half_life: float | None,
                     edits: dict[str, Any] | None) -> dict:
-    """Everything the model knows about one player, as plain JSON.
-
-    Built from `reproject_player`, which is the same code path the projection
-    and the browser both score with -- so an answer cannot be grounded in
-    numbers that disagree with the ones on screen. That is the whole point of
-    routing this through the model rather than handing a chat endpoint a CSV.
-    """
     players = apply_plan_weighting(projection, half_life)
     row = players[players["fpl_id"] == fpl_id]
     if row.empty:
@@ -566,7 +459,6 @@ def _player_dossier(projection, fpl_id: int, half_life: float | None,
     by_source = {label: _round(result["breakdown"].get(column, 0.0), 2)
                  for label, column in sources.items()}
 
-    # Where he sits among his own position, which is what "rated highly" means.
     peers = players[players["pos"] == player["pos"]]
     ranked = peers.sort_values("xpts_plan", ascending=False).reset_index(drop=True)
     rank = int(ranked.index[ranked["fpl_id"] == fpl_id][0]) + 1 if fpl_id in set(
@@ -637,7 +529,6 @@ def _player_dossier(projection, fpl_id: int, half_life: float | None,
 
 
 def _ask_model(messages: list[dict]) -> str:
-    """Send a grounded conversation to whatever OpenAI-compatible endpoint is set."""
     headers = {"Content-Type": "application/json"}
     if config.AI_API_KEY:
         headers["Authorization"] = f"Bearer {config.AI_API_KEY}"
@@ -649,7 +540,7 @@ def _ask_model(messages: list[dict]) -> str:
             json={
                 "model": config.AI_MODEL,
                 "messages": messages,
-                "temperature": 0.2,  # explaining arithmetic, not writing prose
+                "temperature": 0.2,
                 "max_tokens": config.AI_MAX_TOKENS,
                 "stream": False,
             },
@@ -688,28 +579,17 @@ def _ask_model(messages: list[dict]) -> str:
 class AskRequest(PoolRequest):
     fpl_id: int
     question: str = Field(min_length=1, max_length=2000)
-    # Prior turns, so a follow-up ("what about his fixtures?") has something to
-    # follow. Capped because the dossier is re-sent every turn and the context
-    # is the expensive part.
     history: list[dict] = Field(default_factory=list)
     edits: dict[str, Any] = Field(default_factory=dict)
 
 
 @app.get("/api/ai")
 def ai_status() -> dict:
-    """Whether the ask box should be offered, and what it would use."""
     return _ai_status()
 
 
 @app.post("/api/ask")
 def ask(request: AskRequest) -> dict:
-    """Answer a question about one player, grounded in his own projection.
-
-    The dossier is rebuilt server-side on every question rather than trusted
-    from the client. A chat endpoint that will happily explain whatever numbers
-    it is handed is a good way to produce a confident explanation of numbers the
-    model never produced.
-    """
     projection = _get_projection(request.start_gw, request.horizon, request.recency,
                                  request.previous)
     dossier = _player_dossier(projection, request.fpl_id, request.half_life,
@@ -732,7 +612,6 @@ def ask(request: AskRequest) -> dict:
 
 @app.get("/api/overrides")
 def load_overrides(path: str | None = None) -> dict:
-    """Read the saved overrides file so a session can pick up where it left off."""
     target = Path(path) if path else OVERRIDES_PATH
     if not target.exists():
         return {"path": str(target), "edits": {}, "exists": False}
@@ -747,9 +626,6 @@ def load_overrides(path: str | None = None) -> dict:
         if not fields:
             continue
         entry = edits.setdefault(int(row["fpl_id"]), {})
-        # A row with a gameweek is an opinion about one match; without one it is
-        # an opinion about the player. Same file, same columns, one extra column
-        # deciding which -- so an existing overrides.csv still loads unchanged.
         if "gw" in frame.columns and not pd.isna(row.get("gw")):
             entry.setdefault("gw", {})[str(int(row["gw"]))] = fields
         else:
@@ -759,7 +635,6 @@ def load_overrides(path: str | None = None) -> dict:
 
 @app.post("/api/overrides")
 def save_overrides(request: SaveRequest) -> dict:
-    """Write the edits to CSV, in the shape the CLI's --overrides expects."""
     target = Path(request.path) if request.path else OVERRIDES_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
     if not request.edits:
@@ -783,9 +658,6 @@ def save_overrides(request: SaveRequest) -> dict:
         season = {k: v for k, v in fields.items() if k != "gw"}
         if season:
             rows.append({**label(fpl_id), **season})
-        # One row per overridden gameweek. Long rather than wide: a column per
-        # (field, gameweek) would be a hundred mostly-empty columns, and the CLI
-        # reads this file with pandas either way.
         for gameweek, per_match in sorted((fields.get("gw") or {}).items(),
                                           key=lambda kv: int(kv[0])):
             if per_match:
@@ -801,7 +673,6 @@ def save_overrides(request: SaveRequest) -> dict:
 
 @app.post("/api/refresh")
 def refresh_sources() -> dict:
-    """Drop every cache so the next request refetches from source."""
     removed = cache.clear()
     _projection_cache.clear()
     _pool_cache.clear()
@@ -815,19 +686,9 @@ def data_page() -> FileResponse:
 
 @app.get("/icon.png")
 def icon() -> FileResponse:
-    """Home-screen icon. Open, like the pages: iOS fetches it without headers."""
     return FileResponse(WEB_DIR / "icon.png", media_type="image/png")
 
 
-# --------------------------------------------------------------------------- #
-# The offline board: static assets, and the snapshot it runs on
-# --------------------------------------------------------------------------- #
-
-# An explicit list rather than a StaticFiles mount. The service worker has to
-# know exactly what to cache for the board to work with nothing behind it, and a
-# mount would let that list and the served set drift apart silently. Media types
-# are set here too: a .mjs or .wasm served as text/plain is rejected outright by
-# the browser, and the error it gives you does not say so.
 ASSETS: dict[str, str] = {
     "analysis-view.mjs": "text/javascript",
     "board.mjs": "text/javascript",
@@ -859,13 +720,6 @@ def asset(name: str) -> FileResponse:
     return FileResponse(WEB_DIR / name, media_type=ASSETS[name])
 
 
-# Club shirts, mirrored rather than hot-linked. Three reasons, in order of how
-# much they matter: the board is expected to work with nothing behind it, and a
-# service worker can only cache what is same-origin without CORS in play; the
-# phone should not be making twenty requests to premierleague.com every time the
-# pitch renders; and a club that has since been relegated still has a shirt in
-# `.cache/` when an old snapshot is loaded. Fetched once per club, then served
-# off disk forever.
 SHIRT_SOURCE = ("https://fantasy.premierleague.com/dist/img/shirts/standard/"
                 "shirt_{name}-110.png")
 SHIRT_DIR = config.CACHE_DIR / "shirts"
@@ -873,12 +727,6 @@ SHIRT_DIR = config.CACHE_DIR / "shirts"
 
 @app.get("/shirts/{name}.png")
 def shirt(name: str) -> FileResponse:
-    """One club's outfield (`43`) or goalkeeper (`43_1`) shirt.
-
-    The name is checked against the shape the FPL CDN uses rather than passed
-    through: it lands in a filesystem path and in a URL, and "digits, optionally
-    followed by _1" is the whole of the legitimate input.
-    """
     code, _, keeper = name.partition("_")
     if not code.isdigit() or keeper not in ("", "1"):
         raise HTTPException(404, f"no such shirt: {name}")
@@ -890,8 +738,6 @@ def shirt(name: str) -> FileResponse:
                                     headers=fpl_api.HEADERS, timeout=15)
             response.raise_for_status()
         except requests.RequestException as error:
-            # The pitch falls back to a plain club tile on a failed image, so a
-            # club with no shirt is a cosmetic loss and never a broken board.
             raise HTTPException(502, f"could not fetch shirt {name}: {error}")
         SHIRT_DIR.mkdir(parents=True, exist_ok=True)
         path.write_bytes(response.content)
@@ -902,8 +748,6 @@ def shirt(name: str) -> FileResponse:
 
 @app.get("/sw.js")
 def service_worker() -> FileResponse:
-    """Must be served from the root: a worker's scope cannot rise above its own
-    path, and one parked under /assets/ could not control the page."""
     return FileResponse(WEB_DIR / "sw.js", media_type="text/javascript",
                         headers={"Cache-Control": "no-cache"})
 
@@ -916,11 +760,6 @@ def manifest() -> FileResponse:
 
 @app.get("/snapshot.json")
 def snapshot_file() -> FileResponse:
-    """The frozen projection the board actually runs on.
-
-    Built on demand the first time, so a fresh checkout serves something rather
-    than 404ing at the one request the page cannot start without.
-    """
     if not snapshot.SNAPSHOT_PATH.exists():
         snapshot.write()
     return FileResponse(snapshot.SNAPSHOT_PATH, media_type="application/json",
@@ -936,11 +775,6 @@ class SyncRequest(BaseModel):
 
 @app.post("/api/snapshot")
 def rebuild_snapshot(request: SyncRequest) -> dict:
-    """Re-project and rewrite the snapshot. This is what 'Sync' does.
-
-    The only endpoint the offline board needs, and the only one that cannot be
-    done without the laptop: it is the projection itself.
-    """
     if request.refresh:
         cache.clear()
     _projection_cache.clear()
@@ -954,12 +788,6 @@ def rebuild_snapshot(request: SyncRequest) -> dict:
 
 @app.get("/api/provenance")
 def provenance(horizon: int = 8) -> dict:
-    """Live state of every data source, for the provenance page.
-
-    Deliberately reports what is actually in the cache and what actually
-    matched, rather than what the pipeline is supposed to produce -- a
-    provenance page that describes intentions is worth very little.
-    """
     projection = _get_projection(None, horizon)
     players = projection.players
 
@@ -1041,10 +869,6 @@ def provenance(horizon: int = 8) -> dict:
     }
 
 
-# --------------------------------------------------------------------------- #
-# Saved drafts
-# --------------------------------------------------------------------------- #
-
 def _read_drafts() -> list[dict]:
     if not DRAFTS_PATH.exists():
         return []
@@ -1066,23 +890,6 @@ def list_drafts() -> dict:
 
 @app.post("/api/drafts")
 def save_draft(request: DraftRequest) -> dict:
-    """Save (or replace) a named squad.
-
-    Only the player ids and a note of the settings in force at the time are
-    stored. Metrics are deliberately not saved: a comparison is only meaningful
-    if every draft is scored under the same assumptions, so they are always
-    recomputed against the current horizon, half-life and edits rather than
-    frozen at whatever was on screen when you hit save.
-
-    `saved_at` comes from the client when it has one -- the browser's merge
-    logic picks whichever side has the newer `saved_at`, and re-pushes every
-    local draft on each sync (not just the ones that changed) to make sure the
-    laptop has everything. Stamping the server's own clock here instead would
-    bump an untouched draft's timestamp on every sync and make it look
-    freshly-edited, which is exactly what breaks the "newer wins" merge across
-    devices. Only a save with no `saved_at` at all (the CLI, or a very old
-    client) gets one made up for it.
-    """
     name = request.name.strip()
     if not name:
         raise HTTPException(422, "a draft needs a name")
@@ -1112,7 +919,6 @@ def delete_draft(name: str) -> dict:
 
 @app.post("/api/optimise")
 def optimise_squad(request: OptimiseRequest) -> dict:
-    """Solve the MILP and return the chosen fifteen."""
     projection = _get_projection(request.start_gw, request.horizon, request.recency,
                                  request.previous)
     for fields in request.edits.values():
@@ -1154,11 +960,6 @@ def optimise_squad(request: OptimiseRequest) -> dict:
 
 def serve(host: str = "127.0.0.1", port: int = 8000, reload: bool = False,
           token: str | None = None) -> None:
-    """Run the board. `token` gates every request; None disables the check.
-
-    Leaving the token off is only safe while the bind address is loopback,
-    which is why the CLI refuses to bind anywhere else without one.
-    """
     import uvicorn
 
     global AUTH_TOKEN

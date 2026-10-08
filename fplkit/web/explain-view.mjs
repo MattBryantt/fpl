@@ -1,7 +1,3 @@
-/* The player drawer: the stat editor, the explain panel, the per-club lineup
- * view, and the AI "ask" chat. Also owns commit/undo/recompute for edits and
- * the edit banner, since those are the drawer's own persistence machinery.
- * See REFACTOR.md for the split this belongs to. */
 "use strict";
 import { $, S, saveLocal, STORE, planOpts, fmt, loadLocal } from "/assets/state.mjs";
 import { saveEdits, snapshotEditsHistory } from "/assets/state.mjs";
@@ -15,10 +11,6 @@ import { scheduleSolve } from "/assets/transfer-view.mjs";
 import { pushOverrides, api } from "/assets/sync.mjs";
 import { markVersus, versusOpen } from "/assets/compare-view.mjs";
 
-/* --------------------------------------------------------------- stat editor
-   Every model input a user can reasonably disagree with. `only` restricts a
-   field to the positions it means anything for -- saves per 90 on a striker is
-   noise, not a setting. */
 export const EDIT_FIELDS = [
   { k: "p_start", label: "Start probability", min: 0, max: 1, step: 0.01, dp: 2,
     help: "The biggest lever in the model. Last season's starts cannot see a transfer or a new manager." },
@@ -42,25 +34,12 @@ export const EDIT_FIELDS = [
     help: "For hypotheticals — it does not change what FPL charges you." },
 ];
 
-/* The drawer still edits a copy, but the copy is now committed for you.
-   It used to require Apply, and the reason was real: writing straight through on
-   every keystroke, without recomputing the player, left the board showing his old
-   points while the optimiser was quietly handed the new ones. That is a reason to
-   recompute on commit, not a reason to make you press a button — so the commit is
-   debounced and *always* runs the recompute, and closing the drawer by any route
-   keeps what you typed rather than silently binning it.
-
-   `editBaseline` is what makes that safe: it is the player's edits as they were
-   when the drawer opened, so Undo changes is a real escape hatch rather than
-   Reset player, which throws away edits you made a week ago too. */
 export let editingId = null, editBuffer = {}, previewTimer = null, commitTimer = null;
 export let editBaseline = null;
 
 export function openEditor(id) {
   editingId = id;
   editBuffer = { ...(S.edits[id] || {}) };
-  // Deep, because the per-match block is nested and a shallow copy would hand
-  // Undo the same object the sliders are busy mutating.
   editBaseline = JSON.parse(JSON.stringify(S.edits[id] || null));
   const p = S.byId.get(id);
   $("#edName").textContent = p.name;
@@ -85,10 +64,6 @@ export function openEditor(id) {
   $("#scrim").classList.remove("hidden");
 }
 
-/* This season next to last, unshrunk, so the slider below can be read against
-   what he has actually done rather than against a number that already blends
-   the two. The weight column is what the model gave last season when it
-   pooled them -- the calendar fade times the Settings slider. */
 function seasonsHTML(p) {
   const s = p.seasons;
   if (!s || (!s.now && !s.prev)) return "";
@@ -113,9 +88,6 @@ function seasonsHTML(p) {
 }
 const num = (v, dp = 2) => (v == null ? "—" : (+v).toFixed(dp));
 
-/* Detailed position, edited as a set of toggle chips rather than a slider --
-   it is not a number the model reads, just a tag the board shows back next to
-   the base FPL position wherever it lists him. */
 export function renderPosTags(id) {
   const p = S.byId.get(id);
   const active = new Set(playerTags(p));
@@ -124,8 +96,6 @@ export function renderPosTags(id) {
              data-postag="${t}" title="${POSITION_TAG_LABELS[t]}">${t}</button>`).join("");
 }
 
-/** The drawer's "Reset player" button: drop every override on the player
- *  currently open, season and per-match both. */
 export async function resetEditor() {
   if (editingId === null) return;
   const id = editingId;
@@ -138,9 +108,6 @@ export async function resetEditor() {
 }
 
 export function closeEditor() {
-  // Flush before dropping the buffer. The debounce means a slider moved half a
-  // second before Escape has a commit still in flight, and losing that is
-  // exactly the bug autosave is supposed to remove.
   commitEdit({ immediate: true });
   clearTimeout(previewTimer);
   clearTimeout(commitTimer);
@@ -148,21 +115,9 @@ export function closeEditor() {
   editBuffer = {};
   editBaseline = null;
   $("#drawer").classList.remove("open");
-  // The pool or the comparison can be open underneath — a player is usually
-  // edited on the way to deciding whether to buy him — so the scrim belongs to
-  // whichever is left rather than to whoever closed last.
   if (!poolOpen() && !versusOpen()) $("#scrim").classList.add("hidden");
 }
 
-/* --------------------------------------------------------------- explain ---
-   Three questions, in the order people actually ask them: what is he paid for,
-   why is a gameweek eight fixture worth less than a gameweek one fixture, and
-   how does any of that reach the single number in the table.
-
-   The last one is the whole reason this panel exists. The board ranks on
-   plan-weighted points and the eye reads raw ones, and nothing on screen ever
-   said they were different quantities -- so the honest thing is to show both
-   ends and the arithmetic between them rather than pick one and hope. */
 export let explainOpen = true;
 export function setExplainOpen(v) { explainOpen = v; }
 
@@ -196,9 +151,6 @@ export function renderExplain() {
            style="width:${Math.max(2, (Math.abs(s.value) / scale) * 100)}%"></div>
     </div>`).join("");
 
-  // The bridge. Each gameweek's own points, then the two multipliers that turn
-  // them into what the ranking uses, then the product -- laid out so the last
-  // column visibly sums to the headline figure.
   const rows = x.gw.map((r) => `
     <tr class="${r.weight < 0.35 ? "faded" : ""}">
       <td>GW${r.gw}${r.opp ? ` <span style="color:var(--muted)">${r.opp}</span>` : ""}</td>
@@ -249,15 +201,6 @@ export function renderEditorConstraints() {
   ban.style.color = off ? "#fff" : "";
 }
 
-/* --------------------------------------------------------------- lineups ---
-   The view for feeding real team news into the model. Minutes are the model's
-   least reliable input and much its most powerful, so this is where an hour of
-   your own knowledge is worth more than any amount of xG modelling.
-
-   It renders from the derived pool rather than recomputing, so it cannot
-   disagree with the rest of the board -- and because the pool already carries
-   the club rebalance, promoting one player visibly pushes his team-mates down
-   the moment you apply it. */
 export let lineupTeam = null, lineupOnlyEdited = false;
 export function setLineupTeam(v) { lineupTeam = v; }
 export function toggleLineupOnlyEdited() { lineupOnlyEdited = !lineupOnlyEdited; renderLineup(); }
@@ -266,19 +209,6 @@ export function teamsInPool() {
   return [...new Set(S.players.map((p) => p.team))].sort();
 }
 
-/* ---------------------------------------------------------- lineup pitch shape
-   FPL's own row template is one line per GKP/DEF/MID/FWD, which says nothing
-   about whether a back four's flanks are full-backs or wing-backs, or whether
-   the front line is two wingers round a striker or a front two. Left-to-right
-   order within a row is the one thing that can say it without a redesign, so
-   a row sorts by lane -- left, centre, right, read off the detailed tags
-   (position-tags.mjs) -- rather than by points. A player without a tag has no
-   lane opinion and sits centre, same as before this existed.
-
-   That default is a guess, and the whole point of tagging positions yourself
-   is that a guess should be correctable: the ‹ › buttons on each shirt swap it
-   with its neighbour, and the result is remembered per club so it does not
-   reset the next time the fixtures refresh. */
 const TAG_LANE = { LB: 0, LM: 0, LW: 0, RB: 2, RM: 2, RW: 2 };
 function playerLane(player) {
   const lanes = playerTags(player).map((t) => TAG_LANE[t]).filter((v) => v !== undefined);
@@ -312,14 +242,6 @@ export function nudgeLineupPlayer(id, dir) {
   renderLineupPitch(clubLineup(S.players, team));
 }
 
-/* The club as a pitch: the eleven it is likeliest to field, in a legal shape,
-   with the next four beneath. Same renderer as a squad, because it is the same
-   question asked of a different fifteen -- and expected minutes is exactly the
-   sort of thing a column of numbers hides and a shape does not.
-
-   Ranked on start probability rather than points: this is who plays, not who
-   scores. `bestXI` enumerates the same formations the optimiser is allowed, so
-   the shape on screen is one a manager could actually field. */
 let lineupPitchState = null;
 export function renderLineupPitch(line) {
   const host = $("#lineupPitch");
@@ -343,8 +265,6 @@ export function renderLineupPitch(line) {
     rowOrder: (pos, members) => effectiveRowOrder(line.team, pos, members),
   });
   lineupPitchState = { team: line.team, layout };
-  // Fixed, and not the squad's metrics: this section is about who plays and for
-  // how long, so those lead whatever you happen to be reading a squad by.
   const metrics = ["start", "mins", "xppg"];
   host.innerHTML = pitchHTML({
     layout, teams: S.snapshot?.teams, metrics, versus: true, benchLabels: false,
@@ -381,7 +301,6 @@ export function renderLineup() {
   const line = clubLineup(S.players, lineupTeam);
   renderLineupPitch(line);
 
-  // A club fields eleven. Say so plainly when the overrides in force do not.
   const off = line.starters - 11;
   const pill = line.balanced
     ? `<span class="pill ok">${line.starters.toFixed(2)} starters</span>`
@@ -427,11 +346,6 @@ export function renderLineup() {
           + "expect to fill the gap."}</p>`;
 }
 
-/* Editing Start or Mins straight from the lineup table, without opening the
-   drawer for a one-number change. Writes to S.edits exactly as the drawer's
-   commitEdit does, so a number typed here and a slider dragged there are the
-   same override -- neither shadows the other, and the drawer (if open on this
-   same player) is kept in step rather than going stale. */
 export async function inlineMinutesEdit(id, field, raw) {
   const p = S.byId.get(id);
   const f = EDIT_FIELDS.find((x) => x.k === field);
@@ -453,11 +367,6 @@ export async function inlineMinutesEdit(id, field, raw) {
   }
 }
 
-/* The same rebalance, previewed live while the slider is still moving. It costs
-   a full derivePool over the pool -- a couple of milliseconds for 573 players,
-   and already behind the same debounce the points preview uses -- which buys
-   the thing that makes team news enterable at all: you can see who pays for the
-   minutes you are handing out, before you commit to handing them out. */
 export function renderDrawerClub() {
   const box = $("#clubBox"), label = $("#clubStarters");
   const me = S.byId.get(editingId);
@@ -501,13 +410,6 @@ export function renderDrawerClub() {
         + "minutes than a team has to give, so it will out-score its own fixtures."}</p>`;
 }
 
-/* ------------------------------------------------------------------- ask ---
-   A chat box over a projection is a good way to produce confident nonsense, so
-   the server does not hand the model a question and a hope: it rebuilds the
-   player's dossier from the same scoring code the board runs on, and the answer
-   is grounded in that. Which also means this is the one part of the board that
-   genuinely needs the laptop -- there is no model on the phone, and pretending
-   otherwise would just fail slowly. */
 let askAvailable = null, askHistory = [], askBusy = false;
 
 const ASK_SUGGESTIONS = [
@@ -523,8 +425,6 @@ async function loadAskStatus() {
     const res = await api("/api/ai");
     askAvailable = res.ok ? await res.json() : { available: false };
   } catch {
-    // No server behind us -- on the phone with the laptop shut, which is the
-    // normal way to use this board and not an error worth shouting about.
     askAvailable = { available: false };
   }
   return askAvailable;
@@ -561,9 +461,6 @@ function appendAsk(role, text) {
   const div = document.createElement("div");
   div.className = `askmsg ${role}`;
   if (role === "ai") {
-    // The model writes prose and the occasional bullet list. Rendered as text
-    // in paragraphs rather than as HTML: nothing it returns should ever be able
-    // to put markup into this page.
     div.append(...String(text).split(/\n{2,}/).map((para) => {
       const p = document.createElement("p");
       p.textContent = para.replace(/\n/g, " ").trim();
@@ -620,17 +517,6 @@ export async function sendAsk(question) {
 }
 import { hlJSON as hlJSONRef, halfLife as halfLifeRef } from "/assets/state.mjs";
 
-/* One slider-plus-number control. `store` is whichever dict the value belongs
-   in — the season-level buffer, or one gameweek's — so the same code renders
-   both and they cannot drift in behaviour. `idPrefix` keeps element ids unique
-   once the same field appears twelve times over. */
-/* How often he starts, how long he stays on, and the two multiplied out.
-   p_start and mins_if_start are genuinely independent -- that is the point of
-   having both -- but exp_minutes is their product, so it cannot be stated
-   alongside either without one of them quietly losing. Setting a component
-   clears the aggregate; setting the aggregate clears both components and lets
-   the solve decide where the minutes came from. Leaving them all stored would
-   show three sliders as "changed" while only some of them shape the score. */
 const MINUTES_CLEARS = {
   p_start: ["exp_minutes"],
   mins_if_start: ["exp_minutes"],
@@ -643,9 +529,6 @@ function renderField(box, f, base, store, idPrefix, onChange, hint = "", prevSea
   const rid = `${idPrefix}${f.k}`, nid = `${idPrefix}n_${f.k}`;
   const div = document.createElement("div");
   div.className = "field" + (changed ? " changed" : "");
-  // Last season's number as it actually was, before shrinkage pulled it toward
-  // the positional average -- shown once, on the season control only, since a
-  // per-match override has no season of its own to compare against.
   const showPrev = idPrefix === "ed_" && prevSeason !== undefined && prevSeason !== null;
   div.innerHTML = `
     <div class="row">
@@ -675,25 +558,9 @@ function renderField(box, f, base, store, idPrefix, onChange, hint = "", prevSea
   return div;
 }
 
-/** Fields that mean something for this player, with the model's value. */
-/* The one field the club rebalance moves on its own. Overriding a team-mate's
-   minutes takes minutes off everyone else at that club, and the board scores,
-   lists and draws the player at the moved value -- so the editor has to open on
-   the moved value too. It did not, and a shirt reading 0.31 next to a slider
-   reading 0.49 is the board contradicting itself about the number that matters
-   most. */
 const REBALANCED_FIELD = "p_start";
-// exp_minutes moves with p_start under a rebalance -- it is derived from it,
-// not an independent consequence -- so the edit tab has to open on the same
-// pair the squad view already shows or the two disagree about a player
-// neither the user nor the board ever asked to look different. mins_if_start
-// is not on the list: a rebalance redistributes shirts, not shift lengths, and
-// it leaves that field exactly where it found it.
 const REBALANCED_FIELDS = new Set([REBALANCED_FIELD, "exp_minutes"]);
 
-/** The overrides this player is actually being scored with: yours, plus the
- *  start probability his club's books owe him. `renormaliseMinutes` produced it;
- *  everything in the drawer has to agree with it. */
 function scoringEdit(player, buffer) {
   const edit = tidy(buffer || {});
   if (player?.adjusted && edit[REBALANCED_FIELD] === undefined) {
@@ -702,13 +569,6 @@ function scoringEdit(player, buffer) {
   return edit;
 }
 
-/* Why p_start is what it is. The model blends a long-run start rate with a
-   recency-weighted one, weighted by how far ahead the horizon looks, and the
-   blend is the single number the slider opens on -- so when the two halves
-   disagree, saying so is the difference between "the model has him at 0.41" and
-   "the model has him at 0.41 because he sat out August, and he has started
-   every match since". Only shown when they actually disagree; a settled starter
-   whose two numbers match does not need a sentence about it. */
 function startFormHint(player) {
   const long = player.start_long_run, recent = player.start_recent;
   if (long === null || long === undefined || recent === null || recent === undefined) return "";
@@ -720,15 +580,9 @@ function editableFields(player) {
   const out = [];
   for (const f of EDIT_FIELDS) {
     if (f.only && !f.only.includes(player.pos)) continue;
-    // A player who does not take penalties has no penalty order at all, so the
-    // field would vanish for exactly the players you might want to promote.
-    // Treat "no order" as zero so it stays editable.
     let base = player.inputs?.[f.k];
     if ((base === null || base === undefined) && f.k === "penalties_order") base = 0;
     if (base === null || base === undefined) continue;
-    // An adjusted player opens on what he is being scored at, with the model's
-    // own figure kept beside it -- the slider is the live value, and the note
-    // says where it came from.
     const prevSeason = player.raw_inputs?.[f.k];
     const form = f.k === "p_start" ? startFormHint(player) : "";
     if (REBALANCED_FIELDS.has(f.k) && player.adjusted) {
@@ -751,10 +605,6 @@ export function renderEditorFields() {
   }
 }
 
-/* Per-match rows. The season value is the baseline each row is measured
-   against, not the model's — a match override is an exception to what you have
-   already said about the player, and showing it against the model would report
-   "changed" for a week you never touched. */
 const expandedMatches = new Set();
 
 function seasonValue(player, key, base) {
@@ -787,7 +637,7 @@ export function renderMatches() {
                 aria-label="All fields for GW${gw}">⋯</button>
       </div>`;
     box.appendChild(row);
-    if (!opponent) return;   // nothing to override in a blank gameweek
+    if (!opponent) return;
 
     const commit = () => {
       if (!Object.keys(store).length) delete editBuffer.gw[key];
@@ -797,10 +647,6 @@ export function renderMatches() {
       $("#edMatchCount").textContent = matchCountLabel();
     };
 
-    // The inline lever: start probability, which is what a per-match opinion
-    // almost always is. Baseline is the season value, so dragging it to the
-    // same number as the season setting clears the override rather than
-    // recording a redundant one.
     const pStartBase = fields.find((x) => x.f.k === "p_start");
     if (pStartBase) {
       const base = seasonValue(p, "p_start", pStartBase.base);
@@ -820,8 +666,6 @@ export function renderMatches() {
         if (Math.abs(n - base) < 1e-9) delete store.p_start;
         else { store.p_start = n; for (const k of MINUTES_CLEARS.p_start) delete store[k]; }
         commit();
-        // exp_minutes lives in the collapsible extra fields, not this inline
-        // row -- if it was showing "changed" it just went stale, so refresh it.
         if (expandedMatches.has(key)) fill();
       });
     }
@@ -835,7 +679,7 @@ export function renderMatches() {
     const fill = () => {
       extra.innerHTML = "";
       for (const { f, base } of fields) {
-        if (f.k === "p_start") continue;   // already inline above
+        if (f.k === "p_start") continue;
         renderField(extra, f, seasonValue(p, f.k, base), store, `m${gw}_`, commit);
       }
       const reset = document.createElement("button");
@@ -866,41 +710,29 @@ function matchCountLabel() {
   return n ? `${n} match${n === 1 ? "" : "es"} overridden` : "none set";
 }
 
-// Still debounced, though the recompute is now local and takes under a
-// millisecond: without it, dragging a slider would rerender the drawer on every
-// pixel of travel, and that is the part that costs.
 export function previewEdit() {
   clearTimeout(previewTimer);
   previewTimer = setTimeout(() => {
     if (editingId === null) return;
     const p = S.byId.get(editingId);
-    // Against the model's own number, not against whatever this player is
-    // currently showing -- once an edit is applied, comparing to the applied
-    // value reports every override as "unchanged from the model".
     const before = p.model_xpts_plan ?? p.xpts_plan;
     let r;
     try {
       checkOverridable(editBuffer, S.snapshot);
       r = editPlayer(S.snapshot, editingId, scoringEdit(p, editBuffer), planOpts());
     } catch (error) {
-      // An illegal buffer is shown, not committed. Committing it would send it
-      // straight to recomputeEdited, which drops rejected edits and alerts --
-      // so half-typed nonsense would fire a dialog at you mid-drag.
       clearTimeout(commitTimer);
       $("#edPts").innerHTML = `<span class="down">${error.message}</span>`;
       return;
     }
-    // Legal, so it is a real edit: schedule the commit that used to be Apply.
     scheduleCommit();
     const d = r.xpts_plan - before;
     $("#edPts").innerHTML = `<b>${r.xpts_plan.toFixed(1)}</b> projected points`
       + (Math.abs(d) > 0.05
         ? ` <span class="${d > 0 ? "up" : "down"}">${d > 0 ? "+" : ""}${d.toFixed(1)} vs the model</span>`
         : ` <span class="orig">unchanged from the model</span>`);
-    // Both of these are of the *edited* player, so they move with the sliders.
     renderExplain();
     renderDrawerClub();
-    // Repaint the per-match rows so each gameweek shows what it is now worth.
     const live = S.byId.get(editingId);
     if (live) {
       live.gw.forEach((_, i) => {
@@ -911,8 +743,6 @@ export function previewEdit() {
   }, 140);
 }
 
-/** Strip the bookkeeping an empty per-match map leaves behind, so `{gw:{}}`
-    never counts as an edit and never reaches the CSV. */
 function tidy(buffer) {
   const out = {};
   for (const [k, v] of Object.entries(buffer)) {
@@ -926,11 +756,6 @@ function tidy(buffer) {
   return out;
 }
 
-/* Commit the drawer's buffer into S.edits, which persists it and rebuilds the
-   pool. Debounced separately from previewEdit and more slowly on purpose: the
-   preview is a few numbers inside the drawer and is worth redrawing the instant
-   a slider settles, while a commit repaints the whole board and re-runs the
-   MILP, and doing that mid-drag is how a phone starts to feel like treacle. */
 export function scheduleCommit() {
   clearTimeout(commitTimer);
   commitTimer = setTimeout(() => commitEdit(), 550);
@@ -941,8 +766,6 @@ export async function commitEdit({ immediate = false } = {}) {
   if (editingId === null) return;
   const id = editingId;
   const tidied = tidy(editBuffer);
-  // Nothing changed — skip the rebuild rather than repaint the board because a
-  // drawer was opened and closed.
   if (JSON.stringify(S.edits[id] ?? null) === JSON.stringify(
       Object.keys(tidied).length ? tidied : null)) return;
   if (Object.keys(tidied).length) S.edits[id] = tidied;
@@ -951,9 +774,6 @@ export async function commitEdit({ immediate = false } = {}) {
   renderAll();
 }
 
-/* Undo is against the drawer's opening state, not against the model. It is the
-   button that makes live commit safe to have: you can drag a slider to see what
-   it does, decide it was wrong, and get back exactly what you had. */
 export async function undoEdit() {
   if (editingId === null) return;
   const id = editingId;
@@ -967,72 +787,28 @@ export async function undoEdit() {
   renderAll();
 }
 
-/* Edits are applied by rebuilding the derived pool, which is the same code path
-   that produced it in the first place. There is no second "recompute one
-   player" route that could disagree with the first — which is exactly how the
-   server version came to show one number and hand the optimiser another. */
 export function recomputeEdited(ids, { solveDelay = 0, sync = true } = {}) {
   const failed = [];
   console.log(`[recompute] ${ids.length} id(s), sync=${sync}, snapshot=${!!S.snapshot}`);
   for (const id of ids) {
-    // A local edit (sync !== false) touches this id right now, whether it
-    // ended up set or cleared -- that timestamp is what lets a future pull's
-    // merge tell "this device's state for this id is newer" from "it just
-    // never heard about the other device's change". Edits adopted from a pull
-    // already carry the merge's own timestamp and must not be re-stamped
-    // here, or every pull would look locally-authored on the next merge.
     if (sync) S.editsAt[id] = Date.now();
     const fields = S.edits[id];
     if (!fields) continue;
-    // Without a snapshot there is nothing to validate against, and "cannot
-    // check" must never be answered the same way as "checked and rejected" --
-    // that conflation is what deleted a whole set of overrides.
     if (!S.snapshot) continue;
     try {
       checkOverridable(fields, S.snapshot);
     } catch (error) {
-      // A rejected edit is dropped so the board and the solver keep looking at
-      // the same numbers. What it must NOT do is stamp the drop as a deletion.
-      //
-      // "This device cannot validate that field" is a fact about this device's
-      // snapshot, not about the edit. An override naming a field a newer
-      // snapshot added -- mins_if_start, say -- fails here on any device still
-      // holding an older one, and stamping it made that local incompatibility
-      // outrank the edit itself: the id then read as a deliberate deletion,
-      // beat every older copy on every device, and the override was gone
-      // everywhere. That is not hypothetical; it is how thirty of them were
-      // lost twice over.
-      //
-      // Leaving the timestamp alone means the edit stays live wherever it
-      // still validates, and this device simply carries none for that id --
-      // "no opinion" rather than "removed". A real deletion is still stamped,
-      // because that goes through the sync branch above.
       failed.push(`${S.byId.get(id)?.name || id}: ${error.message}`);
       delete S.edits[id];
       if (sync) S.editsAt[id] = Date.now();
     }
   }
-  // sync: false is for edits just adopted from a pullSyncState() pull -- they
-  // came from another device's push, so writing them back to localStorage is
-  // right, but re-marking them via markSynced() would re-timestamp them with
-  // this device's clock and immediately push them straight back out, which
-  // both is a pointless round trip and -- if this device's checkOverridable
-  // above dropped one on a stale/mismatched local snapshot -- would broadcast
-  // that smaller set as authoritative and erase the edit for everyone.
   if (sync) saveEdits();
   else {
     saveLocal(STORE.edits, S.edits); saveLocal(STORE.editsAt, S.editsAt);
     snapshotEditsHistory(); pushOverrides();
   }
-  // Logged unconditionally, before the alert -- an alert only ever reaches
-  // someone sitting at the screen when it fires, and this whole investigation
-  // has been guessing at what a `catch` swallowed. The console line survives
-  // even when nothing is watching, and even when rebuildPool() below throws.
   if (failed.length) console.warn("[recompute] rejected:", failed);
-  // Reported before rebuilding, not after. rebuildPool() can throw, and when it
-  // did the alert never ran -- so the one message that would have named the
-  // dropped overrides was lost to the very failure that dropped them, and the
-  // loss looked silent from the outside.
   if (failed.length) {
     alert("These edits were rejected and have been dropped:\n\n" + failed.join("\n"));
   }
@@ -1042,8 +818,6 @@ export function recomputeEdited(ids, { solveDelay = 0, sync = true } = {}) {
     console.error("[recompute] rebuildPool() threw:", error);
     throw error;
   }
-  // The solver's answer was computed against the old numbers, so it is no
-  // longer a fair comparison. Drop it and solve again.
   S.optimal = []; S.optimalPts = null; S.optimalCost = null; S.optimalBench = {};
   renderEditBanner();
   scheduleSolve(solveDelay);
@@ -1051,14 +825,6 @@ export function recomputeEdited(ids, { solveDelay = 0, sync = true } = {}) {
 
 export function renderEditBanner() {
   const n = Object.keys(S.edits).length;
-  // The History button lives in this banner, and the banner used to be hidden
-  // whenever there were no edits -- which is precisely when you need it. An
-  // override set wiped by a bad merge left no edits, so the banner vanished,
-  // so the one control that could restore it was unreachable. If this device
-  // has a rolling backup, the banner stays up and says so.
-  // Only sets with something in them are worth offering to restore -- history
-  // now records the moment a set went empty too, and "3 earlier sets" reading
-  // as an offer when one of them is the wipe itself would be a lie.
   const restorable = loadLocal(STORE.editsHistory, [])
     .filter((s) => s.snapshot && s.snapshot !== "{}").length;
   $("#editBanner").classList.toggle("hidden", n === 0 && !restorable);
@@ -1073,11 +839,7 @@ export function renderEditBanner() {
   const names = Object.keys(S.edits).map((id) => S.byId.get(+id)?.name).filter(Boolean);
   $("#editCount").innerHTML = `<span class="edited-dot">●</span> <b>${n}</b> edited `
     + `${n === 1 ? "player" : "players"}: ${names.join(", ")}`;
-  // Says where the edits are, not whether you remembered to save them: they are
-  // always saved on this device, and this line is only about the CLI's copy.
   $("#editSaved").textContent = csvStateRef() ? `· ${csvStateRef()}` : "";
 }
-// csvState lives in sync.mjs as a live-updating export; read through a getter
-// so this file's own import block does not need to track its every mutation.
 import { csvState as _csvState } from "/assets/sync.mjs";
 function csvStateRef() { return _csvState; }

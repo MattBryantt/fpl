@@ -1,11 +1,3 @@
-"""Bookmaker odds via The Odds API (https://the-odds-api.com).
-
-Free tier is 500 requests/month, so the response is cached hard (6h) and one
-request covers every upcoming Premier League fixture the books have priced.
-
-Returns, per fixture: de-vigged 1X2 probabilities and the over/under 2.5 total
-line, which `poisson.py` inverts into expected goals for each side.
-"""
 
 from __future__ import annotations
 
@@ -56,11 +48,6 @@ def raw_odds(force_refresh: bool = False) -> list[dict]:
 
 
 def match_odds(force_refresh: bool = False) -> pd.DataFrame:
-    """One row per priced fixture with de-vigged probabilities.
-
-    Prices are taken as the median across bookmakers for each outcome, which is
-    more robust than trusting a single book.
-    """
     events = raw_odds(force_refresh)
     rows = []
 
@@ -84,7 +71,7 @@ def match_odds(force_refresh: bool = False) -> pd.DataFrame:
                         point = outcome.get("point")
                         if point is None:
                             continue
-                        side = outcome["name"].lower()  # "over" / "under"
+                        side = outcome["name"].lower()
                         totals.setdefault(float(point), {}).setdefault(side, []).append(
                             outcome["price"]
                         )
@@ -93,22 +80,10 @@ def match_odds(force_refresh: bool = False) -> pd.DataFrame:
         if not all(prices.values()):
             continue
 
-        # De-vig by multiplicative normalisation of the implied probabilities.
         implied = {key: 1.0 / price for key, price in prices.items()}
         overround = sum(implied.values())
         probs = {key: value / overround for key, value in implied.items()}
 
-        # Prefer the 2.5 line; otherwise take whichever half-line is closest.
-        #
-        # Half-lines only, deliberately. On an integer line a total landing
-        # exactly on it is a push and the stake comes back, so the over and under
-        # prices describe the two sides *conditional on no push* -- normalising
-        # them to sum to one hands that refunded mass to whichever side is
-        # shorter. `poisson.prob_over` computes P(total > line), which excludes
-        # the push, so the fit would be matching two different quantities and
-        # would bias the resulting lambdas. 2.5 is the standard line, so this
-        # drops almost nothing; where a book quotes only integers, the 1X2 prices
-        # still carry the fixture on their own.
         over_prob = None
         line = None
         half_lines = [point for point in totals if round(point * 2) % 2 == 1]

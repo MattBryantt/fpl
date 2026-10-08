@@ -1,19 +1,3 @@
-/* Proves the browser-side maths is the same maths.
- *
- * Two checks, both against numbers Python produced:
- *
- *  1. Baseline. The snapshot's per-gameweek points came out of the pandas
- *     pipeline. Recomputing them with points.js from the same inputs must give
- *     the same answer, for every player and every gameweek. This exercises
- *     playerFixturePoints and all four Poisson helpers across the full range of
- *     real inputs, which no hand-written case would cover.
- *
- *  2. Overrides. scripts/override-cases.json holds (player, overrides) pairs
- *     scored by model.reproject_player. applyOverrides + reprojectPlayer must
- *     match, including the minutes coupling and the `_mult` form.
- *
- * Run: node scripts/verify-js-port.mjs
- */
 
 import fs from "fs";
 import path from "path";
@@ -23,17 +7,7 @@ import { reprojectPlayer, planWeight } from "../fplkit/web/points.mjs";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, "..");
 
-/* Both tolerances are set by rounding in the *reference* data, not by any
-   slack in the port — which is why they are this tight and named separately.
-   A real disagreement in the maths lands orders of magnitude above them.
-
-   The snapshot stores per-gameweek points at 6dp (DISPLAY_DP), so a value that
-   agrees perfectly can still read half a unit in the last place out. The
-   scoring inputs are stored at 10dp precisely so they do not add to this. */
 const TOL_BASELINE = 5.01e-7;
-/* model.reproject_player rounds its own return to 4dp before it leaves Python
-   (fplkit/model.py:832), so the override fixtures cannot be more precise than
-   that however they are generated. */
 const TOL_OVERRIDE = 5.01e-5;
 
 const snap = JSON.parse(fs.readFileSync(path.join(ROOT, "out/snapshot.json")));
@@ -41,10 +15,7 @@ const byId = new Map(snap.players.map((p) => [p.id, p]));
 
 let checked = 0, worst = 0, failures = [];
 
-/* ---------------------------------------------------------- 1. baseline */
 for (const p of snap.players) {
-  // project() skips players who cannot appear, so their snapshot row is zeros
-  // by omission rather than by calculation. Nothing to compare against.
   if (p.p_play <= 0) continue;
   const got = reprojectPlayer(snap, p, null).gw;
   for (let i = 0; i < p.gw.length; i++) {
@@ -59,7 +30,6 @@ for (const p of snap.players) {
 console.log(`baseline : ${checked} player-gameweeks, worst |Δ| ${worst.toExponential(2)}  (limit ${TOL_BASELINE.toExponential(2)})`);
 if (failures.length) { console.log(failures.map((f) => "  " + f).join("\n")); }
 
-/* --------------------------------------------------------- 2. overrides */
 const casesPath = path.join(ROOT, "scripts/override-cases.json");
 let caseWorst = 0, caseCount = 0;
 if (fs.existsSync(casesPath)) {
@@ -76,8 +46,6 @@ if (fs.existsSync(casesPath)) {
           + `js ${got.gw[i].toFixed(9)} vs py ${c.gw[i]}`);
       }
     }
-    // The post-override inputs must agree too, or the minutes coupling is wrong
-    // in a way the points happen not to expose.
     for (const [k, v] of Object.entries(c.inputs)) {
       const diff = Math.abs((got.inputs[k] ?? 0) - v);
       caseWorst = Math.max(caseWorst, diff);
@@ -93,13 +61,6 @@ if (fs.existsSync(casesPath)) {
   console.log("overrides: no cases file — run scripts/make-override-cases.py");
 }
 
-/* ------------------------------------------- 3. the derived minutes family
-   p_play is not in OVERRIDABLE, so the checks above cannot see it: it feeds the
-   points (through the appearance term) but it is never compared directly. It is
-   also what the optimiser filters its pool on, so a p_start override that fails
-   to carry it makes an edited player invisible to the solver while his points
-   visibly move — which is exactly the bug this whole exercise started from, and
-   it reappeared once in the JS. Assert the coupling explicitly. */
 {
   const subject = snap.players.find((p) => p.p_play > 0 && p.p_play < 0.4 && p.p_sub > 0);
   const boosted = reprojectPlayer(snap, subject, { p_start: 0.95 });
@@ -115,16 +76,11 @@ if (fs.existsSync(casesPath)) {
   if (Math.abs(d.p60 - 0.95 * snap.rules.P60_GIVEN_START) > 1e-9) {
     problems.push(`p60 ${d.p60} did not follow p_start`);
   }
-  // exp_minutes given explicitly is the more specific claim and must survive
-  // the re-derivation that a p_start override triggers.
   const pinned = reprojectPlayer(snap, subject, { exp_minutes: 90, p_start: 0.1 });
   if (Math.abs(pinned.derived.exp_minutes - 90) > 1e-9) {
     problems.push(`explicit exp_minutes was overwritten (${pinned.derived.exp_minutes})`);
   }
 
-  // The whole point of mins_if_start: shortening a man's shift must cost him
-  // the 60-minute appearance point and the clean sheet without costing him the
-  // appearance point he definitely earns. p_play must not move; p60 must.
   const hooked = reprojectPlayer(snap, subject, { p_start: 0.95, mins_if_start: 55 });
   const nailed = reprojectPlayer(snap, subject, { p_start: 0.95 });
   if (Math.abs(hooked.derived.p_play - nailed.derived.p_play) > 1e-9) {
@@ -136,8 +92,6 @@ if (fs.existsSync(casesPath)) {
   if (!(hooked.derived.exp_minutes < nailed.derived.exp_minutes - 1e-6)) {
     problems.push(`a shorter shift did not lower exp_minutes`);
   }
-  // And the converse: stating exp_minutes on a player who already starts should
-  // spend his shift rather than reach for his start probability.
   const shortened = reprojectPlayer(snap, subject, { p_start: 0.9, exp_minutes: 45 });
   if (Math.abs(shortened.inputs.p_start - 0.9) > 1e-9) {
     problems.push(`exp_minutes moved p_start when the shift had room `
@@ -148,7 +102,6 @@ if (fs.existsSync(casesPath)) {
   failures.push(...problems);
 }
 
-/* --------------------------------------------------- 4. plan weighting */
 const saka = byId.get(snap.players[0].id);
 const pw = planWeight(saka.gw, saka.hazard, 3.0, 8);
 console.log(`planWeight sanity: ${saka.name} 8gw @hl3 = ${pw.toFixed(4)}`);

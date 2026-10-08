@@ -1,9 +1,3 @@
-"""Fuzzy joins between the three sources, which agree on nothing.
-
-FPL says "Gabriel Fernando de Jesus", Understat says "Gabriel Jesus", the
-bookmakers say "Nottingham Forest" where FPL says "Nott'm Forest". Everything
-here exists to reconcile those.
-"""
 
 from __future__ import annotations
 
@@ -12,7 +6,6 @@ import unicodedata
 import pandas as pd
 from rapidfuzz import fuzz, process
 
-# Bookmaker / Understat club names that fuzzy matching gets wrong or slow.
 TEAM_ALIASES = {
     "nottingham forest": "Nott'm Forest",
     "nottm forest": "Nott'm Forest",
@@ -37,7 +30,6 @@ TEAM_ALIASES = {
 
 
 def normalise(text: str) -> str:
-    """Lowercase, strip accents and punctuation, collapse whitespace."""
     if not isinstance(text, str):
         return ""
     decomposed = unicodedata.normalize("NFKD", text)
@@ -47,22 +39,6 @@ def normalise(text: str) -> str:
 
 
 def _same_person(left: str, right: str) -> bool:
-    """Whether two normalised full names plausibly belong to the same player.
-
-    The global matching pass cannot lean on the club to disambiguate, so it
-    needs a rule that is strict about surnames without being fooled by them.
-    Similarity scorers are not usable here: token_set_ratio returns a perfect
-    100 for "Will Dennis" against "Dennis Cirkin", because one shared token is
-    enough to satisfy it, and that is exactly the mistake that quietly hands a
-    goalkeeper someone else's expected goals.
-
-    The rule is that the first name must agree and at least one further name
-    must be shared. That accepts "Alejandro Garnacho" for "Alejandro Garnacho
-    Ferreyra", where a trailing second surname would defeat a last-token rule,
-    while rejecting two different players who happen to share a surname. When
-    it is wrong it fails closed: the player keeps his FPL-only rates, which is
-    what he had before this pass existed.
-    """
     left_parts, right_parts = left.split(), right.split()
     if len(left_parts) < 2 or len(right_parts) < 2:
         return left == right and bool(left)
@@ -72,7 +48,6 @@ def _same_person(left: str, right: str) -> bool:
 
 
 def match_team(name: str, fpl_team_names: list[str], cutoff: int = 70) -> str | None:
-    """Map an external club name onto an FPL club name."""
     key = normalise(name)
     alias = TEAM_ALIASES.get(key)
     if alias and alias in fpl_team_names:
@@ -94,26 +69,8 @@ def match_players(
     cutoff: int = 78,
     global_cutoff: int = 60,
 ) -> pd.DataFrame:
-    """Left-join Understat rows onto FPL rows.
-
-    Two passes. The first matches within club, which removes most of the
-    ambiguity. The second sweeps the whole league for whoever is left, catching
-    players who changed club over the summer and are therefore filed under a
-    team they have left -- without it, every summer signing silently loses his
-    xG history and falls back to whatever the FPL API alone can say.
-
-    A player is tried on his full name first, then on the short web name, which
-    is what Understat usually carries for players with long formal names.
-    """
     understat = understat.copy()
 
-    # Index a player under every club he played for that season, so a summer or
-    # January move does not hide him from the club the FPL API now lists.
-    #
-    # A name maps to a *list* of rows, because a name does not identify a player:
-    # two of them can share one, and keying a single row per name would drop one
-    # of the pair before the join ever saw him. Understat rows are deduplicated
-    # on player id upstream precisely so both survive to here.
     by_team: dict[str, dict[str, list[int]]] = {}
     for index, row in understat.iterrows():
         clubs = row.get("us_team_list") or [row.get("us_team")]
@@ -163,18 +120,6 @@ def match_players(
                 best, best_score = scope[hit[0]][0], hit[1]
         return best, best_score
 
-    # Matching runs in stages, most precise first, and every stage sweeps all
-    # remaining players before the next one starts. Order matters because an
-    # Understat row can only be claimed once: three Arsenal players are called
-    # Gabriel, and the centre-back must take the row named plainly "Gabriel"
-    # before Martinelli and Jesus are allowed to compete for it. Running each
-    # player to exhaustion instead would let whoever came first in the table
-    # take it, and quietly hand a winger a centre-back's expected goals.
-    #
-    # `token_set_ratio` is the loosest stage for exactly that reason: it scores
-    # a perfect 100 whenever one name's tokens are a subset of the other's, so
-    # "Gabriel" matches "Gabriel Martinelli Silva" as confidently as it matches
-    # the real Gabriel. It stays last, and only sees rows nobody else wanted.
     stages = [
         (try_exact, "club"), (try_structural, "club"),
         (try_exact, "global"), (try_structural, "global"),

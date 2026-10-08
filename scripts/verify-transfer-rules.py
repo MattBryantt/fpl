@@ -1,43 +1,3 @@
-"""Proves the transfer plan obeys the transfer rules, on projections it cannot game.
-
-The transfer model is the one part of this tool whose output cannot be sanity
-checked by looking at it. A squad you can eyeball; a six-gameweek path through
-the free-transfer state machine, with hits and chips, you cannot -- and the
-failure mode is not a crash, it is a plan that is quietly illegal or quietly
-oscillating.
-
-So the checks run against synthetic projections built here, where the right
-answer is known by construction. Each scenario is designed so that exactly one
-behaviour is correct and the wrong behaviour is attractive:
-
-  * a squad already optimal, so the only right move is to roll;
-  * two players whose fixtures alternate, which is what produced the
-    swap-and-swap-back schedule this model replaced -- checked both ways, since
-    the same scenario solved without the transfer pricing has to bring the
-    oscillation back or it was not testing anything;
-  * an upgrade big enough to be worth four points, and one just too small;
-  * a bench that outscores the starters in the *middle* of the window, which
-    only a bench boost can field and only in that gameweek;
-  * a league where the cheap bench fodder scores nothing, so a bench boost is
-    only worth playing if the fifteen bought weeks earlier was bought with it
-    in mind -- the check that a chip is a squad decision and not a lineup one;
-  * one player with one enormous gameweek, likewise not the first, which is a
-    triple captain;
-  * a gameweek in which most of the squad has no fixture, which is a free hit;
-  * a flat calendar, where every chip should be held;
-  * the same flat calendar with two chips forced, where they should be played
-    anyway and the reserve that was holding them should stop applying.
-
-Three of those put the gameweek a chip wants somewhere other than the first,
-which is the check that a chip is weighed in every gameweek of the horizon
-rather than only the one in front of it. The discount makes GW1 the cheapest
-week to play anything in, so a model that is not really looking ahead lands
-there and these scenarios catch it.
-
-    python scripts/verify-transfer-rules.py
-
-Takes a couple of minutes: there are twenty-one mixed-integer solves in here.
-"""
 
 from __future__ import annotations
 
@@ -58,8 +18,6 @@ CLUBS = [f"Club {chr(ord('A') + i)}" for i in range(10)]
 SHAPE = {"GKP": 2, "DEF": 5, "MID": 5, "FWD": 3}
 HORIZON = [1, 2, 3, 4, 5, 6]
 
-# The reserve prices are keyed by the API's chip names; the plan reports the
-# readable ones.
 CHIP_HOLD_VALUE_BY_LABEL = {CHIP_LABELS[chip]: value
                             for chip, value in CHIP_HOLD_VALUE.items()}
 
@@ -72,19 +30,8 @@ def check(name: str, condition: bool, detail: str) -> None:
         failures.append(name)
 
 
-# --------------------------------------------------------------------------- #
-# A league the tests can reason about
-# --------------------------------------------------------------------------- #
-
 def league(points, prices=None, missing=None,
            price_override=None) -> tuple[Projection, pd.DataFrame]:
-    """A synthetic projection: ten identical clubs, priced on a fixed ladder.
-
-    `points(player_id, position, rank, gw)` returns the expected points for one
-    player in one gameweek, which is the only thing a scenario has to define.
-    `missing` names (team, gw) pairs that have no fixture, which is how blanks
-    and doubles get onto the calendar.
-    """
     prices = prices or (lambda pos, rank: {"GKP": 4.5, "DEF": 4.5,
                                            "MID": 5.0, "FWD": 5.5}[pos] + rank * 0.5)
     rows, fixture_rows = [], []
@@ -131,7 +78,6 @@ def league(points, prices=None, missing=None,
 
 
 def flat(base: dict[str, float]):
-    """Every player scores by position and rank, the same every gameweek."""
     return lambda pid, pos, rank, gw: base[pos] + rank * 0.6
 
 
@@ -139,17 +85,12 @@ def solve(projection, players, **kwargs) -> transfers.TransferPlan:
     defaults = dict(horizon=len(HORIZON), budget=100.0, min_minutes_prob=0.0,
                     chip_windows={}, seconds=60)
     if not kwargs.get("squad"):
-        defaults["free_transfers"] = 0  # preseason: nothing banked yet
+        defaults["free_transfers"] = 0
     return transfers.plan_transfers(projection, players, **{**defaults, **kwargs})
 
 
-# --------------------------------------------------------------------------- #
-# Rule conformance
-# --------------------------------------------------------------------------- #
-
 def check_legality(plan: transfers.TransferPlan, players: pd.DataFrame,
                    label: str) -> None:
-    """Every gameweek's squad is one FPL would let you register."""
     by_id = players.set_index("fpl_id")
     sizes, shapes, clubs = set(), set(), []
     for gw, squad in plan.squads.items():
@@ -172,18 +113,10 @@ def check_legality(plan: transfers.TransferPlan, players: pd.DataFrame,
 
 
 def check_ledger(plan: transfers.TransferPlan, opening: int, label: str) -> None:
-    """The free-transfer balance follows the rule, gameweek by gameweek.
-
-    ft(w+1) = clamp(ft(w) - transfers + 1, 1, 5), and a free hit cancels the +1
-    while leaving what was banked alone.
-    """
     ledger = plan.ledger
     check(f"{label}: opening balance", int(ledger["free"].iloc[0]) == opening,
           f"starts on {int(ledger['free'].iloc[0])} free transfer(s)")
 
-    # Checked against transfers.next_free_transfers() -- the scalar version of
-    # this same recursion -- rather than a second copy of the rule written
-    # here, so the two cannot silently drift apart.
     ok, detail = True, []
     for step in range(len(ledger) - 1):
         row, nxt = ledger.iloc[step], ledger.iloc[step + 1]
@@ -211,12 +144,7 @@ def check_ledger(plan: transfers.TransferPlan, opening: int, label: str) -> None
           "each transfer comes out of a free one or a hit")
 
 
-# --------------------------------------------------------------------------- #
-# Scenarios
-# --------------------------------------------------------------------------- #
-
 def scenario_settled() -> None:
-    """Nothing to gain, so nothing should be bought."""
     projection, players = league(flat({"GKP": 3.0, "DEF": 3.5, "MID": 4.0, "FWD": 4.2}))
     plan = solve(projection, players)
     check_legality(plan, players, "settled")
@@ -229,19 +157,6 @@ def scenario_settled() -> None:
 
 
 def scenario_oscillation() -> None:
-    """The regression this whole model exists to fix.
-
-    Two defenders whose fixtures alternate: whichever you own, the other one is
-    better next week. A model that does not charge for spending a transfer will
-    swap between them every gameweek forever. A model that does will own one of
-    them and leave it alone.
-    """
-    # Two premium defenders at different clubs, priced so the budget fits one
-    # and not both. That last part is the whole scenario: given the choice a
-    # squad owns both and rotates them, which is a better answer than either
-    # oscillating or sitting still, and the failure this is looking for cannot
-    # happen. It is the week you cannot afford both that a transfer plan has to
-    # be able to refuse.
     left, right, budget = 7, 22, 85.0
 
     def points(pid, pos, rank, gw):
@@ -264,10 +179,6 @@ def scenario_oscillation() -> None:
           f"{len(plan.moves)} transfer(s), {len(both_ways)} player(s) traded both ways "
           f"— the swing is 1.0 a gameweek, less than a free transfer is worth")
 
-    # And the same projection, solved the way the deleted schedule was solved:
-    # holding a transfer is worth nothing and acting costs nothing. If the
-    # oscillation does not come back here, this scenario was not testing
-    # anything and the check above is worthless.
     naive = solve(projection, players, squad=owned, free_transfers=1,
                   budget=budget, friction=0.0, ft_value_scale=0.0)
     churn = set(naive.moves["in"]) & set(naive.moves["out"])
@@ -279,16 +190,6 @@ def scenario_oscillation() -> None:
 
 
 def scenario_hit() -> None:
-    """A hit is taken when, and only when, it clears four points.
-
-    The squad going in is the one this model itself picks when nothing is
-    special about anyone, so there is nothing else to fix and the only question
-    on the table is the upgrade. Then two players who are *not* owned -- at the
-    same positions and the same prices as two who are, so no money changes
-    hands -- become better. Run it once where they are worth far more than four
-    points over the window and once where they are worth about one, and the
-    answer should differ.
-    """
     base = flat({"GKP": 3.0, "DEF": 3.5, "MID": 4.0, "FWD": 4.2})
     settled, players = league(base)
     owned = solve(settled, players).squads[HORIZON[0]]
@@ -326,15 +227,6 @@ STAR_GW = 5
 
 
 def scenario_bench_boost() -> None:
-    """A bench worth more than the bench weights say is only reachable with the chip.
-
-    The bump is in the middle of the window rather than the first gameweek, so
-    the gameweek it lands in is itself a check: every gameweek carries its own
-    `use_bboost` binary, and if only the first were really in play the plan
-    would take GW1 -- which the discount makes the cheapest week to play
-    anything in, and which is therefore where a chip model that is not looking
-    ahead ends up.
-    """
     def points(pid, pos, rank, gw):
         base = {"GKP": 3.0, "DEF": 3.5, "MID": 4.0, "FWD": 4.2}[pos] + rank * 0.6
         return base + (9.0 if gw == BOOST_GW else 0.0)
@@ -354,26 +246,6 @@ def scenario_bench_boost() -> None:
 
 
 def scenario_bench_boost_reshapes_the_squad() -> None:
-    """The chip changes which fifteen you buy, not just who you field.
-
-    This is the load-bearing claim in transfers.py's docstring -- that a chip is
-    a squad decision taken weeks earlier -- and it is the one that separates
-    solving chips inside the transfer model from bolting a chip report onto the
-    side of it. Everything above would still pass if the chip only ever changed
-    a lineup.
-
-    The league is built so the two answers are visibly different. The cheapest
-    tier scores nothing at all: he is the £4.0m defender who never plays, and on
-    an ordinary bench he is close to free, because a benched player is only
-    scored at his slot's weight. Under a bench boost he is a hole in the eleven,
-    so the chip should pay £0.5m a man to replace him -- out of the budget the
-    starting eleven was going to use.
-
-    The boost is pinned to GW2, and the plan opens preseason with no banked
-    transfer, so it cannot buy its way to a better bench at GW2 without taking
-    hits. If the squad is really solved around the chip, the GW1 fifteen has to
-    differ. If it is not, GW1 is identical and only the GW2 lineup moves.
-    """
     ladder_points = [0.0, 4.0, 6.0, 8.0, 10.0]
     ladder_price = [4.0, 4.5, 5.5, 7.0, 9.0]
     horizon, boost_gw = 3, 2
@@ -408,12 +280,6 @@ def scenario_bench_boost_reshapes_the_squad() -> None:
 
 
 def scenario_triple_captain() -> None:
-    """One player has one enormous gameweek, and it is not the first one.
-
-    Same argument as the bench boost above, on the other chip whose payout is a
-    single gameweek's points: the answer is only right if all six `use_3xc`
-    binaries are live and each is scored against that gameweek's own captain.
-    """
     def points(pid, pos, rank, gw):
         base = {"GKP": 3.0, "DEF": 3.5, "MID": 4.0, "FWD": 4.2}[pos] + rank * 0.6
         return 30.0 if pid == 1 and gw == STAR_GW else base
@@ -434,7 +300,6 @@ def scenario_triple_captain() -> None:
 
 
 def scenario_free_hit() -> None:
-    """Eight of ten clubs blank in one gameweek, which is what a free hit is for."""
     blank = [(club, 4) for club in CLUBS[:8]]
     projection, players = league(
         flat({"GKP": 3.0, "DEF": 3.5, "MID": 4.0, "FWD": 4.2}), missing=blank)
@@ -454,12 +319,6 @@ FLAT_WINDOWS = {"freehit": (2, 19), "bboost": (1, 19), "3xc": (1, 19)}
 
 
 def scenario_chip_hold() -> None:
-    """With nothing to time a chip against, the plan should hold every one.
-
-    This is the behaviour the old heuristic hard-coded as a refusal. Here it
-    falls out of an arithmetic comparison against what the chip is worth held,
-    which means it also knows when to stop refusing.
-    """
     projection, players = league(flat({"GKP": 3.0, "DEF": 3.5, "MID": 4.0, "FWD": 4.2}))
     windows = FLAT_WINDOWS
 
@@ -477,7 +336,6 @@ def scenario_chip_hold() -> None:
           f"{int((free.ledger['chip'] != '').sum())} chip(s) played once holding "
           f"is worth nothing")
 
-    # And in between: a chip is played only when it out-earns its own reserve.
     default = solve(projection, players, chip_windows=windows)
     worth = default.chips.set_index("chip")["worth"].to_dict()
     respected = all(
@@ -491,22 +349,11 @@ def scenario_chip_hold() -> None:
 
 
 def scenario_forced_chips() -> None:
-    """Forcing a chip overrules the reserve that was holding it, and only that.
-
-    Same flat calendar the scenario above holds every chip on, so anything
-    played here is played because it was forced. The gameweek is still the
-    solver's to pick, and the third check is what says the reserve is dropped
-    rather than merely out-earned: a reserve still in the objective would be
-    cheapest in the last gameweek of the window, because the discount shrinks
-    it, and a forced chip would drift there regardless of the points.
-    """
     projection, players = league(flat({"GKP": 3.0, "DEF": 3.5, "MID": 4.0, "FWD": 4.2}))
     forced = ["bboost", "3xc"]
 
     plan = solve(projection, players, chip_windows=FLAT_WINDOWS, force_chips=forced)
     check_legality(plan, players, "forced chips")
-    # Preseason, so the opening balance is zero: the first free transfer is
-    # earned for the second gameweek, not handed out before the first.
     check_ledger(plan, 0, "forced chips")
 
     played = sorted(set(plan.ledger["chip"]) - {""})

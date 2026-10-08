@@ -1,12 +1,3 @@
-"""Solve randomised settings with CBC, for the WASM solver to match.
-
-Randomised rather than hand-picked on purpose. A MILP port breaks on the
-combinations nobody thinks to write down -- a forced formation that collides
-with a required player, a budget tight enough that the club limit starts to
-bind, every bench weight at zero. Fixing the seed keeps it reproducible.
-
-    python scripts/make-solver-cases.py
-"""
 
 from __future__ import annotations
 
@@ -84,7 +75,6 @@ def main(n_random: int = 40) -> None:
         except (ValueError, RuntimeError):
             squad, infeasible = None, True
 
-        # snake_case on the Python side, camelCase on the JS side.
         js = {
             "budget": opts.get("budget", 100.0),
             "minStart": opts.get("min_minutes_prob", 0.0),

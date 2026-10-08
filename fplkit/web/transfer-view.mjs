@@ -1,8 +1,3 @@
-/* The solve engine behind both pitches: the squad optimiser (Fill optimal),
- * the near-miss sweep, the per-gameweek chip rebuild, and the multi-gameweek
- * transfer-and-chip planner (both from-scratch and anchored to your squad).
- * The Chips tab's own chrome lives in compare-view.mjs, which calls back into
- * this module to run and read every one of these solves -- see REFACTOR.md. */
 "use strict";
 import { $, S, planOpts, noDecay, transferHalfLife } from "/assets/state.mjs";
 import {
@@ -16,12 +11,6 @@ import {
 } from "/assets/chips.mjs";
 import { renderChips, renderWeekIdeal, renderWeekNearMisses } from "/assets/compare-view.mjs";
 
-/* --------------------------------------------------------- optimal squad
-   The solver's answer is not a one-off any more: it is a second column that
-   tracks whatever the settings currently say, so changing a bench weight or a
-   budget shows you what it costs you rather than leaving you to remember to
-   press a button. Copying it across stays deliberate -- the point of the pair
-   is that you can disagree with the solver and see exactly where. */
 let solveTimer = null, solveSeq = 0;
 
 export function scheduleSolve(delay = 400) {
@@ -30,25 +19,12 @@ export function scheduleSolve(delay = 400) {
   renderOptStatusSafe();
   solveTimer = setTimeout(() => {
     solveOptimal();
-    // The chip plan is minutes of work, so a settings change does not re-solve
-    // it -- but the tab has to stop presenting the old answer as current. This
-    // rides the same debounce as the solve rather than the raw input event:
-    // renderChips rebuilds the whole tab, and a slider drag fires on every
-    // pixel. Everything that scopes a plan funnels through here.
     if (S.tab === "chips") renderChips();
   }, delay);
 }
-// renderOptStatus lives in squad-view.mjs alongside the rest of "the other
-// squad"; called through a thin wrapper here purely so scheduleSolve (called
-// from nearly every settings control) does not need it in its own static
-// import on top of the ones above.
 import { renderOptStatus } from "/assets/squad-view.mjs";
 function renderOptStatusSafe() { renderOptStatus(); }
 
-/** Every constraint the squad MILP answers to, from the controls on screen.
- *  One helper rather than a literal per call site, for the same reason planOpts
- *  is one: the near-miss sweep is a difference between two objectives, and two
- *  objectives are only comparable when both were solved under exactly this. */
 export function solverOptions() {
   return {
     budget: +$("#budget").value,
@@ -75,9 +51,6 @@ export async function solveOptimal() {
   try {
     data = await solveInWorker(seq, solverOptions());
   } catch (error) {
-    // A slower earlier request must never overwrite a faster later one;
-    // dragging a slider fires several solves and only the last one describes
-    // the settings now on screen.
     if (seq !== solveSeq) return;
     S.optimalState = "error";
     S.optimalError = String(error.message || error);
@@ -97,13 +70,8 @@ export async function solveOptimal() {
   renderSquad();
   renderGwChart();
 }
-// squadTotal lives in squad-view.mjs; imported separately below to keep the
-// import block above focused on what solverOptions/scheduleSolve need.
 import { squadTotal as squadTotalRef } from "/assets/squad-view.mjs";
 
-/* The MILP runs in a worker: HiGHS takes up to a couple of seconds on the full
-   pool, and on the main thread that is a page that cannot even animate the
-   spinner telling you to wait. */
 let solverWorker = null;
 const solveWaiters = new Map();
 
@@ -114,8 +82,6 @@ function ensureWorker() {
     const { seq, kind, ok, result, error, ms } = event.data;
     const waiter = solveWaiters.get(seq);
     if (!waiter) return;
-    // A near-miss sweep reports each candidate as it lands. It is seconds of
-    // work, and a spinner for seconds is indistinguishable from a hang.
     if (kind === "progress") { waiter.progress?.(event.data); return; }
     solveWaiters.delete(seq);
     if (ok) waiter.resolve({ ...result, ms }); else waiter.reject(new Error(error));
@@ -125,16 +91,12 @@ function ensureWorker() {
       waiter.reject(new Error(event.message || "the solver failed to start"));
     }
     solveWaiters.clear();
-    // A worker that has errored stays broken; drop it so the next solve rebuilds.
     solverWorker.terminate();
     solverWorker = null;
   };
   return solverWorker;
 }
 
-/** The solver only needs seven fields per player, not the whole row with its
- *  per-gameweek arrays and opponent labels — this crosses a structured-clone
- *  boundary on every keystroke. */
 const solverPool = () => S.players.map((p) => ({
   id: p.id, pos: p.pos, team: p.team, price: p.price,
   pts: p.xpts_plan || 0, own: p.owned || 0, p_play: p.p_play,
@@ -142,54 +104,25 @@ const solverPool = () => S.players.map((p) => ({
 
 function solveInWorker(seq, options, job = null) {
   return new Promise((resolve, reject) => {
-    // The worker answers only its newest request and drops the rest without a
-    // word, so a superseded promise would otherwise never settle — which is
-    // survivable when every request is the same kind and the next reply
-    // overwrites the state anyway, and is not once a slider can cancel a
-    // near-miss sweep and a sweep can cancel a solve. Both callers already
-    // ignore a result whose seq has moved on, so rejecting here is silent.
     for (const [, waiter] of solveWaiters) waiter.reject(new Error("superseded"));
     solveWaiters.clear();
     solveWaiters.set(seq, { resolve, reject, progress: job?.onProgress });
     ensureWorker().postMessage({
-      // A caller may bring its own pool: the Chips tab asks the same question
-      // about one gameweek, where a player is worth that week's points rather
-      // than the horizon's.
       seq, pool: job?.pool || solverPool(), options,
       kind: job?.kind, settings: job?.settings,
     });
   });
 }
 
-/* --------------------------------------------------------- the near-miss sweep
-   Shares the squad optimiser's worker and its sequence counter deliberately.
-   It is the same MILP under the same settings -- the gap is a difference
-   between two objectives, and two objectives only subtract when both were
-   solved under identical constraints -- so a settings change has to cancel a
-   sweep in flight rather than let it finish and land a ranking measured against
-   a squad that is no longer the answer. */
-
-/** Closest first, with the players no legal fifteen can hold at the bottom —
- *  the same order the worker returns, applied to a part-finished sweep. */
 const sortedNearMisses = (rows) =>
   rows.slice().sort((a, b) => (a.gap === null) - (b.gap === null) || a.gap - b.gap);
 
-/** A sweep cut short because something else claimed the worker — a slider moved
- *  while it was running. The rows that did land are still true answers to the
- *  settings they were solved under, so they stay, and the key check above them
- *  says those settings have since moved. What must not survive is the spinner:
- *  the worker drops a superseded request without a word, so nothing else is
- *  coming and "solving…" would sit there for good. */
 function nearMissCancelled(state, seq) {
   if (state.seq !== seq || state.state !== "solving") return state;
   return { ...state, state: state.rows.length ? "ready" : "idle",
            tested: state.rows.length, error: "" };
 }
 
-/** What the sweep is an answer *to*. Same idea as transferInputKey: nothing
- *  pushes an invalidation at the card, so it re-derives this on render and
- *  compares. The projection is in here through the snapshot stamp and the
- *  edits, because a changed projection changes every gap. */
 export function nearMissKey() {
   return JSON.stringify([
     S.meta ? solverOptions() : null, S.nearMiss.perClub, $("#horizon").value,
@@ -197,14 +130,7 @@ export function nearMissKey() {
   ]);
 }
 
-/** How many players the sweep would have to solve for, without solving any of
- *  them. It belongs on the button rather than in the result: this is the one
- *  control on the board whose cost is worth knowing before you press it, and
- *  "every club" multiplies it by about seven. */
 export function nearMissCount() {
-  // The page's copy of the solver is a plain script tag, so a board that came
-  // up without it must still render. The sweep itself does not depend on this:
-  // the worker loads its own copy, and the count only decides a button label.
   if (!S.meta || !S.optimal.length || !globalThis.FplSolver) return 0;
   return FplSolver.nearMissCandidates(
     solverPool(), solverOptions(), S.optimal, S.nearMiss.perClub).length;
@@ -226,18 +152,11 @@ export async function runNearMisses() {
       onProgress: ({ done, total, row }) => {
         if (seq !== solveSeq) return;
         S.nearMiss.progress = { done, total };
-        // Each row is a finished answer the moment it lands, and a full pool is
-        // a second or two per candidate. Showing the ranking as it builds is
-        // the difference between half a minute of progress bar and a table you
-        // can read before it is finished.
         if (row) S.nearMiss.rows = sortedNearMisses([...S.nearMiss.rows, row]);
         renderNearMissesRef();
       },
     });
   } catch (error) {
-    // A settings change cancels the sweep mid-flight and re-solves the squad.
-    // That is not an error and must not be reported as one -- but the rows that
-    // landed before it are kept, and the spinner is not.
     if (seq !== solveSeq) {
       S.nearMiss = nearMissCancelled(S.nearMiss, seq);
       renderNearMissesRef();
@@ -258,59 +177,20 @@ export async function runNearMisses() {
                  tested: data.tested, ms: data.ms, key };
   renderNearMissesRef();
 }
-// renderNearMisses lives in analysis-view.mjs; imported below (not above)
-// purely to keep this file's import ordering matching the section ordering
-// it was extracted from.
 import { renderNearMisses as renderNearMissesRef } from "/assets/analysis-view.mjs";
 
-/* ------------------------------------------- the same question, one gameweek
-   A chip changes which fifteen is best, so it changes who nearly made it. A
-   bench boost pays the bench in full and stops the cheap fourth-choice keeper
-   being free; a triple captain is worth more to the man who wears it than to
-   the squad around him; a free hit or a wildcard buys a side for one week out
-   of money the plan has already worked out you can raise. None of that is
-   visible in the board's own answer, which is a horizon, an ordinary armband
-   and a bench worth a fraction.
-
-   So the Chips tab asks the same question its own way: the plan's chosen week,
-   that week's points rather than the discounted horizon, that week's money, and
-   the chip's own scoring. Everything it needs is expressible in the squad model
-   already -- a bench boost is four bench slots weighted 1.0, a triple captain
-   is captainMultiplier 3 -- which is what keeps this one solver and not two.
-
-   One problem statement, two callers. solveWeekIdeal solves it once and shows
-   the fifteen that comes back, which is the answer to "what should my squad be
-   if I play this chip?"; runWeekNearMisses solves it once per candidate to rank
-   the players it left out. Both have to be the same problem or the ranking is
-   against a squad nobody is being shown. */
-
-/** The single-gameweek squad problem the selected week of a plan describes:
- *  its pool (priced in that week's points), its budget, and its scoring. */
 export function weekSquadProblem(plan, idx) {
   const week = plan.weeks[idx];
   const at = plan.gameweeks.indexOf(week.gw);
   if (at < 0) return null;
 
-  // The plan's own pool, not the board's. Two reasons, and both are about the
-  // comparison meaning something: these are the players the transfer LP was
-  // allowed to pick from, so an "ideal fifteen" drawn from them is one the plan
-  // could actually have reached; and their points are the plan's own numbers
-  // for that week -- survival-adjusted, undecayed -- so a gap here reads as
-  // points in that gameweek rather than as a slice of a discounted horizon.
   const pool = plan.pool.map((p) => ({
     id: p.id, pos: p.pos, team: p.team, price: p.price,
     pts: (p.pts || [])[at] || 0,
     own: S.byId.get(p.id)?.owned || 0,
-    // candidatePool has already applied the availability filter on the way in,
-    // so re-applying it here would only be able to drop players the plan has
-    // already picked -- which would make the week's own fifteen unrepresentable.
     p_play: 1,
   }));
 
-  // What a rebuild that week could actually spend: what the fifteen the plan
-  // fields that week is worth, plus whatever it left in the bank. Derived from
-  // the plan rather than taken from the budget slider because a plan that banks
-  // money mid-window has less to spend that week than it opened with.
   const budget = Math.round(
     (week.squad.reduce((a, id) => a + (S.byId.get(id)?.price || 0), 0) + week.bank) * 10) / 10;
 
@@ -320,21 +200,13 @@ export function weekSquadProblem(plan, idx) {
     options: {
       ...solverOptions(),
       budget,
-      // Template tilt is the one board setting this tab does not honour -- the
-      // transfer LP has no ownership term at all, and chipScopeText says so out
-      // loud. Leaving it on here would make the rebuilt fifteen disagree with
-      // the plan it is being read against for a reason the tab has just denied.
       ownershipWeight: 0,
-      // Under a bench boost every one of the fifteen scores, so the four
-      // substitutes are worth exactly what a starter is and the model should
-      // stop shopping for cheap bodies to fill them.
       benchSlotWeights: boosted ? { GKP: 1, 1: 1, 2: 1, 3: 1 } : benchWeights(),
       captainMultiplier: week.chip === "3xc" ? 3 : 2,
     },
   };
 }
 
-/** Why that week's ideal fifteen is the one it is, in a sentence. */
 export function weekIdealNote(week, budget) {
   const rebuild = week.chip === "freehit" || week.chip === "wildcard";
   return {
@@ -347,16 +219,6 @@ export function weekIdealNote(week, budget) {
 }
 import { fmt as fmtRef } from "/assets/state.mjs";
 
-/** What a fifteen scores in one gameweek under that week's scoring — the same
- *  objective the rebuild was maximised on, applied to both squads so that the
- *  gap between them is a number and not a vibe. Bench slots pay their weight
- *  (all four in full under a bench boost, which is the whole point of the
- *  chip), and the armband pays its multiplier.
- *
- *  `bench` is `{slot: id}`, the shape neither caller has to hand: the solver
- *  returns `{id: slot}` and the plan returns a list of `{slot, id}`. Inverting
- *  at the call site keeps this function from having to guess which it was
- *  handed. */
 export function weekSquadScore(problem, { starting = [], bench = {}, captain = null }) {
   const pts = new Map(problem.pool.map((p) => [p.id, p.pts]));
   const weights = problem.options.benchSlotWeights || {};
@@ -370,31 +232,10 @@ export function weekSquadScore(problem, { starting = [], bench = {}, captain = n
   return total;
 }
 
-/** The board's own optimal-squad solve shares this worker and its sequence
- *  counter, so starting anything here cancels one in flight — and solveOptimal
- *  drops a superseded reply silently, which leaves the pitch's status stuck on
- *  "solving…" with nothing coming. Ask for it again once we are out of the way.
- *  Re-entrant by construction: the next rebuild cancels this one too and
- *  re-schedules it in turn, and the debounce collapses the repeats. */
 function resumeBoardSolve() {
   if (S.optimalState === "solving" || S.optimalState === "pending") scheduleSolve(0);
 }
 
-/** Rebuild one gameweek of the plan from scratch: the best fifteen that week's
- *  money could buy, scored the way that week actually scores.
- *
- *  The plan answers "what should I do, owning what I own?" — hits, banked
- *  transfers, friction and all. That is the right question most of the time and
- *  the wrong one the moment you commit to a chip, because the plan can only
- *  reach a better squad through moves it has to pay for: force a bench boost
- *  with one free transfer and it plays the chip over the bench you already
- *  have, which is not the squad the chip is worth having. This throws the
- *  ownership away and asks what the chip wants, so the two can be read side by
- *  side and the difference between them priced.
- *
- *  One solve, cached per week against the plan's key, and only ever run for a
- *  week you are looking at — seconds against the plan's minutes, but not free.
- *  `force` re-runs a week already answered. */
 export async function solveWeekIdeal(idx, { force = false } = {}) {
   const plan = S.transferPlan.result;
   if (!plan || !plan.weeks[idx]) return;
@@ -411,9 +252,6 @@ export async function solveWeekIdeal(idx, { force = false } = {}) {
                               chip: week.chip || null, budget: problem.options.budget };
   renderWeekIdeal();
 
-  // A rebuild the settings have already moved past goes back to "not solved"
-  // rather than to an error: nothing went wrong, and selecting the week again
-  // should simply ask again.
   const cancelled = () => {
     if (S.weekIdeal.key === key && S.weekIdeal.byWeek[idx]?.seq === seq) {
       delete S.weekIdeal.byWeek[idx];
@@ -447,10 +285,6 @@ export async function solveWeekIdeal(idx, { force = false } = {}) {
     captain: data.captain, bench: data.bench || {}, cost: data.cost,
     points: weekSquadScore(problem,
       { starting: data.starting, bench: benchBySlot, captain: data.captain }),
-    // The plan's own fifteen for that week, priced the same way. Under a bench
-    // boost the LP starts all fifteen and benches nobody, so `planBench` is
-    // empty and the sum is simply the whole squad -- which is what a bench
-    // boost week scores, and is the number the rebuild has to beat.
     held: weekSquadScore(problem,
       { starting: week.starters, bench: planBench, captain: week.captain }),
   });
@@ -467,9 +301,6 @@ export async function runWeekNearMisses(idx) {
   S.weekNearMiss = {
     state: "solving", rows: [], error: "", gw: problem.week.gw, idx,
     chip: problem.week.chip || null, budget: problem.options.budget,
-    // Tied to the plan it was run against, not to the settings as they stand:
-    // re-planning is what makes this answer wrong, and the tab already says
-    // when the plan itself has been left behind.
     key: S.transferPlan.key, seq, progress: { done: 0, total: 0 },
   };
   renderWeekNearMisses();
@@ -507,13 +338,6 @@ export async function runWeekNearMisses(idx) {
   renderWeekNearMisses();
 }
 
-/* ------------------------------------------------------ transfers & chips
-   A second, separate worker rather than a shared one: this MILP is a season's
-   worth of players times a multi-gameweek horizon, not one gameweek, and
-   mixing its "newest wins" sequence counter with the squad optimiser's would
-   let an ordinary settings tweak silently cancel a transfer-plan solve
-   in flight, or the reverse. The plan follows the board's horizon select, so a
-   longer horizon means a bigger MILP and a slower solve. */
 export const transferGwCount = () =>
   Math.min(S.gameweeks.length, +$("#horizon").value || 6);
 
@@ -521,11 +345,6 @@ let transferSeq = 0;
 
 const MAX_PARALLEL_SOLVES = 4;
 
-/** Run independent solve jobs on a few short-lived workers at once. HiGHS WASM
- *  is single-threaded, so the jobs of one press (plan, baseline, a solve per
- *  chip, a solve per pinned week) are what there is to spread across cores.
- *  Resolves with results in job order; a superseded run terminates its workers
- *  and never settles, which callers already guard against with their seq. */
 function runJobs(jobs, isStale, onProgress) {
   const started = performance.now();
   const count = Math.max(1, Math.min(MAX_PARALLEL_SOLVES, (navigator.hardwareConcurrency || 2) - 1, jobs.length));
@@ -557,19 +376,7 @@ function runJobs(jobs, isStale, onProgress) {
   });
 }
 
-/** Everything the plan is an answer *to*, as one comparable string. The plan
- *  is not persisted and nothing pushes an invalidation at it, so rather than
- *  chasing every control that could move (squad, budget, free transfers, chips
- *  used, constraints, decay, horizon, and every player edit that changes a
- *  projection), the Chips tab re-derives this on render and compares. A plan
- *  whose key no longer matches is shown with a banner rather than blanked:
- *  the old answer is still the best thing on screen until a new one exists. */
 export function transferInputKey() {
-  // Your squad is absent, and its absence is the point: the plan is built from
-  // scratch, so it cannot change the answer. Leaving it in would have flashed
-  // "settings have changed" at every edit to a squad this model never reads.
-  // Banked transfers do count: a rebuild in season is a wildcard, and they
-  // carry over it.
   return JSON.stringify([
     S.include, S.exclude, S.poolOut, S.poolIn, S.chipsUsed, S.chipPlan.opt,
     $("#budget").value, $("#maxclub").value, S.meta?.preseason ? 0 : $("#freetransfers").value,
@@ -580,9 +387,6 @@ export function transferInputKey() {
 }
 import { chipHoldValues as chipHoldValuesRef, ftValueSetting as ftValueSettingRef } from "/assets/squad-view.mjs";
 
-/** The candidate pool before any manual cuts, with what it was built from.
- *  `keep` is who can never be cut: the players you required, plus your own
- *  fifteen when the plan is anchored to it. */
 export function plannerCandidates(squad = []) {
   const rules = S.snapshot.rules;
   const gwCount = transferGwCount();
@@ -591,15 +395,6 @@ export function plannerCandidates(squad = []) {
     hazard: p.hazard, gw: p.gw,
   }));
   const pointsByPlayer = new Map(players.map((p) => [p.id, survivalAdjusted(p, gwCount)]));
-  // Every one of these used to be a constant here while the same control sat
-  // in Settings driving the squad optimiser -- so the two halves of the board
-  // answered different questions and neither said so. The plan now reads the
-  // same knobs the pitch does.
-  // Only the players you have *required*, not everyone you happen to own. A
-  // from-scratch build has nothing to sell, and forcing them in would quietly
-  // widen the candidate set by fifteen on the strength of a squad this model
-  // does not read. Anchored mode is the exception: it has to keep your own
-  // fifteen in the pool or the plan could not represent selling them.
   const keep = [...new Set([...squad, ...S.include])];
   const full = candidatePool(players, pointsByPlayer,
     { keep: [...keep, ...S.poolIn], minMinutesProb: +$("#minstart").value, exclude: S.exclude, caps: rules.POOL_BY_POS,
@@ -609,27 +404,9 @@ export function plannerCandidates(squad = []) {
   return { players, pointsByPlayer, keep, pool, full };
 }
 
-/** Reduce the pool, build the ownership facts and the rule constants into
- *  exactly what transfers.js needs — the same "prep vs solve" split as
- *  chips.mjs's own docstring describes. Returns `null` (nothing to plan)
- *  if an owned squad was asked for but isn't complete.
- *
- *  `squad` is empty by default -- the LP's own preseason mode, where the
- *  opening fifteen is a free choice and the tab answers "what is each chip
- *  worth to a side built for it?". Pass your own fifteen (must be complete)
- *  to anchor the solve instead: the plan then pays a transfer and a hit for
- *  every move away from what you hold, and answers the different, more
- *  practical question "given what I own, when should I play my chips and
- *  what do I transfer?" -- see planOwnedSquad(). */
 export function buildTransferPayload(squad = []) {
-  // No squad requirement in the default (preseason) mode: the plan builds its
-  // own fifteen, so it has an answer on an empty board. Anchored mode needs a
-  // complete squad or there is nothing to hold the rest against.
   if (!S.meta || !S.snapshot) return null;
   if (squad.length && squad.length !== 15) return null;
-  // Which of the two independent chip strategies this solve reads -- inferred
-  // from squad the same way the rest of this function already branches on it,
-  // rather than a second parameter every caller would have to keep in sync.
   const side = squad.length ? "own" : "opt";
   const plan = S.chipPlan[side];
   const rules = S.snapshot.rules;
@@ -640,9 +417,6 @@ export function buildTransferPayload(squad = []) {
 
   const cPool = captainPool(pool, pointsByPlayer, rules.CAPTAIN_CANDIDATES);
 
-  // A pinned formation is a floor and a ceiling at once. The keeper is always
-  // exactly one; the bench-boost week relaxes each cap to the squad's own count
-  // for that position, which is handled in the LP rather than here.
   const shape = parseFormation($("#formation").value);
   const xiMinByPos = shape ? { GKP: 1, ...shape } : rules.XI_MIN_BY_POS;
   const xiMaxByPos = shape ? { GKP: 1, ...shape } : rules.XI_MAX_BY_POS;
@@ -651,43 +425,26 @@ export function buildTransferPayload(squad = []) {
   const variation = fixtureVariation(S.snapshot.fixtures, gameweeks);
   const chips = chipSlots(S.meta.chip_windows || {}, gameweeks, S.chipsUsed, rules.CHIPS);
 
-  // Narrow each chip's legal window to whatever candidate set you have chosen
-  // below, before anything else reads it -- the sweep, the solve count and the
-  // LP itself all have to agree on what "legal" means here. Narrowing to
-  // exactly one week is a stronger statement than "must play" -- you cannot
-  // pin a week for a chip you are not playing -- so it implies the force
-  // rather than requiring both controls.
   const pinned = {};
   for (const [chip, chosen] of Object.entries(plan.chipWeek || {})) {
     if (!Array.isArray(chosen) || !chosen.length || !chips[chip]) continue;
     const narrowed = chips[chip].filter((gw) => chosen.includes(gw));
-    if (!narrowed.length) continue; // nothing legal left in the chosen set -- ignore it
+    if (!narrowed.length) continue;
     chips[chip] = narrowed;
     if (narrowed.length === 1) pinned[chip] = narrowed[0];
   }
   const forceChips = [...new Set([...plan.forceChips, ...Object.keys(pinned)])]
     .filter((chip) => chip in chips);
 
-  // The (possibly narrowed) legal set, kept aside: the sweep compares a chip's
-  // candidate weeks, so it has to see every one of those, not just whichever
-  // it settles on.
   const sweepSlots = Object.fromEntries(Object.entries(chips).map(([c, gws]) => [c, [...gws]]));
 
   const skipped = {};
-  // Chips you have excluded, dropped before anything is priced. Each one left in
-  // costs a solve, so this is the one control on the tab that makes the wait
-  // shorter rather than longer — and the row stays in the table saying why it is
-  // empty, because a chip that silently vanished would read as a chip the model
-  // decided against.
   for (const chip of plan.chipSkip) {
     if (!(chip in chips)) continue;
     delete chips[chip];
     delete sweepSlots[chip];
     skipped[chip] = "you left it out — not solved";
   }
-  // A free hit with no blank or double to hit is a week of unlimited transfers
-  // you hand straight back — worth about nothing, and a second squad's worth of
-  // binaries to discover. Forcing it says to spend them anyway.
   if (chips.freehit && !Object.keys(variation).length && !forceChips.includes("freehit")) {
     delete chips.freehit;
     delete sweepSlots.freehit;
@@ -696,22 +453,10 @@ export function buildTransferPayload(squad = []) {
 
   const ftWorth = freeTransferValue(ftValueSettingRef(), rules.FT_VALUE_BY_STATE, rules.MAX_FREE_TRANSFERS);
   const budget = +$("#budget").value;
-  // `squad: []` is the LP's own preseason mode, where the opening fifteen is a
-  // free choice out of the whole budget and no transfer is charged for
-  // reaching it -- the question the Worth table asks. Anchored to your squad,
-  // a chip is priced at whatever it pays over the side you actually hold, and
-  // every route to a better one is charged a transfer and a hit, same as FPL
-  // itself charges you -- the question "what do I do next" asks instead.
-  // An owned squad is worth what it sells for, and the plan sells at that.
   const sellPrices = Object.fromEntries(squad.map((id) => [id, sellPrice(id)]));
   const bank = squad.length ? Math.max(0, budget - squadSellValue(squad)) : 0;
-  // Before the opening deadline nothing is banked; a wildcard keeps what was.
   const freeTransfers = S.meta.preseason && !squad.length ? 0 : +$("#freetransfers").value;
 
-  // "No transfers" bans every purchase, which the squad-size constraint turns
-  // into no sales either. A free hit is untouched by it on purpose: that chip
-  // does not spend transfers, so a no-transfer plan may still field a free-hit
-  // side, which is exactly the question "what can I do without transfers?".
   const mode = plan.transferMode;
   const wildcardFirst = side === "own" && !!plan.wildcardNow;
   const noTransferGws = mode === "none" ? gameweeks.filter((gw, i) => !(wildcardFirst && i === 0)) : [];
@@ -737,31 +482,6 @@ export function buildTransferPayload(squad = []) {
            positions: new Map(players.map((p) => [p.id, p.pos])) };
 }
 
-/** The jobs one "Plan" press turns into.
- *
- *  Every one of them builds its fifteen from scratch over the whole horizon (see
- *  `buildTransferPayload` for why), and they differ only in which chips the LP
- *  is allowed to reach for:
- *
- *  - `plan` — every legal chip available, the LP free to play or hold each on
- *    its own merits. This is the answer the tab shows.
- *  - `baseline` — no chip at all. The reference every chip is priced against,
- *    and the reason a chip's worth here is a real number rather than a payout:
- *    a chip is worth what the *whole plan* gains from having it, squad and all.
- *  - `chip` — one chip, forced, week free. The squad is built knowing that chip
- *    is coming, which is the thing the ownership-anchored version structurally
- *    could not do: it is what makes a bench boost buy a bench worth fielding
- *    rather than pay out over the cheap one you happened to own.
- *
- *  Isolated on purpose — one chip per solve, the others withheld — because two
- *  chips in one plan share a squad and a budget, and their gains are not
- *  separable. `worth` has to mean "this chip against no chip" or the column
- *  cannot be read down.
- *
- *  So an ordinary press is 2 + one-per-legal-chip solves. Committing to a chip
- *  adds the per-week sweep on top: one further solve per gameweek it could be
- *  played in, which is the only honest way to rank its weeks and is why it is
- *  charged for only when you ask. */
 export function buildTransferJobs(payload) {
   const { pool, opt } = payload;
   const jobs = [
@@ -769,10 +489,6 @@ export function buildTransferJobs(payload) {
     { tag: { kind: "baseline" }, pool, opt: { ...opt, chips: {}, forceChips: [] } },
   ];
 
-  // `opt.chips` rather than `sweepSlots`, so a week you pinned is honoured here:
-  // the question a pin asks is "what is my week worth", not "what is the best
-  // week worth". The sweep below is what still shows you the weeks you did not
-  // pick.
   for (const [chip, weeks] of Object.entries(opt.chips)) {
     jobs.push({
       tag: { kind: "chip", chip }, pool,
@@ -781,10 +497,6 @@ export function buildTransferJobs(payload) {
   }
 
   for (const chip of payload.forceChips) {
-    // Over `sweepSlots`, not `opt.chips`: if you have pinned the chip to a week
-    // then opt.chips holds that one week, and sweeping it would compare your
-    // choice against nothing. The whole value of the sweep when a week is
-    // pinned is showing what the other weeks would have paid.
     for (const gw of payload.sweepSlots[chip] || []) {
       jobs.push({
         tag: { kind: "pin", chip, gw }, pool,
@@ -795,25 +507,11 @@ export function buildTransferJobs(payload) {
   return jobs;
 }
 
-/** What a fifteen spends on the four it would bench. The number a bench boost
- *  shows up in: a £4.0m fourth keeper and three bodies to fill the sheet become
- *  four players bought to play, and the difference is money taken off the XI. */
 function benchSpend(ids) {
   return ids.map((id) => S.byId.get(id)?.price || 0)
     .sort((a, b) => a - b).slice(0, 4).reduce((a, b) => a + b, 0);
 }
 
-/** Fold every job's result into the three things the tab reads.
- *
- *  `baseline` — the best from-scratch plan with no chip at all.
- *  `built[chip]` — the best from-scratch plan built knowing that chip is coming:
- *    its objective, the week it lands, the fifteen, and what that fifteen spends
- *    on its bench. `worth` is the gain over `baseline`, which is what the chip is
- *    worth to a side built for it rather than what it pays over a side that
- *    wasn't.
- *  `resolved[chip][gw]` — the per-week sweep, unchanged, for chips you committed
- *    to. A week that came back infeasible is simply absent: the chip cannot be
- *    played there, which the table shows as a dash rather than a zero. */
 export function resolveChipStudy(results, payload) {
   const resolved = {};
   const built = {};
@@ -850,9 +548,6 @@ export function resolveChipStudy(results, payload) {
     };
   }
 
-  // Worth needs the baseline, so it is filled in here rather than above: a chip
-  // solve that landed while the baseline failed has an objective but no scale to
-  // read it on, and `null` says that far better than a number measured off zero.
   for (const b of Object.values(built)) {
     b.worth = baseline ? b.objective - baseline.objective : null;
     b.benchShift = baseline ? b.bench - baseline.bench : null;
@@ -868,11 +563,7 @@ export async function planTransfersAndChips() {
   const jobs = buildTransferJobs(payload);
   const key = transferInputKey();
   const seq = ++transferSeq;
-  // The week on screen is an index into a plan that no longer exists, so it
-  // goes back to the first gameweek rather than pointing at nothing.
   S.planWeek = 0;
-  // Every rebuild answered the old plan's weeks, and the plan about to land may
-  // not even have the same gameweeks in it.
   S.weekIdeal = { key: null, byWeek: {} };
   S.transferPlan = { state: "solving", result: null, error: "", key,
                      progress: { done: 0, total: jobs.length } };
@@ -893,9 +584,6 @@ export async function planTransfersAndChips() {
   }
   if (seq !== transferSeq) return;
 
-  // The plan itself is job zero. If *it* failed there is nothing to show, and
-  // the error is the solver's own — a pinned week failing is a fact about that
-  // week and is handled by resolveChipStudy leaving it out.
   const plan = data.results.find((r) => r.tag.kind === "plan");
   if (!plan || !plan.ok) {
     S.transferPlan = { state: "error", result: null, key,
@@ -905,24 +593,14 @@ export async function planTransfersAndChips() {
   }
 
   const study = resolveChipStudy(data.results, payload);
-  // Open on the chip week when there is one. It is the week you pressed the
-  // button to see, and defaulting to GW1 is what made a forced chip read as
-  // "nothing changed" when the changed squad was two weeks along.
   const chipWeek = plan.result.weeks.findIndex((w) => w.chip);
   S.planWeek = chipWeek === -1 ? 0 : chipWeek;
   S.transferPlan = { state: "ready", key, error: "",
                      result: { ...plan.result, ...payload, ...study, ms: data.ms } };
   renderChips();
-  // The chip week opens selected, so rebuild it without being asked: "what
-  // should the squad be if I play this?" is the question the press was, and
-  // making it a second click leaves the plan's own compromise looking like the
-  // answer. One solve, on the week already on screen.
   solveWeekIdeal(S.planWeek);
 }
 
-/** Everything the owned-squad plan is an answer to. Same idea as
- *  transferInputKey, plus the one thing that key deliberately leaves out: the
- *  fifteen you own, which this plan is anchored to. */
 export function ownedInputKey() {
   return JSON.stringify([
     S.squad, S.include, S.exclude, S.poolOut, S.poolIn, S.chipsUsed, S.chipPlan.own,
@@ -933,11 +611,6 @@ export function ownedInputKey() {
   ]);
 }
 
-/** The owned-squad plan's own jobs: the plan itself, anchored to your fifteen,
- *  plus a per-week sweep for any chip you have committed to. No baseline and no
- *  per-chip solve -- there is no "worth against a from-scratch build" question
- *  here, only "what should this squad do", so it costs one solve instead of
- *  the Worth table's 2-plus-one-per-chip. */
 export function buildPlanOnlyJobs(payload) {
   const { pool, opt } = payload;
   const jobs = [{ tag: { kind: "plan" }, pool, opt }];
@@ -954,12 +627,6 @@ export function buildPlanOnlyJobs(payload) {
 
 let ownedSeq = 0;
 
-/** Solve the transfer-and-chip plan anchored to the fifteen you actually own
- *  (S.squad), so the tab can answer "given what I hold, what do I do" beside
- *  the from-scratch "what would an ideal side do". Manual, not automatic: like
- *  the from-scratch plan, this is minutes of work, so editing your squad marks
- *  the plan stale (see ownedInputKey) rather than kicking off a re-solve on
- *  every shirt clicked. */
 export async function planOwnedSquad() {
   const payload = buildTransferPayload(S.squad);
   if (!payload) return;
@@ -1002,26 +669,6 @@ export async function planOwnedSquad() {
   renderChips();
 }
 
-/* --------------------------------------------------------------------- chip
-   worth table -- a chip per row, priced against a plan that plays no chip
-   at all.
-
-   What changed and why it matters: every earlier version of this table was
-   anchored to the fifteen you own. It asked "what does this chip pay over the
-   squad I happen to have, given every route to a better one costs a transfer
-   and a hit?" — which is not what a chip is worth. A bench boost got scored
-   against the cheap bench you own rather than against the bench you would buy
-   knowing the chip was coming, and that gap *is* the chip.
-
-   So each chip now gets its own from-scratch horizon solve with the chip forced
-   and the week free, and `worth` is that plan's objective minus a chip-free
-   plan's. It is a whole-plan difference, not a payout: it already contains the
-   bench the chip made worth buying, the captain it made worth paying for, and
-   whatever the rest of the squad gave up to afford them.
-
-   `Bench` is quoted beside it because that is where a bench boost shows up in
-   money, and `Changes` because a chip that reshapes nothing (a triple captain
-   usually) is a different kind of decision from one that reshapes four players. */
 export function renderChipTableHTML(plan) {
   const built = plan.built || {};
   const baseline = plan.baseline || null;
@@ -1046,9 +693,6 @@ export function renderChipTableHTML(plan) {
         <td>${fmtRef(hold, 0)}</td><td class="na">—</td><td class="na">—</td>
         <td class="read">could not be solved on its own</td></tr>`;
     }
-    // Against the chip-free plan, which is the only comparison that makes the
-    // number mean "what is this chip worth". Reading it against the reserve is
-    // the second question and gets its own clause.
     const clears = b.worth != null && b.worth >= hold;
     const verdict = [];
     if (pin !== null) verdict.push(`your week`);
@@ -1095,12 +739,6 @@ export function renderChipTableHTML(plan) {
   ${plan.forceChips.map((chip) => renderChipWeeksHTML(plan, chip)).join("")}`;
 }
 
-/** The per-week grid, for a chip you have committed to — the only place it is
- *  still drawn, because it costs a solve a gameweek.
- *
- *  Folded away rather than stacked under the table: committing to one chip
- *  should not push the plan itself off the screen, and this answers a narrower
- *  question than the table above ("when?", not "whether?"). */
 export function renderChipWeeksHTML(plan, chip) {
   const sweep = plan.resolved?.[chip];
   if (!sweep || Object.keys(sweep).length < 2) return "";
@@ -1143,8 +781,6 @@ export function renderChipWeeksHTML(plan, chip) {
     </div></details>`;
 }
 
-/** The one footnote under the one table: what the numbers are, where they came
- *  from, and what the plan could not see. */
 export function renderChipNoteHTML(plan) {
   const gws = plan.gameweeks;
   const rules = S.snapshot.rules;
@@ -1189,12 +825,6 @@ export function renderChipNoteHTML(plan) {
     lines.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl></div>`;
 }
 
-/** Copies the from-scratch optimal squad over whatever you currently hold.
- *  Cheap and correct when you have genuinely wildcarded or free-hit -- the
- *  rebuild really is free. Anywhere else, replacing more players than you
- *  have free transfers for means real hits, so this warns rather than
- *  silently assuming the wildcard framing applies. Reuses optDiff(), the
- *  same incoming/outgoing sets the compare pitch already highlights. */
 export function copyOptimal() {
   if (S.optimal.length !== 15) return;
   if (S.squad.length) {

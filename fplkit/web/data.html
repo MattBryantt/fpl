@@ -45,7 +45,7 @@ html, body { overflow-x: clip; }
   .toc { columns: 1; }
   table { font-size: 12.5px; }
   td:first-child { white-space: normal; }
-  /* Tables scroll inside their own box; the page never scrolls sideways. */
+
   table, pre { display: block; overflow-x: auto; max-width: 100%; }
 }
 header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
@@ -347,9 +347,6 @@ or a key is missing, it says so here.</p>
 
 </div>
 <script>
-/* ---------------------------------------------------------------- auth token
-   Same slot as index.html -- see the comment there. localStorage rather than
-   sessionStorage so it survives closing and reopening the app. */
 const TOKEN = (() => {
   const url = new URL(location.href);
   const fromUrl = url.searchParams.get("t");

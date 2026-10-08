@@ -1,24 +1,3 @@
-/* Proves the browser's transfer-and-chip MILP is the same MILP.
- *
- * scripts/transfer-cases.json holds synthetic scenarios solved by CBC through
- * fplkit/transfers.py -- the pool, points and settings captured verbatim, so
- * a disagreement here can only be the LP translation, not a different pool
- * getting built on each side (that risk belongs to candidatePool, which this
- * script does not exercise). Re-solved by the vendored HiGHS WASM build, same
- * relationship scripts/make-solver-cases.py has to verify-solver-port.mjs.
- *
- * The bar is the same one that script uses, for the same reason: the
- * objective, not the squad. This model has more room for genuine ties than
- * the single-period one (an idle-move penalty just above zero means a handful
- * of economically-identical fifteens can share an optimum), so squad and chip
- * agreement are reported but only the objective gates a failure.
- *
- * The chip payouts do gate, because they are a pure function of a squad and
- * are compared on the same squads on both sides -- no tie can excuse a
- * difference there.
- *
- * Run: node scripts/verify-transfer-port.mjs
- */
 
 import fs from "fs";
 import path from "path";
@@ -29,19 +8,14 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, "..");
 const require = createRequire(import.meta.url);
 
-global.self = global; // solver.js's loadHighs checks `typeof self`
+global.self = global;
 const FplSolver = require(path.join(ROOT, "fplkit/web/solver.js"));
 global.FplSolver = FplSolver;
 const FplTransfers = require(path.join(ROOT, "fplkit/web/transfers.js"));
 const { chipPayouts } = await import(path.join(ROOT, "fplkit/web/chips.mjs"));
 
-// The board's own default, which is what make-transfer-cases.py prices with.
 const SLOT_WEIGHT = { GKP: 0.03, 1: 0.24, 2: 0.10, 3: 0.04 };
 
-// The cases are solved at seconds=30 in Python but rounded to 4dp on the way
-// out; HiGHS's own MIP gap is comparable to CBC's, so a few 1e-3 of slack
-// covers both without hiding a real disagreement, which on this model's
-// objective scale (~150-350) would be an order of magnitude larger.
 const TOL = 5e-3;
 
 const cases = JSON.parse(fs.readFileSync(path.join(ROOT, "scripts/transfer-cases.json")));
@@ -53,11 +27,6 @@ let worstObj = 0, objOk = 0, squadMismatches = [], chipMismatches = [], failures
 let worstPayout = 0;
 let slowest = 0;
 
-/** The reported chip payouts, priced off the *CBC* squads on both sides. The
- *  numbers a person reads are what say a chip was weighed in every gameweek of
- *  the window, so a port that solves identically and then reports different
- *  payouts is still broken -- and pricing both sides off the same squads keeps
- *  a legitimate tie between two fifteens out of the comparison. */
 function checkPayouts(c) {
   if (!c.chipPayouts) return;
   const squads = new Map(Object.entries(c.squads).map(([gw, ids]) => [Number(gw), ids]));

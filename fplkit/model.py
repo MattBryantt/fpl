@@ -1,21 +1,3 @@
-"""The expected-points model.
-
-Three layers, each answering one question:
-
-  1. How many goals will each team score in each fixture?
-     Bookmaker 1X2 + over/under prices, inverted through a Poisson model.
-     Where the books have not priced a fixture yet, fall back to xG-derived
-     attack/defence ratings.
-
-  2. How much of that does this player take, and how long is he on the pitch?
-     Understat non-penalty xG and xA per 90 give the share; the FPL API's
-     starts/minutes give the minutes distribution.
-
-  3. What is that worth in FPL points?
-     Apply the scoring rules, computing the non-linear terms (clean sheets,
-     goals conceded, saves, defensive contribution) over their full
-     distributions rather than plugging in the mean.
-"""
 
 from __future__ import annotations
 
@@ -55,285 +37,80 @@ from .sources import fpl_api, history, understat
 from .sources import odds as odds_source
 from .config import UNDERSTAT_SEASON
 
-# Newly promoted clubs have no Premier League xG history. Until they have played
-# some games, assume a below-average attack and a leaky defence.
 PROMOTED_ATTACK = 0.80
 PROMOTED_DEFENCE = 1.25
 
-# How hard a club's own priced fixtures pull its rating before an *unpriced*
-# fixture is projected from it. See _odds_calibration(). Low, because the
-# evidence is a single bookmaker consensus compared against the model's own
-# guess for the same match, not an observed result -- there is no result-luck
-# to average away, but nor is there more than one match's worth of "this club
-# might be different from its Understat history" behind it. Two matches of
-# that kind of evidence earns half weight.
 ODDS_CALIBRATION_PRIOR_MATCHES = 2.0
-# A promoted club's own rating is not club-specific evidence to begin with --
-# it is PROMOTED_ATTACK/PROMOTED_DEFENCE, a division-wide guess -- so shrinking
-# a priced match's disagreement with *that* back toward the guess is shrinking
-# real signal toward no signal. Established clubs are the opposite: their
-# rating is a full season of Understat, worth defending against a single
-# noisy price. A book's price already reflects a summer signing or a change of
-# manager that Understat cannot see, so a promoted club's own priced fixtures
-# are trusted several times harder than an established club's.
 PROMOTED_ODDS_CALIBRATION_PRIOR_MATCHES = 0.4
-# A rating correction wider than this is more likely a team-matching slip or a
-# thin, one-sided market than real signal, so it is clipped rather than taken
-# at face value. exp(0.4) =~ 1.5x, i.e. half a goal a match at typical rates.
 ODDS_CALIBRATION_MAX_LOG = 0.4
 
-# Shrinkage. A single season of xG is a noisy estimate of a true rate, and the
-# noise is worst exactly where it does the most damage: a fringe player with 150
-# minutes and one lucky big chance projects as a superstar unless his rate is
-# pulled back toward what players like him normally do.
-#
-# The prior weight is deliberately heavier than pure small-sample correction
-# would justify, because the sample is not just small, it is *last season*.
-# Year-over-year correlation of npxG/90 runs around 0.6-0.7 even for players
-# with a full season behind them, so a complete 3,000-minute campaign should
-# carry roughly three-quarters weight, not effectively all of it. At 1,200 that
-# is what a full season gets; a half season gets about 55%.
 PLAYER_PRIOR_MINUTES = 1200
 
-# The attacking rates get their own priors, because theirs could be measured and
-# the rest could not. Three seasons of Understat are in the cache, and the
-# question the prior answers -- how much of a rate carries into next season --
-# is a regression of one season on the one before it. Fitting k directly, by
-# minimising squared error of `w.own + (1-w).prior` with `w = M / (M + k)`:
-#
-#     npxG/90   k = 342   95% CI [186, 538]   (year-over-year slope 0.85)
-#     xA/90     k = 891   95% CI [601, 1191]  (slope 0.68)
-#
-# over 468 player-seasons with 300+ minutes behind them and a real season to
-# score against. Both intervals sit far below the 1200 that had been applied to
-# everything: at 3,000 minutes that is a weight of 0.71 where npxG earns 0.90.
-# The model was shrinking its best-evidenced attackers about three times harder
-# than a season of evidence justifies.
-#
-# Set at the cautious end of each interval rather than at the point estimate.
-# The players who can be measured this way are ones who were established in two
-# consecutive seasons, and a rate fitted on those is being read back onto a
-# population that includes players who lost their place -- so erring toward the
-# prior is erring in the direction the sample is weakest.
 NPXG_PRIOR_MINUTES = 550
 XA_PRIOR_MINUTES = 1000.0
 TEAM_PRIOR_MATCHES = 8.0
 
-# A player who changed club is a worse bet than his minutes suggest: his rate
-# was produced by different team-mates, a different system and a different role.
-# He gets a heavier prior on top of the team-context adjustment below.
 MOVER_PRIOR_MULTIPLIER = 1.8
 
-# --- Minutes normalisation ----------------------------------------------------
-# Every club starts eleven and plays 990 minutes, whatever last season's data
-# happens to remember about its current squad. See minutes_model().
-XI_OUTFIELD = 10  # the eleventh is the keeper, normalised separately
+XI_OUTFIELD = 10
 
-# Nobody is certain to start. Measured, not assumed: last season each club's
-# single most-nailed player averaged a 0.966 start rate and first-choice
-# keepers 0.921, and those are after-the-fact maxima. 0.95 is what "as nailed
-# as it gets" is worth before the season happens.
 MAX_P_START = 0.95
-# 11 starters x 78 minutes leaves 132 of 990, and 132 / 22 is six appearances.
 SUBS_PER_MATCH = 6.0
 
-# A shift cannot be longer than the match. Unlike MAX_P_START there is nothing
-# probabilistic to shade here: a player who starts and is never substituted
-# plays ninety, and that is the whole of it.
 MAX_MINS_IF_START = 90.0
 
-# How much evidence it takes before last season's start rate outweighs the
-# price-based prior. Lighter than the rate prior: minutes are a far more direct
-# measurement of a role than xG is of finishing ability, so they earn their
-# weight faster.
 START_PRIOR_MINUTES = 700.0
 
-# A blended figure that is already low is more likely to describe a player who
-# simply does not feature for a run of matches than one who plays a token ten
-# minutes in every game -- real fringe involvement is lumpy, not a smooth
-# trickle. Below this share, and only while there is not yet enough of this
-# player's own evidence to say otherwise (see `weight` in minutes_model), both
-# his start and sub chances are pulled further toward nothing.
 FRINGE_SHARE = 0.15
-# How much of that pull is applied at the extreme -- no evidence at all
-# (weight 0) and no involvement at all (blended 0). Established evidence turns
-# this off entirely regardless of the constant, which is why it can afford to
-# be this aggressive: a player who demonstrably does get used off the bench
-# every week is not touched by it.
 FRINGE_COLLAPSE_STRENGTH = 0.85
 
-# --- Start form: why a season-long start rate is the wrong number -------------
-# A start rate over a season answers "what share of matches did he start". The
-# question actually being asked is "does he start the next one", and those come
-# apart for anyone whose situation changed inside the season. The season rate
-# reads a man who missed August to October injured and has started every match
-# since as a 0.6 starter. He is not one. He is a 0.95 starter with a bad autumn
-# behind him, and next Saturday is the only match the plan is about.
-#
-# So the model carries two numbers and blends them by *how far ahead it is
-# looking*: the long-run rate, and a recency-weighted one from the per-gameweek
-# archive. All three constants below were fitted out of sample on 2025-26 --
-# every prediction for gameweek t built only from gameweeks before t -- by
-# searching, at each lead k, for the blend weight w that minimised Brier score
-# against what actually happened. See scripts/calibrate-start-form.py.
-#
-#     lead k    best w    Brier(blend)   Brier(flat)   improvement
-#        1       1.09        0.10184        0.11622        12.4%
-#        2       0.82        0.11452        0.12254         6.5%
-#        3       0.63        0.12227        0.12704         3.8%
-#        4       0.51        0.12796        0.13101         2.3%
-#        5       0.42        0.13282        0.13481         1.5%
-#        6       0.36        0.13666        0.13811         1.1%
-#        7       0.32        0.14002        0.14111         0.8%
-#        8       0.29        0.14309        0.14398         0.6%
-#
-# Two things in that table are the whole feature. The blend beats the flat rate
-# at *every* lead, so this is not a trade of near accuracy for far accuracy. And
-# w decays geometrically -- 1.09 down to 0.29, a ratio of 0.828 per gameweek --
-# which is the measured version of the intuition that a nailed starter is more
-# obviously nailed next week than he is in two months.
 START_FORM_HALF_LIFE = 4.0
-START_FORM_WEIGHT = 1.09    # weight on the recent rate one gameweek out
-START_FORM_DECAY = 0.828    # ...falling by this much per gameweek of lead
-# w above 1 is not a typo: the fit wants the recent rate *extrapolated past*,
-# because a run of starts is a slightly under-confident signal of a settled
-# place. Capped so an extrapolation cannot invert the two numbers it sits
-# between, which is what an unbounded w would do to a player whose recent rate
-# is far below his long-run one.
+START_FORM_WEIGHT = 1.09
+START_FORM_DECAY = 0.828
 MAX_START_FORM_WEIGHT = 1.25
-# How many weighted recent matches it takes before the recent rate is believed
-# outright over the long-run one -- a linear ramp, so three recent matches
-# are the whole answer and one is a third of it. Small, because the evidence
-# is already recency-weighted and a player with three recent matches behind
-# him has genuinely told you something -- but not zero, or one substitute
-# appearance in a blank fortnight would rewrite a season. In season the
-# long-run rate is mostly last season's, so this is what lets this season's
-# starts take over inside a month rather than by Christmas.
 START_FORM_PRIOR_MATCHES = 3.0
 
-# Shift length is a steadier trait than start probability -- a manager's team
-# selection swings week to week, but whether a player is the type hooked at the
-# hour or the type who plays every minute does not -- so it earns belief faster
-# than the start rate above, and (unlike start_form_weight) is not shrunk
-# further as the horizon lengthens: how long he plays when he starts is not a
-# question next month answers differently from next week.
 MINUTES_FORM_PRIOR_MATCHES = 2.0
 
-# Above this coefficient of variation, "his average shift is 70 minutes" is
-# hiding two different players -- one hooked at the hour every week, one who
-# plays 90 half the time and doesn't feature the other half -- and the mean
-# alone is a worse answer than the same mean with a warning on it. Not fed back
-# into mins_if_start itself: nothing downstream of it models a *distribution*,
-# so widening the point estimate would just move the uncertainty somewhere it
-# is not accounted for. Flagged instead -- see MINS_FLAG_MIN_MATCHES.
 MINS_VOLATILE_CV = 0.35
-# Below this much recency-weighted start evidence, a volatile-looking average is
-# more likely to be two or three data points than a real pattern, so the flag
-# stays off until there is enough behind it to trust.
 MINS_FLAG_MIN_MATCHES = MINUTES_FORM_PRIOR_MATCHES
 
-# Ceiling on the per-club correction. A squad the data barely knows would
-# otherwise have its two familiar players multiplied into superstars -- a worse
-# error than the under-fielding being corrected.
 MAX_MINUTES_SCALE = 2.5
 MAX_RATE_SCALE = 2.5
 
-# --- Conservation of team output ----------------------------------------------
-# Per-90 rates are shares of what a team produces, so they have to add up to it.
-# See conserve_team_output(). Both measured from last season rather than assumed:
-# 786 assists against 851 goals, and 2115 bonus points over 380 matches (below
-# the nominal 6 because a match with fewer than three scorers pays out less).
 ASSISTS_PER_GOAL = 0.924
 BONUS_PER_TEAM_MATCH = 2.78
 
-# The assist target is applied to a club's *open-play* xG, because that is the
-# quantity conserve_team_output() has to hand -- so the ratio has to be per
-# open-play goal, not per goal. A penalty carries no assist, so all 786 assists
-# were produced by the 91% of goals that were not penalties, and dividing by
-# that share is what puts numerator and denominator on the same basis. Left as
-# the raw 0.924 against an open-play denominator, every assist in the model came
-# out about 9% light.
 ASSISTS_PER_OPEN_PLAY_GOAL = ASSISTS_PER_GOAL / (1 - PENALTY_GOAL_SHARE)
 
-# How much of a moved player's output follows the team rather than the player.
-# Zero would say a striker leaving a great side for a poor one keeps his rate
-# untouched; one would say his output is entirely his team's doing. The truth is
-# in between, and the exponent form keeps the adjustment mild for small moves.
 TRANSFER_CONTEXT_ALPHA = 0.5
 
 
-# --- Two seasons of evidence --------------------------------------------------
-# The FPL API serves this season's totals and forgets last season's the day it
-# rolls over; Understat serves one season per call. Read alone, either leaves
-# the model in September with four matches of evidence about everything the
-# API measures -- starts, defensive contribution, saves, bonus -- and a
-# 1,200-minute prior that turns four matches into the positional average.
-#
-# So last season is pooled in as extra evidence, at a weight that fades as this
-# season fills in: worth a full season of minutes before a ball is kicked (when
-# it is the only evidence there is, and the cross-season priors above were
-# fitted for exactly that), half by the midpoint, and nothing once this season
-# is itself complete. Linear because nothing measured says otherwise, and the
-# shape matters far less than having the evidence at all. `SeasonBasis.
-# previous_weight` is the one number; everything pooled reads it from there.
-#
-# Starts and minutes are pooled only for players still at the club they played
-# them for -- a pecking order is a fact about a squad, not a player. Rates that
-# follow the role (defensive contribution, saves, bonus, cards, xG) are pooled
-# for everyone, with the mover prior on top as before.
 PREVIOUS_SEASON_MATCHES = float(MATCHES_PER_SEASON)
 
 
-# Thresholds that used to be absolute minute counts, written instead as the
-# share of a full workload they stand for: 900 minutes of a 3,420-minute season
-# is 26%, 450 is 13%, 270 is 8%. They have to be shares, because "900 minutes"
-# means *a regular* in May and *nobody in the league* in September, and a fixed
-# number silently reclassifies every player in it the moment a season rolls over.
-ESTABLISHED_SHARE = 0.26  # enough history to help set a positional prior
-BLINDSPOT_SHARE = 0.13    # below this, a priced player is one the model cannot see
-THIN_SHARE = 0.08         # below this, the rate is labelled as barely evidenced
+ESTABLISHED_SHARE = 0.26
+BLINDSPOT_SHARE = 0.13
+THIN_SHARE = 0.08
 
 
 @dataclass(frozen=True)
 class SeasonBasis:
-    """How many matches stand behind the totals each source is currently serving.
 
-    Every rate in this model is a season total divided by something, and what
-    that something is depends on where the calendar is -- not on a constant.
-    The FPL API serves season-to-date totals, which means last season's complete
-    38 matches right up until the new season's first whistle, and three matches
-    a fortnight later. Dividing by a hard-coded 38 is correct for exactly one of
-    those. A week into a season it reads a nailed starter's `starts / 38` as
-    0.08 and concludes he is a fringe player; it reads every positional prior
-    off an "established" group that has nobody in it.
-
-    Understat is counted separately because it is a different season's data
-    whenever `UNDERSTAT_SEASON` names a completed one, which is the normal case.
-    Weighting last season's xG by this season's minutes is how a genuine 0.6
-    npxG/90 striker gets shrunk to the positional average in September.
-    """
-
-    club_matches: pd.Series   # per club, matches behind the FPL totals in hand
-    understat_matches: float  # matches behind the completed Understat season
-    preseason: bool           # True while the totals still describe last season
-    understat_current_matches: float = 0.0  # ...and behind the season under way
-    # How much a minute of last season is worth against one of this season,
-    # on top of the calendar fade: 1 counts it fully, 0 ignores last season
-    # once this one has started. The knob behind `--last-season` and the
-    # board's slider, because the fade is a judgement rather than a
-    # measurement and the right answer differs by how much a squad changed.
+    club_matches: pd.Series
+    understat_matches: float
+    preseason: bool
+    understat_current_matches: float = 0.0
     previous_scale: float = 1.0
 
     @property
     def fpl_matches(self) -> float:
-        """League-level matches behind the FPL totals."""
         if not len(self.club_matches):
             return float(MATCHES_PER_SEASON)
         return float(self.club_matches.max())
 
     @property
     def fpl_minutes(self) -> float:
-        """What a regular's FPL minutes look like at this point in the season."""
         return self.fpl_matches * 90.0
 
     @property
@@ -342,11 +119,6 @@ class SeasonBasis:
 
     @property
     def previous_weight(self) -> float:
-        """How much a minute of last season is worth against one of this season.
-        See PREVIOUS_SEASON_MATCHES. Zero in preseason for the FPL totals, which
-        then *are* last season's and must not be counted twice; the same
-        weight applied to Understat is one, since the season under way is empty
-        and the completed one is all there is."""
         if self.preseason:
             return 0.0
         fade = float(np.clip(1.0 - self.fpl_matches / PREVIOUS_SEASON_MATCHES, 0.0, 1.0))
@@ -358,7 +130,6 @@ class SeasonBasis:
 
     @property
     def pooled_fpl_minutes(self) -> float:
-        """A regular's evidence once last season is pooled in."""
         return self.fpl_minutes + self.previous_weight * PREVIOUS_SEASON_MATCHES * 90.0
 
     @property
@@ -368,9 +139,6 @@ class SeasonBasis:
 
 
 def _understat_matches(us_stats: pd.DataFrame | None) -> float:
-    """Understat's own workload, measured off its data rather than assumed, so
-    that a season in progress degrades honestly instead of overstating how
-    much evidence is behind every attacking rate."""
     if us_stats is None or "us_minutes" not in us_stats:
         return 0.0
     us_minutes = pd.to_numeric(us_stats["us_minutes"], errors="coerce")
@@ -381,13 +149,6 @@ def season_basis(all_fixtures: pd.DataFrame, id_to_name: dict[int, str],
                  us_stats: pd.DataFrame,
                  us_current: pd.DataFrame | None = None,
                  previous_scale: float = 1.0) -> SeasonBasis:
-    """Read the season's progress off the fixture list rather than assuming it.
-
-    Before a ball is kicked the FPL totals in hand are last season's completed
-    ones, so the basis is a full 38. After that it is however many matches each
-    club has actually finished -- which differs between clubs whenever a game is
-    postponed, so it is counted per club rather than league-wide.
-    """
     finished = all_fixtures[all_fixtures["finished"].fillna(False).astype(bool)]
     played = (pd.concat([finished["team_h"], finished["team_a"]])
               .map(id_to_name).value_counts()
@@ -408,28 +169,20 @@ def season_basis(all_fixtures: pd.DataFrame, id_to_name: dict[int, str],
 
 @dataclass
 class Projection:
-    """Everything a projection run produced, ready for the CLI to render."""
 
-    players: pd.DataFrame  # one row per player, xpts summed over the horizon
-    per_fixture: pd.DataFrame  # one row per player-fixture
-    fixtures: pd.DataFrame  # one row per fixture with lam_home / lam_away
+    players: pd.DataFrame
+    per_fixture: pd.DataFrame
+    fixtures: pd.DataFrame
     horizon: list[int]
-    odds_coverage: float  # fraction of fixtures priced by bookmakers
+    odds_coverage: float
     odds_note: str
-    strength: pd.DataFrame | None = None  # per-club attack/defence, for reprojection
-    basis: SeasonBasis | None = None  # what season the totals behind this describe
-    notes: list[str] = field(default_factory=list)  # sources that fell back, in words
+    strength: pd.DataFrame | None = None
+    basis: SeasonBasis | None = None
+    notes: list[str] = field(default_factory=list)
 
-
-# --------------------------------------------------------------------------- #
-# Layer 1: team strength and fixture lambdas
-# --------------------------------------------------------------------------- #
 
 def _team_xgc(players: pd.DataFrame, minutes_col: str, xgc_col: str,
               team_col: str) -> pd.Series:
-    """Per-club expected goals conceded per match, recovered from player totals:
-    every player on the pitch shares the team's concession rate, so a
-    minutes-weighted mean of their per-90 figures is that rate."""
     minutes = pd.to_numeric(players[minutes_col], errors="coerce").fillna(0.0)
     xgc = pd.to_numeric(players[xgc_col], errors="coerce").fillna(0.0)
     frame = pd.DataFrame({"team": players[team_col], "minutes": minutes, "xgc": xgc})
@@ -443,15 +196,6 @@ def team_strength(players: pd.DataFrame, us_stats: pd.DataFrame,
                   basis: SeasonBasis | None = None,
                   us_current: pd.DataFrame | None = None,
                   team_map_current: dict[str, str] | None = None) -> pd.DataFrame:
-    """Per-match attacking and defensive rates for each FPL club.
-
-    Attack comes from Understat (non-penalty xG summed over the squad, divided
-    by matches), the completed season and the one under way pooled by
-    `basis.understat_weight`. Defence comes from the FPL API's own
-    expected_goals_conceded, this season's totals pooled with last season's
-    archived ones by `basis.previous_weight`; see _team_xgc for how a club's
-    rate is recovered from its players.
-    """
     us_teams = understat.team_rates(us_stats)
     us_teams["fpl_team"] = us_teams["us_team"].map(team_map)
     attack = us_teams.set_index("fpl_team")["team_npxg_per_match"].to_dict()
@@ -469,11 +213,6 @@ def team_strength(players: pd.DataFrame, us_stats: pd.DataFrame,
         return isinstance(clubs, list) and any(team_map.get(c) == team for c in clubs)
 
     prev_weight = basis.previous_weight if basis else 0.0
-    # Preseason the FPL totals are last season's, produced at each player's
-    # *previous* club, so only players who were already here describe this
-    # defence. Once the season is under way they are this season's and
-    # describe the club he is at now, whoever he is. Last season's archived
-    # totals are grouped by the club they were produced at, which is theirs.
     if basis is None or basis.preseason:
         here = players[players.apply(lambda r: played_here_last_season(r, r["team"]), axis=1)]
         this_season = _team_xgc(here, "minutes", "expected_goals_conceded", "team")
@@ -488,7 +227,6 @@ def team_strength(players: pd.DataFrame, us_stats: pd.DataFrame,
     rows = []
     for team in sorted(players["team"].dropna().unique()):
         club_matches = float(basis.club_matches.get(team, MATCHES_PER_SEASON)) if basis else float(MATCHES_PER_SEASON)
-        # Evidence behind each side, in matches, and the pooled rate.
         att_parts = [(us_weight * us_matches, attack.get(team)),
                      (cur_matches, attack_now.get(team))]
         def_parts = [(club_matches, this_season.get(team)),
@@ -510,10 +248,6 @@ def team_strength(players: pd.DataFrame, us_stats: pd.DataFrame,
     league_attack = df["npxg_per_match"].mean(skipna=True) or LEAGUE_MEAN_GOALS
     league_defence = df["xgc_per_match"].mean(skipna=True) or LEAGUE_MEAN_GOALS
 
-    # A club with no Premier League xG history last season was promoted. Until
-    # it has played, both of its ratings are assumptions, not measurements: a
-    # below-average attack and a leaky defence, regressed toward like any other
-    # club's as its own matches arrive.
     df.loc[df["is_promoted"] & df["npxg_per_match"].isna(), "npxg_per_match"] = \
         league_attack * PROMOTED_ATTACK
     df.loc[df["is_promoted"] & df["xgc_per_match"].isna(), "xgc_per_match"] = \
@@ -521,12 +255,6 @@ def team_strength(players: pd.DataFrame, us_stats: pd.DataFrame,
     df["npxg_per_match"] = df["npxg_per_match"].fillna(league_attack)
     df["xgc_per_match"] = df["xgc_per_match"].fillna(league_defence)
 
-    # Regress team xG toward the league mean. Season-over-season correlation
-    # of team xG rates is well short of 1, so taking a rate at face value
-    # overstates how far apart the clubs really are. Each side is regressed
-    # by the evidence behind *it*: the matches pooled above, so six matches
-    # of this season plus a faded last one earn more than six alone, and a
-    # promoted club's guess earns nothing until its own matches arrive.
     attack_weight = df["attack_matches"] / (df["attack_matches"] + TEAM_PRIOR_MATCHES)
     defence_weight = df["defence_matches"] / (df["defence_matches"] + TEAM_PRIOR_MATCHES)
 
@@ -538,17 +266,6 @@ def team_strength(players: pd.DataFrame, us_stats: pd.DataFrame,
     df["attack_rating"] = df["npxg_per_match"] / league_attack
     df["defence_rating"] = df["xgc_per_match"] / league_defence
 
-    # Put the per-match rates on the same scale as the fixture lambdas before
-    # they leave this function. Both are used as the denominator of a ratio
-    # whose numerator is a lambda -- and lambdas are pinned to LEAGUE_MEAN_GOALS,
-    # while these are measured on their own sources' scales. Understat's team
-    # aggregate in particular sits ~13% high, because building it from
-    # single-club players drops the transferred squad men who drag a team's rate
-    # down. Left alone that mismatch silently deflated every player's open-play
-    # goals by about the same 13%.
-    #
-    # Only the level moves; the ratings above are computed first and are
-    # unitless, so relative team strength is untouched.
     open_play = LEAGUE_MEAN_GOALS * (1 - PENALTY_GOAL_SHARE)
     if df["npxg_per_match"].mean() > 0:
         df["npxg_per_match"] *= open_play / df["npxg_per_match"].mean()
@@ -560,26 +277,10 @@ def team_strength(players: pd.DataFrame, us_stats: pd.DataFrame,
     return df
 
 
-# How far a priced match's kickoff may sit from a fixture's before the two are
-# taken to be different matches. Comfortably wider than the couple of days a
-# fixture moves when television reschedules it, and far narrower than the months
-# between a league meeting and its reverse leg.
 ODDS_KICKOFF_TOLERANCE = pd.Timedelta(days=4)
 
 
 def _nearest_priced_match(candidates: list, kickoff) -> Any | None:
-    """Pick which of several priced matches is actually this fixture.
-
-    A pair of clubs does not identify a match: they meet twice a season, and a
-    postponement can drop the rearranged game into a window where the reverse
-    leg is already on the board. Keyed on the pair alone, one match's prices get
-    attached to the other's fixture -- silently, and carrying an entirely
-    plausible number, which is the kind of error nobody goes looking for.
-
-    When the fixture has no kickoff time yet, a single candidate is accepted and
-    an ambiguous one is refused: the fallback is xG-derived ratings, which is a
-    worse projection but an honest one.
-    """
     if pd.isna(kickoff):
         return candidates[0] if len(candidates) == 1 else None
     best, best_gap = None, None
@@ -591,7 +292,6 @@ def _nearest_priced_match(candidates: list, kickoff) -> Any | None:
 
 
 def _attach_odds(fixtures: pd.DataFrame, teams: list[str]) -> pd.DataFrame:
-    """Join bookmaker probabilities onto the fixture list where they exist."""
     fixtures = fixtures.copy()
     for column in ("p_home", "p_draw", "p_away", "p_over", "totals_line"):
         fixtures[column] = np.nan
@@ -601,7 +301,7 @@ def _attach_odds(fixtures: pd.DataFrame, teams: list[str]) -> pd.DataFrame:
         market = odds_source.match_odds()
     except odds_source.OddsUnavailable as error:
         return fixtures.assign(odds_note=str(error))
-    except Exception as error:  # network failure should not kill a run
+    except Exception as error:
         return fixtures.assign(odds_note=f"odds fetch failed: {error}")
 
     market["home_fpl"] = market["home_team_odds"].map(lambda n: match_team(n, teams))
@@ -628,9 +328,6 @@ def _attach_odds(fixtures: pd.DataFrame, teams: list[str]) -> pd.DataFrame:
 def _rating_lambdas(home: str, away: str, ratings: pd.DataFrame,
                     attack_calib: dict[str, float],
                     defence_calib: dict[str, float]) -> tuple[float, float]:
-    """The ratings-only projection for one fixture, with any odds calibration
-    folded in. Calibration multipliers default to 1.0, so this is exactly the
-    old xG-ratings formula when none is available or the toggle is off."""
     league = LEAGUE_MEAN_GOALS
     lh = (league * ratings.loc[home, "attack_rating"] * attack_calib.get(home, 1.0)
           * ratings.loc[away, "defence_rating"] * defence_calib.get(away, 1.0)
@@ -643,24 +340,6 @@ def _rating_lambdas(home: str, away: str, ratings: pd.DataFrame,
 
 def _odds_calibration(fixtures: pd.DataFrame, ratings: pd.DataFrame
                       ) -> tuple[dict[str, float], dict[str, float]]:
-    """Per-team attack/defence multipliers, learned from the gap between this
-    fixture list's *priced* matches and what the xG ratings alone would have
-    said about them.
-
-    A book prices a match on everything it knows right now -- a summer signing,
-    a manager sacked in September, a keeper who will not recover in time for
-    the opener -- none of which last season's Understat numbers can see. Where
-    a club's priced fixtures consistently disagree with its rating, that
-    disagreement is evidence about the club, and it is evidence an *unpriced*
-    fixture for the same club currently has no other way to use.
-
-    A single match cannot separate a team's attack from its opponent's
-    defence -- the scoreline only reveals their product -- so a fixture's
-    whole log-error is split evenly between the two ratings it touches, the
-    way one step of iterative proportional fitting would. A club with more
-    than one priced match averages its evidence, shrunk toward "no
-    correction" by ODDS_CALIBRATION_PRIOR_MATCHES.
-    """
     attack_errors: dict[str, list[float]] = {}
     defence_errors: dict[str, list[float]] = {}
 
@@ -678,9 +357,6 @@ def _odds_calibration(fixtures: pd.DataFrame, ratings: pd.DataFrame
                            -ODDS_CALIBRATION_MAX_LOG, ODDS_CALIBRATION_MAX_LOG)
         err_away = np.clip(np.log(fixture["lam_away"] / rating_la),
                            -ODDS_CALIBRATION_MAX_LOG, ODDS_CALIBRATION_MAX_LOG)
-        # err_home is home-attack * away-defence; err_away is away-attack *
-        # home-defence. Neither side of either product is separately known,
-        # so each gets half the blame (or credit) in log space.
         add(home, attack_errors, err_home / 2)
         add(away, defence_errors, err_home / 2)
         add(away, attack_errors, err_away / 2)
@@ -702,22 +378,8 @@ def _odds_calibration(fixtures: pd.DataFrame, ratings: pd.DataFrame
 
 def fixture_lambdas(fixtures: pd.DataFrame, strength: pd.DataFrame,
                     teams: list[str], calibrate: bool = True) -> pd.DataFrame:
-    """Expected goals for each side of each fixture.
-
-    Where a fixture is priced, the odds are used directly. Where it is not,
-    the xG ratings project it -- optionally nudged by what this same club's
-    *priced* fixtures elsewhere in the list said about it, see
-    _odds_calibration(). Both the calibrated and the uncalibrated ratings
-    projection are kept on every xG-sourced row so a consumer (the browser
-    board's toggle, in particular) can switch between them without a refetch.
-    """
     fixtures = _attach_odds(fixtures, teams)
     ratings = strength.set_index("team")
-    # Understat is used for relative strength only. Its absolute level is biased
-    # upward here (dropping transferred players removes mostly low-output squad
-    # men), and the league-wide goals rate is a stable, better-known constant,
-    # so the ratings are applied on top of that rather than on top of the
-    # measured mean. Where odds exist they override this entirely.
 
     lam_home, lam_away, source = [], [], []
     lam_home_raw, lam_away_raw = [], []
@@ -744,9 +406,6 @@ def fixture_lambdas(fixtures: pd.DataFrame, strength: pd.DataFrame,
     fixtures["lam_home"] = lam_home
     fixtures["lam_away"] = lam_away
     fixtures["lam_source"] = source
-    # The xG-only figures, before calibration -- what the ratings alone said,
-    # kept even for priced rows so a caller cannot mistake a still-zero column
-    # for "no calibration available" on the rows where it actually matters.
     fixtures["lam_home_uncalibrated"] = lam_home_raw
     fixtures["lam_away_uncalibrated"] = lam_away_raw
 
@@ -762,38 +421,12 @@ def fixture_lambdas(fixtures: pd.DataFrame, strength: pd.DataFrame,
     return fixtures
 
 
-# --------------------------------------------------------------------------- #
-# Layer 2: minutes and share of team output
-# --------------------------------------------------------------------------- #
-
 def _start_prior(df: pd.DataFrame) -> pd.Series:
-    """Expected start share for a player with no Premier League history.
-
-    Price is the only signal available for a promoted club's squad or a signing
-    from abroad, and it is a good one: FPL prices players by the role it expects
-    them to have. Squared, because the relationship is not linear -- a £12m
-    forward is far more than twice as likely to start as a £6m one -- and taken
-    relative to the cheapest player in the same club and group so that it
-    describes a pecking order rather than an absolute.
-    """
     floor = df.groupby(["team", "is_keeper"])["price"].transform("min")
     return ((df["price"] - floor) + 0.5) ** 2
 
 
 def start_form_weight(horizon: int) -> float:
-    """How much of the recent start rate survives, averaged over the horizon.
-
-    The fitted weight applies to one lead at a time: w_k = W * DECAY^(k-1). A
-    projection totals `horizon` gameweeks and reports one number per player, so
-    the weight it should carry is the mean of that curve over the leads it
-    actually covers -- the closed form of which is the geometric series below.
-
-    That is what makes the horizon control do the right thing without anyone
-    having to think about it. Ask for one gameweek and you get w = 1.10, and the
-    board fills with the players who are starting *now*. Ask for twelve and you
-    get w = 0.40, because who starts in April is a question the last four
-    gameweeks cannot answer, and the season-long rate is the better guess.
-    """
     n = max(1, int(horizon))
     if START_FORM_DECAY >= 1.0:
         mean_decay = 1.0
@@ -806,57 +439,18 @@ def minutes_model(players: pd.DataFrame,
                   overrides: pd.DataFrame | None = None,
                   basis: SeasonBasis | None = None,
                   horizon: int = 1) -> pd.DataFrame:
-    """Probability of starting, of appearing, of reaching 60 minutes.
-
-    Derived from the starts and minutes the FPL API is currently serving --
-    `starts` over the matches his club has played gives the start rate, and the
-    minutes left over once starts are accounted for imply how often the player
-    came off the bench -- and then **normalised so that each club fields a full
-    team**.
-
-    That last step is not a refinement. Taken raw, `starts / 38` summed to 8.25
-    starters per club rather than 11, because a squad is not the set of players
-    who played for it last season: some retired, some left the league, some
-    arrived from abroad with no Premier League record, and a promoted club's
-    entire squad has none. Every one of those is a hole that nobody filled, and
-    the missing minutes were credited to no player at all -- which put the
-    league's projected points at 74% of what a season actually awards, and put
-    every promoted club at approximately zero.
-
-    So the raw rate is treated as *evidence about a share*, not as the answer.
-    Players with no evidence fall back to a price-based prior, the two are
-    blended by how many minutes stand behind the evidence, and the result is
-    scaled per club so that eleven players start: one keeper and ten outfield.
-    Substitute appearances are scaled the same way, to the six that the 78/22
-    minutes split implies once eleven starters are accounted for.
-
-    Availability is applied *before* normalising, on purpose. A club whose first
-    choice is injured still starts eleven players, so his share should pass to
-    whoever is behind him rather than evaporate.
-    """
     df = players.copy()
 
-    # `d` (doubtful) maps to None on purpose, and an unrecognised status falls
-    # through to the same place: the API's own chance_of_playing_next_round is a
-    # better number for both than any constant this file could pick.
     availability = df["status"].map(STATUS_AVAILABILITY)
     df["availability"] = (availability
                           .fillna(df["chance_next"].fillna(50.0) / 100.0)
                           .clip(0.0, 1.0))
     df["is_keeper"] = df["pos"] == "GKP"
 
-    # Divided by the matches his club has actually played, not by a fixed 38.
-    # `starts` is a season-to-date total, so the denominator has to be the same
-    # season to date -- 38 before the season starts, when the totals in hand are
-    # still last season's complete ones, and six in the middle of September.
-    # Against a hard-coded 38 a nailed starter six matches in reads 6/38 = 0.16
-    # and the model files him behind whoever last season happened to know.
     club_matches = (df["team"].map(basis.club_matches) if basis
                     else pd.Series(float(MATCHES_PER_SEASON), index=df.index))
     club_matches = club_matches.fillna(float(MATCHES_PER_SEASON)).clip(lower=1.0)
 
-    # Last season's starts and minutes pooled in, for players still at the
-    # club they played them for -- see PREVIOUS_SEASON_MATCHES.
     carry = _previous_weight(df, basis, same_club=True)
     starts = df["starts"].astype(float) + carry * _prev(df, "starts")
     minutes = df["minutes"].astype(float) + carry * _prev(df, "minutes")
@@ -868,32 +462,15 @@ def minutes_model(players: pd.DataFrame,
     non_start_matches = (matches - starts).clip(lower=1.0)
     raw_sub = (sub_appearances / non_start_matches).clip(0.0, 1.0)
 
-    # How much the evidence is worth. A full season speaks for itself; 300
-    # minutes barely speaks at all, and zero cannot speak.
     weight = minutes / (minutes + START_PRIOR_MINUTES)
     df["evidence_minutes"] = minutes
     prior = _start_prior(df)
     prior_share = prior / prior.groupby([df["team"], df["is_keeper"]]).transform("sum")
-    # Put the prior on the same scale as a start probability before blending, or
-    # a 30-man squad's shares would each be tiny next to a real start rate.
-    # Clipped to the same ceiling as everything else: an expensive signing's
-    # raw share can exceed 1.0 at a rich club, and blending an impossibility
-    # into the evidence is how a £9m striker with eight starts behind him came
-    # out projected to start every single match.
     prior_start = (prior_share * np.where(df["is_keeper"], 1.0, XI_OUTFIELD)).clip(
         upper=MAX_P_START)
 
     long_run = weight * raw_start + (1 - weight) * prior_start
 
-    # Then tilt toward who has been starting lately, by how far ahead we are
-    # looking. Two shrinkages guard it: the recent rate is itself pulled back
-    # toward the long-run one by how many recent matches stand behind it, and
-    # the horizon weight decays the whole correction away as the plan lengthens.
-    # A player the archive has never heard of has recent_matches 0, which makes
-    # both terms vanish and leaves him exactly where the long-run rate put him.
-    # `.get` on a missing column returns None, not an empty Series, and
-    # pd.to_numeric(None) is a bare nan -- so the column has to be tested for
-    # before it is converted, or a frame without the archive raises here.
     if "recent_start_rate" not in df:
         tilted = long_run
         recent = long_run
@@ -907,20 +484,11 @@ def minutes_model(players: pd.DataFrame,
         recent = long_run + believed * (recent - long_run)
         tilted = long_run + start_form_weight(horizon) * (recent - long_run)
 
-    # Clipped before availability rather than after: the extrapolation above can
-    # land outside [0, 1], and a negative share would come back through
-    # normalisation as a club owing starts to its own bench.
     tilted = tilted.clip(0.0, 1.0)
 
     blended = tilted * df["availability"]
     blended_sub = (weight * raw_sub + (1 - weight) * prior_share) * df["availability"]
 
-    # Fringe collapse. See FRINGE_SHARE: a player already projected low, with
-    # not much of his own evidence behind that projection, is pulled further
-    # toward nothing rather than left as a smooth trickle across every fixture.
-    # `_normalise_to` below then redistributes what he gave up to the rest of
-    # his club the same way any other shortfall is redistributed, so this is a
-    # reallocation within the group, not extra minutes invented or destroyed.
     involvement = blended + (1 - blended) * blended_sub
     thin = (1 - weight).clip(0.0, 1.0)
     fringe_pull = thin * FRINGE_COLLAPSE_STRENGTH * (1 - involvement / FRINGE_SHARE).clip(0.0, 1.0)
@@ -928,28 +496,14 @@ def minutes_model(players: pd.DataFrame,
     blended_sub = blended_sub * (1 - fringe_pull)
 
     df["p_start"] = _normalise_to(blended, df, {True: 1.0, False: float(XI_OUTFIELD)})
-    # Kept on the frame so the board can redo this blend at a different horizon
-    # without the laptop: the browser has p_start at the snapshot's horizon, and
-    # these two are what let it recompute one for any other.
     df["start_long_run"] = long_run.clip(0.0, 1.0)
     df["start_recent"] = recent.clip(0.0, 1.0)
 
-    # Six substitute appearances per club per match: 11 starters x 78 minutes
-    # leaves 132 of the 990 a team plays, and 132/22 is six. Keepers are excluded
-    # -- a reserve keeper coming on is rare enough to leave to his own rate.
     outfield_subs = ((1 - df["p_start"]) * blended_sub).where(~df["is_keeper"], 0.0)
     scale = _club_scale(outfield_subs, df["team"], SUBS_PER_MATCH)
     df["p_sub"] = np.where(df["is_keeper"], blended_sub,
                            (blended_sub * df["team"].map(scale)).clip(0.0, 1.0))
 
-    # How long he plays *when he starts*, which is a different question from how
-    # often he starts. Season minutes divided by starts cannot answer it --
-    # mixing in substitute cameos undercounts a genuine 90-minute regular the
-    # moment he has come off the bench even once -- but the per-gameweek archive
-    # can: a row where he started reports minutes from that start alone. Absent
-    # that archive, or absent enough of it for a given player, he opens on the
-    # league average and the user says otherwise where he knows better. See
-    # OVERRIDABLE and _p60_given_start.
     if "recent_mins_if_start" not in df:
         df["mins_if_start"] = float(ASSUMED_START_MINUTES)
     else:
@@ -969,17 +523,6 @@ def minutes_model(players: pd.DataFrame,
 
 
 def _minutes_flags(df: pd.DataFrame) -> pd.Series:
-    """Reasons the minutes assumption above is worth a manual look, not a fact.
-
-    Three things the model either cannot see or can only half-correct for:
-    a shift length so inconsistent that its own average is a poor summary
-    (see MINS_VOLATILE_CV), a club move that may have changed his role (his
-    current-season minutes archive already reflects the new club once he has
-    played there, but a mid-season mover's rows mix both clubs with no way to
-    tell them apart), and a fitness/squad status the API itself is unsure
-    about. Comma-joined so a CLI table can show it in one column; empty string
-    means nothing stood out.
-    """
     columns = {}
 
     if "recent_mins_std" in df and "recent_mins_if_start" in df:
@@ -1006,31 +549,11 @@ def _minutes_flags(df: pd.DataFrame) -> pd.Series:
 
 
 def _p60_given_start(mins_if_start):
-    """P(reaches 60 minutes | starts), given how long his shift is.
-
-    A logistic pinned at two points rather than fitted -- an hour-long shift
-    reaches the hour half the time by definition, and the league-average shift
-    reaches it P60_GIVEN_START of the time. See P60_SLOPE_MINUTES in config.
-
-    Not applied to substitutes. This curve describes the length of a *start*,
-    calibrated on starters; a player who came on with twenty minutes left is
-    bounded by when he came on, not by how a starter's match tends to end.
-
-    Accepts a scalar or a Series; returns a bare ndarray either way, so a
-    caller wanting one number wraps it in float().
-    """
     minutes = np.asarray(mins_if_start, dtype=float)
     return 1.0 / (1.0 + np.exp(-(minutes - P60_MIDPOINT_MINUTES) / P60_SLOPE_MINUTES))
 
 
 def _mins_if_start(player) -> float:
-    """One player's shift length, falling back to the league average.
-
-    The column is younger than the rest of the minutes family, so a row that
-    predates it -- a stored snapshot, a CSV round-trip -- reads as the 78
-    minutes everybody used to be assumed to play, which is exactly what that
-    row was scored with when it was written.
-    """
     try:
         value = float(player.get("mins_if_start", ASSUMED_START_MINUTES))
     except (TypeError, ValueError):
@@ -1039,12 +562,6 @@ def _mins_if_start(player) -> float:
 
 
 def _derive_minutes(df: pd.DataFrame) -> None:
-    """p_play, p60 and exp_minutes from p_start, p_sub and mins_if_start.
-
-    The one place the forward minutes formula lives. Everything else that moves
-    a member of the family -- the pipeline, an override, a club rebalance --
-    comes back through here rather than restating it.
-    """
     p_start, p_sub = df["p_start"], df["p_sub"]
     mins = df["mins_if_start"]
     df["p_play"] = p_start + (1 - p_start) * p_sub
@@ -1055,31 +572,6 @@ def _derive_minutes(df: pd.DataFrame) -> None:
 
 def conserve_team_output(players: pd.DataFrame,
                          strength: pd.DataFrame | None) -> pd.DataFrame:
-    """Make each club's per-90 rates add up to what the club actually produces.
-
-    A per-90 rate is a share of team output, but nothing until now made the
-    shares sum to one. Once every club fields a full eleven that omission stops
-    being hidden and starts being wrong in the opposite direction: the squads
-    collectively expected 37.8 goals in a gameweek whose own fixture lambdas
-    said 29.7, and 74 bonus points in a gameweek where the rules award 60. Those
-    are not disagreements with an outside benchmark, they are the model
-    contradicting itself.
-
-    Three quantities are fixed by something outside the player rates, so three
-    get normalised:
-
-      * **Goals.** The fixture lambdas already decide how many a team scores.
-        Scaling npxg_per90 so the squad sums to the club's per-match xG makes
-        `attack_scale` conserve them exactly rather than approximately.
-      * **Assists.** An assist needs a goal, so the league's assists-per-goal
-        ratio pins the total once goals are pinned -- measured per *open-play*
-        goal, since that is what the club's npxG target counts.
-      * **Bonus.** Three points per match per team, by rule and by arithmetic.
-
-    Everything else -- clean sheets, concessions, saves, defensive contribution
-    -- is already anchored to a team-level quantity or is genuinely per-player,
-    and is left alone.
-    """
     if strength is None or "exp_minutes" not in players:
         return players
 
@@ -1103,8 +595,6 @@ def conserve_team_output(players: pd.DataFrame,
     return df
 
 
-# Which shrinkage weight stands behind each conserved rate, so the correction
-# below can tell an evidenced number from an assumed one.
 EVIDENCE_WEIGHT = {
     "npxg_per90": "attack_evidence_weight",
     "xa_per90": "xa_evidence_weight",
@@ -1114,29 +604,6 @@ EVIDENCE_WEIGHT = {
 
 def _conserve_column(rate: pd.Series, share: pd.Series, weight: pd.Series,
                      target: pd.Series, team: pd.Series) -> pd.Series:
-    """Bring each club's total to `target`, charging it to the least-evidenced rates.
-
-    The old version scaled every player at a club by the same factor, and that
-    turned out to be a quiet tax on exactly the players the model knows best.
-    Shrinkage pulls a rate toward the positional average from *both* sides, so a
-    squad's fringe -- including players with literally no minutes, who are pure
-    prior -- gets lifted to something a regular would earn. Their contributions
-    add up: Manchester City's squad projected 4.71 bonus a match against the 2.78
-    the rules actually pay, and closing that gap uniformly took 41% off Haaland,
-    whose own bonus rate is one of the best-evidenced numbers in the league.
-    Shrinkage had already cost him 15%; the conservation step then charged him
-    for the assumptions made about his reserve goalkeeper.
-
-    So the correction is applied as `lam ** (1 - weight)`: a player whose rate is
-    all evidence (weight 1) is untouched, one who is all prior (weight 0) takes
-    it in full, and everyone else in between. `lam` is found by bisection --
-    the total is monotone in it, so the club still lands exactly on its target,
-    which is the whole point of this function and is not negotiable.
-
-    Where protecting the evidenced players cannot get there on its own, the
-    remainder is taken uniformly. Conserving the total matters more than who
-    pays for it: an unconserved club contradicts its own fixture lambdas.
-    """
     out = rate.copy()
     exponent = (1.0 - weight).clip(0.0, 1.0)
 
@@ -1155,7 +622,6 @@ def _conserve_column(rate: pd.Series, share: pd.Series, weight: pd.Series,
             continue
 
         if produced(MAX_RATE_SCALE) <= goal:
-            # A squad the data barely knows: do what is defensible, no more.
             lam = MAX_RATE_SCALE
         else:
             lo, hi = 0.0, MAX_RATE_SCALE
@@ -1168,7 +634,6 @@ def _conserve_column(rate: pd.Series, share: pd.Series, weight: pd.Series,
             lam = (lo + hi) / 2
 
         scaled = r * np.power(lam, a)
-        # Whatever protecting the evidenced players could not absorb.
         total = float((scaled * s).sum())
         if total > 0:
             scaled *= min(goal / total, MAX_RATE_SCALE)
@@ -1178,46 +643,12 @@ def _conserve_column(rate: pd.Series, share: pd.Series, weight: pd.Series,
 
 
 def _club_scale(value: pd.Series, team: pd.Series, target: float) -> pd.Series:
-    """Per-club multiplier that brings `value` to `target`, within reason.
-
-    Capped because normalisation is a corrective, not a licence. An unbounded
-    factor would take a club whose squad the data barely knows and multiply the
-    two players it does know into superstars, which is a worse error than the
-    one being fixed.
-    """
     total = value.groupby(team).sum()
     return (target / total.replace(0.0, np.nan)).clip(upper=MAX_MINUTES_SCALE).fillna(1.0)
 
 
 def _normalise_to(value: pd.Series, df: pd.DataFrame,
                   targets: dict[bool, float]) -> pd.Series:
-    """Scale within each (club, keeper?) group so the group sums to its target.
-
-    One multiplier per club, found by bisection on
-
-        f(lam) = sum_i min(MAX_P_START, v_i * min(lam, MAX_MINUTES_SCALE))
-
-    which is monotone in lam, so the answer is exact. The shape of this matters
-    more than it looks:
-
-      * **One lam, not an iteration.** The first version rescaled repeatedly,
-        redistributing what the ceiling rejected -- and each pass compounded the
-        previous one, so a player with 20% start evidence could be ratcheted to
-        certainty in four steps of 2.5x. A single multiplier preserves the
-        *shape* of the evidence: everyone at a club moves together, and the
-        pecking order the data supports is the pecking order that comes out.
-
-      * **The ceiling is 0.95, not 1.0.** Nobody is certain to start. Last
-        season each club's single most-nailed player averaged a 0.966 start
-        rate, first-choice keepers a 0.921 -- and that is the *maximum order
-        statistic*, measured after the fact. The first version pinned 26
-        players at exactly 1.0 in a league where eight managed 38/38.
-
-      * **The scale is capped at 2.5x total.** Normalising to eleven is a
-        correction for players the data cannot see, not a promotion for the
-        ones it can. If a club's evidence is so thin that 2.5x still does not
-        reach eleven starters, the shortfall is accepted rather than invented.
-    """
     out = value.clip(0.0, MAX_P_START)
     for is_keeper, target in targets.items():
         mask = df["is_keeper"] == is_keeper
@@ -1231,7 +662,7 @@ def _normalise_to(value: pd.Series, df: pd.DataFrame,
                                         v * min(lam, MAX_MINUTES_SCALE)).sum())
 
             if fielded(MAX_MINUTES_SCALE) <= target:
-                lam = MAX_MINUTES_SCALE  # thin squad: do what is defensible, no more
+                lam = MAX_MINUTES_SCALE
             else:
                 lo, hi = 0.0, MAX_MINUTES_SCALE
                 for _ in range(50):
@@ -1245,21 +676,9 @@ def _normalise_to(value: pd.Series, df: pd.DataFrame,
     return out
 
 
-# Every model input a user may sensibly disagree with, and the range it is
-# allowed to take. Each also accepts a `<name>_mult` column, which multiplies
-# whatever the model derived instead of replacing it -- usually the more natural
-# way to express an opinion ("about 20% better than his old club suggests").
-# Order matters for the four minutes fields. They are applied in the order
-# listed, and exp_minutes is solved against whatever the three before it left --
-# so stating all four means "this start probability, this shift, this bench
-# chance, and the minutes I actually want", with the last one arbitrating.
 OVERRIDABLE = {
     "p_start": (0.0, 1.0),
     "mins_if_start": (0.0, MAX_MINS_IF_START),
-    # p_sub is P(comes on | doesn't start). Left untouched, a benched player's
-    # p_play floors at whatever this was estimated at, no matter how far
-    # p_start or exp_minutes gets pushed down -- a keeper who is realistically
-    # never coming off the bench still needs a way to say so.
     "p_sub": (0.0, 1.0),
     "exp_minutes": (0.0, 90.0),
     "npxg_per90": (0.0, 3.0),
@@ -1275,26 +694,6 @@ OVERRIDABLE = {
 
 def _solve_exp_minutes(exp_minutes: float, p_start: float,
                        p_sub: float) -> tuple[float, float]:
-    """Invert the forward minutes formula. Returns (p_start, mins_if_start).
-
-    There are two ways a player comes to play more minutes -- he starts more
-    often, or he stays on longer when he does -- and stating exp_minutes does
-    not say which. This prefers the second, because it is the smaller claim:
-    lengthening a man's shift says nothing about anyone else, while raising his
-    start probability takes a shirt off a team-mate and drags the whole club
-    through renormalise_minutes. So holding p_start where the user left it,
-
-        exp_minutes = p_start*mins_if_start + (1-p_start)*p_sub*ASSUMED_SUB_MINUTES
-
-    solved for mins_if_start. Only when that runs out of room -- he cannot play
-    more than the ninety, and if he rarely starts even ninety is not enough --
-    does the shift go to its maximum and p_start absorb the remainder, which is
-    the old behaviour and still the right answer for the case it was written
-    for: a player the model has never seen, asserted into the side.
-
-    Clipped to MAX_P_START rather than 1.0 to match the ceiling every other
-    minutes path in this file uses -- nobody is nailed on beyond it.
-    """
     if p_start > 0.0:
         shift = (exp_minutes - (1.0 - p_start) * p_sub * ASSUMED_SUB_MINUTES) / p_start
         if shift <= MAX_MINS_IF_START:
@@ -1306,14 +705,6 @@ def _solve_exp_minutes(exp_minutes: float, p_start: float,
 
 
 def _recompute_minutes(df: pd.DataFrame, mask) -> None:
-    """Keep the minutes family consistent after one of its members moves.
-
-    p_start, mins_if_start and exp_minutes are three views of one assumption, so
-    setting any of them has to re-derive the rest: the appearance points, the
-    60-minute clean-sheet gate and the minutes scaling all read from different
-    members of this family, and letting them drift apart produces a player who
-    starts every week but plays no minutes.
-    """
     subset = df.loc[mask, ["p_start", "p_sub", "mins_if_start"]].copy()
     _derive_minutes(subset)
     for column in ("p_play", "p60", "exp_minutes"):
@@ -1321,18 +712,6 @@ def _recompute_minutes(df: pd.DataFrame, mask) -> None:
 
 
 def apply_fields(player: Mapping[str, Any], fields: Mapping[str, Any]) -> dict:
-    """Apply overrides to one player, as a plain mapping.
-
-    The single-player counterpart to `apply_overrides`, which works a column at
-    a time across a whole table. Both exist because they are asked different
-    questions: the table version answers "what does the pool look like with
-    these opinions in it", and this one answers "what is this player worth in
-    *this* fixture" -- a question that only arises per gameweek, where building
-    a one-row DataFrame per player per fixture would be absurd.
-
-    Kept honest by `test_apply_fields_matches_apply_overrides` in
-    scripts/verify-per-gameweek.py, which runs both over the same inputs.
-    """
     out = dict(player)
     if not fields:
         return out
@@ -1353,8 +732,6 @@ def apply_fields(player: Mapping[str, Any], fields: Mapping[str, Any]) -> dict:
         else:
             continue
 
-        # exp_minutes is solved last and wins: it is the more specific claim,
-        # and _solve_exp_minutes reads whatever the other three just set.
         if field in ("p_start", "mins_if_start", "p_sub"):
             minutes_touched = True
         elif field == "exp_minutes":
@@ -1381,14 +758,6 @@ def apply_fields(player: Mapping[str, Any], fields: Mapping[str, Any]) -> dict:
 def gameweek_overrides(overrides: pd.DataFrame | None,
                        players: pd.DataFrame | None = None
                        ) -> dict[tuple[int, int], dict]:
-    """Pull the per-gameweek rows out of an overrides table.
-
-    A row with a `gw` is an opinion about one match -- rested for a cup final,
-    back from injury in three weeks, moved up front while the striker is out.
-    A row without one is an opinion about the player, and is handled by
-    `apply_overrides` as before. Keying on (fpl_id, gw) rather than layering
-    frames keeps the two kinds from having to know about each other.
-    """
     if overrides is None or not len(overrides) or "gw" not in overrides.columns:
         return {}
 
@@ -1421,19 +790,6 @@ def gameweek_overrides(overrides: pd.DataFrame | None,
 
 
 def apply_overrides(df: pd.DataFrame, overrides: pd.DataFrame) -> pd.DataFrame:
-    """Replace any modelled input with your own number, by name or by id.
-
-    Last season's rates are an estimate, not a fact, and there are things you
-    know that they cannot contain: a new penalty taker, a change of role, a
-    player whose xG was produced in a system he has left. This is the hook for
-    saying so. Anything listed in OVERRIDABLE can be set outright, or scaled
-    with a `_mult` column.
-
-    Overriding a rate deliberately bypasses the shrinkage that raw data goes
-    through -- if you assert a number, the model uses that number. Shrinkage
-    exists to stop a small sample from speaking too loudly, and an override is
-    not a sample.
-    """
     if overrides is None or not len(overrides):
         return df
 
@@ -1448,9 +804,6 @@ def apply_overrides(df: pd.DataFrame, overrides: pd.DataFrame) -> pd.DataFrame:
         df["mins_if_start"] = float(ASSUMED_START_MINUTES)
 
     for _, row in overrides.iterrows():
-        # A row carrying a `gw` is about one match, not about the player.
-        # gameweek_overrides() picks those up; applying them here as well would
-        # silently spread a one-week opinion across the whole horizon.
         if "gw" in overrides.columns and not pd.isna(row.get("gw")):
             continue
         if "fpl_id" in overrides.columns and not pd.isna(row.get("fpl_id")):
@@ -1463,9 +816,6 @@ def apply_overrides(df: pd.DataFrame, overrides: pd.DataFrame) -> pd.DataFrame:
             continue
 
         touched, minutes_touched, explicit_minutes = [], False, False
-        # Whether p_start itself moved, which is the only part of the family the
-        # club has to be rebalanced around: lengthening one man's shift takes
-        # nothing off a team-mate, so it must not pin him.
         start_moved = False
         for field, (low, high) in OVERRIDABLE.items():
             if field not in df.columns:
@@ -1483,8 +833,6 @@ def apply_overrides(df: pd.DataFrame, overrides: pd.DataFrame) -> pd.DataFrame:
             else:
                 continue
 
-            # exp_minutes is solved last and wins: it is the more specific
-            # claim, and _solve_exp_minutes reads whatever the other three set.
             if field == "p_start":
                 minutes_touched = start_moved = True
             elif field in ("mins_if_start", "p_sub"):
@@ -1503,19 +851,10 @@ def apply_overrides(df: pd.DataFrame, overrides: pd.DataFrame) -> pd.DataFrame:
             pinned = df.loc[mask, "exp_minutes"].copy() if explicit_minutes else None
             _recompute_minutes(df, mask)
             if pinned is not None:
-                # _recompute_minutes derives exp_minutes from the other two; if
-                # the user stated the minutes directly, that stands.
                 df.loc[mask, "exp_minutes"] = pinned
             if start_moved:
-                # Renormalising a club back to eleven starters has to know whose
-                # number is not its to move. See renormalise_minutes().
                 df.loc[mask, "minutes_pinned"] = True
         for field in touched:
-            # An assertion is the strongest evidence there is, so conservation
-            # treats it as fully evidenced and takes its correction from the
-            # rates the model was guessing at instead. Without this, stating a
-            # rate and then balancing the club's books would quietly scale the
-            # stated number -- the one thing an override must never do.
             weight_column = EVIDENCE_WEIGHT.get(field.split("×")[0])
             if weight_column and weight_column in df.columns:
                 df.loc[mask, weight_column] = 1.0
@@ -1527,22 +866,6 @@ def apply_overrides(df: pd.DataFrame, overrides: pd.DataFrame) -> pd.DataFrame:
 def _calibrate_bonus_prior(df: pd.DataFrame, raw: pd.Series, prior: pd.Series,
                            evidence: pd.Series,
                            prior_minutes: pd.Series) -> pd.Series:
-    """Scale the bonus prior so the shrunk rates pay out what the rules do.
-
-    A per-90 rate becomes points by way of expected minutes, and across the
-    league those minutes are fixed: eleven players on the pitch per club, and
-    2.78 bonus points to divide between them. So the prior is not free -- it is
-    whatever makes the shrunk rates add up to that, given the evidence already
-    in hand. Solved rather than assumed, because the two parts are linear:
-
-        sum(w.raw.share) + m . sum((1-w).prior.share) = clubs x 2.78
-
-    leaves one unknown. `m` comes out near 0.75, which is the size of the bias
-    the established-player average was carrying.
-
-    The positions keep their relative order -- forwards still out-earn
-    defenders by whatever the data says -- only the level moves.
-    """
     share = pd.to_numeric(df["exp_minutes"], errors="coerce").fillna(0.0) / 90.0
     weight = (evidence / (evidence + prior_minutes)).fillna(0.0)
 
@@ -1552,19 +875,11 @@ def _calibrate_bonus_prior(df: pd.DataFrame, raw: pd.Series, prior: pd.Series,
     if assumed <= 0:
         return prior
 
-    # Clipped, not trusted blindly: if the evidence alone already pays the whole
-    # pool the honest answer is a prior of nothing, and a runaway multiplier the
-    # other way would be a different bug wearing this one's clothes.
     multiplier = float(np.clip((target - evidenced) / assumed, 0.0, 3.0))
     return prior * multiplier
 
 
 def _bisect_scale(values: np.ndarray, target: float) -> np.ndarray:
-    """One bounded multiplier that brings `values` to `target`, each clipped at
-    MAX_P_START. Shared by every tier of `renormalise_minutes`: the same shape
-    solves "bring this group to eleven" and "bring this position's free players
-    back to what they would have had," just with a different `values`/`target`.
-    """
     if not len(values) or values.sum() <= 0:
         return values.copy()
 
@@ -1588,39 +903,6 @@ def _bisect_scale(values: np.ndarray, target: float) -> np.ndarray:
 
 def renormalise_minutes(players: pd.DataFrame,
                         baseline_p_start: pd.Series | None = None) -> pd.DataFrame:
-    """Put each club back to eleven starters after an override moved somebody.
-
-    Minutes are a fixed pool. Eleven players start, and asserting that one of
-    them starts more can only mean somebody else starts less -- but overrides are
-    applied at the end of the pipeline, long after `minutes_model` balanced the
-    squad, and nothing used to rebalance it. Raising one fringe player's p_start
-    to 0.9 left Manchester City fielding 11.6 players and scoring 8% more than
-    the odds said they would, with the extra goals conjured out of nothing rather
-    than taken from a team-mate.
-
-    So the assertion is kept and the rest of the club absorbs it -- and absorbs
-    it unevenly. A promoted winger competes for a shirt with the other wingers,
-    not with the centre-backs, so whoever shares a position with the player who
-    moved feels most of the consequence: their free peers at the same position
-    are rescaled first, by one bounded multiplier, to soak up exactly what that
-    position gained or lost. Only what they cannot absorb -- because they are
-    already at nought, or already as nailed as it gets -- spills into the rest
-    of the club, scaled the same way `_normalise_to` does it, so the pecking
-    order the data supports survives the adjustment either way. Goalkeepers
-    have no such split: a club fields one, so there is no "same position" to
-    prefer among the rest.
-
-    `baseline_p_start` is each player's p_start before *any* override touched
-    the pool -- `minutes_model`'s own answer -- which is what "what this
-    position gained or lost" is measured against. Falls back to the current
-    column if not given, which loses the position split for pinned players
-    whose own value has already moved, but still balances the club.
-
-    If the pinned players alone already exceed eleven, that stands: the user has
-    said so, and quietly scaling their numbers back to fit would be the model
-    overruling an assertion. The club simply fields more than eleven and
-    `goal_coverage` reports it.
-    """
     if "minutes_pinned" not in players or not players["minutes_pinned"].any():
         return players
 
@@ -1669,23 +951,17 @@ def renormalise_minutes(players: pd.DataFrame,
             values = df.loc[other_free, "p_start"].to_numpy(dtype=float)
             df.loc[other_free, "p_start"] = _bisect_scale(values, remaining_other)
 
-    # Everyone who moved needs the rest of the minutes family re-derived from
-    # the new p_start; the pinned players already had that done for them.
     _recompute_minutes(df, ~pinned)
     return df
 
 
 def _prev(df: pd.DataFrame, column: str) -> pd.Series:
-    """Last season's archived total, zero for anyone the archive lacks."""
     return pd.to_numeric(df.get(f"prev_{column}"), errors="coerce").reindex(df.index).fillna(0.0) \
         if f"prev_{column}" in df else pd.Series(0.0, index=df.index)
 
 
 def _previous_weight(df: pd.DataFrame, basis: SeasonBasis | None,
                      same_club: bool = False) -> pd.Series:
-    """Per-player weight on last season's FPL totals: `basis.previous_weight`
-    for anyone the archive knows, and with `same_club`, only if he is still
-    where he produced them."""
     weight = basis.previous_weight if basis else 0.0
     if weight <= 0 or "prev_team" not in df:
         return pd.Series(0.0, index=df.index)
@@ -1697,26 +973,18 @@ def _previous_weight(df: pd.DataFrame, basis: SeasonBasis | None,
 
 def _pooled_rate(df: pd.DataFrame, column: str, carry: pd.Series,
                  minutes: pd.Series) -> pd.Series:
-    """A per-90 rate over this season's total plus last season's, weighted."""
     total = pd.to_numeric(df[column], errors="coerce").fillna(0.0) + carry * _prev(df, column)
     return (total / minutes.replace(0.0, np.nan) * 90.0).fillna(0.0)
 
 
 def _shrink(rate: pd.Series, minutes: pd.Series, prior: pd.Series,
             prior_minutes: pd.Series | float = PLAYER_PRIOR_MINUTES) -> pd.Series:
-    """Pull a per-90 rate toward a prior, weighted by how much evidence there is."""
     rate = pd.to_numeric(rate, errors="coerce").fillna(0.0)
     weight = minutes / (minutes + prior_minutes)
     return weight * rate + (1 - weight) * prior
 
 
 def detect_movers(players: pd.DataFrame, team_map: dict[str, str]) -> pd.DataFrame:
-    """Flag players whose current club is not one they played for last season.
-
-    Understat records every club a player turned out for, so a player whose FPL
-    club appears nowhere in that list moved over the summer. His rates describe
-    a different team, which is worth knowing before trusting them.
-    """
     df = players.copy()
 
     def clubs_of(row) -> list[str]:
@@ -1736,30 +1004,11 @@ def detect_movers(players: pd.DataFrame, team_map: dict[str, str]) -> pd.DataFra
 def attach_rates(players: pd.DataFrame, strength: pd.DataFrame | None = None,
                  us_attack_rating: dict[str, float] | None = None,
                  basis: SeasonBasis | None = None) -> pd.DataFrame:
-    """Per-90 attacking rates, preferring Understat and falling back to FPL.
-
-    Understat's npxG is non-penalty, which matters: penalties are modelled
-    separately and assigned to the designated taker rather than smeared across
-    everyone who happens to have a high xG.
-
-    Rates are then adjusted for a change of club and shrunk toward the
-    positional average, weighted by the minutes behind them. Without the
-    shrinkage the optimiser reliably picks whoever had the smallest, luckiest
-    sample in the league.
-
-    Two seasons stand behind every rate where two are available -- see
-    PREVIOUS_SEASON_MATCHES. Understat's completed season and the one under
-    way are pooled by `basis.understat_weight`; the FPL API's totals and last
-    season's archived ones by `basis.previous_weight`.
-    """
     df = players.copy()
     carry = _previous_weight(df, basis)
     minutes = df["minutes"].astype(float) + carry * _prev(df, "minutes")
     full_fpl = basis.pooled_fpl_minutes if basis else MATCHES_PER_SEASON * 90.0
 
-    # Understat: last season's totals at the weight the calendar gives them,
-    # the club-context adjustment on that half only (it is what was produced
-    # somewhere else), plus whatever this season has produced here.
     us_weight = basis.understat_weight if basis else 1.0
     us_last = pd.to_numeric(df.get("us_minutes"), errors="coerce").fillna(0.0) * us_weight
     us_now = pd.to_numeric(df.get("cur_us_minutes"), errors="coerce").reindex(df.index).fillna(0.0) \
@@ -1783,19 +1032,11 @@ def attach_rates(players: pd.DataFrame, strength: pd.DataFrame | None = None,
             total = total + pd.to_numeric(df[now], errors="coerce").fillna(0.0)
         return (total / us_minutes.replace(0.0, np.nan) * 90.0).fillna(0.0)
 
-    # The FPL fallback for anyone Understat has never seen: its xG includes
-    # penalties, which are modelled separately, so the league's share comes off.
     fpl_xg90 = _pooled_rate(df, "expected_goals", carry, minutes) * (1 - PENALTY_GOAL_SHARE)
     fpl_xa90 = _pooled_rate(df, "expected_assists", carry, minutes)
     raw_xg90 = understat_rate("npxG", "cur_npxG").where(has_understat, fpl_xg90)
     raw_xa90 = understat_rate("xA", "cur_xA").where(has_understat, fpl_xa90)
 
-    # The minutes that actually produced each rate, and the full workload they
-    # should be read against. An Understat-backed attacking rate is backed by
-    # Understat's minutes from Understat's seasons; everything else is backed by
-    # the FPL API's. They count different seasons at different weights, and
-    # weighting last season's xG by this season's minutes alone is exactly how
-    # a genuine 0.6 npxG/90 striker got shrunk to nothing in September.
     attack_minutes = us_minutes.where(has_understat, minutes)
     full_us = basis.pooled_understat_minutes if basis else MATCHES_PER_SEASON * 90.0
     attack_full = pd.Series(np.where(has_understat, full_us, full_fpl), index=df.index)
@@ -1811,10 +1052,6 @@ def attach_rates(players: pd.DataFrame, strength: pd.DataFrame | None = None,
     df["raw_dc_per90"] = _pooled_rate(df, "defensive_contribution", carry, minutes)
     df["raw_saves_per90"] = _pooled_rate(df, "saves", carry, minutes)
 
-    # Recency: tilt each rate by how the player was trending late last season.
-    # Applied before shrinkage on purpose, so a big multiplier off a short hot
-    # streak still gets pulled back toward the positional prior rather than
-    # sailing straight through into the projection.
     df["recency"] = 1.0
     for column, target in (("expected_goals_mult", "raw_npxg_per90"),
                            ("expected_assists_mult", "raw_xa_per90"),
@@ -1827,17 +1064,7 @@ def attach_rates(players: pd.DataFrame, strength: pd.DataFrame | None = None,
             if column == "expected_goals_mult":
                 df["recency"] = multiplier
 
-    # A change of club moves a player's attacking output toward his new team's
-    # level (`team_context`, applied above to the half of his record produced
-    # at the old club). Only the attacking rates are adjusted -- defensive
-    # contribution is a function of role and position far more than of team
-    # quality, and the clean-sheet and concession terms already use the new
-    # club's defence.
 
-    # One prior per rate, because the evidence for them is not the same. The two
-    # attacking rates are measured across seasons (see NPXG_PRIOR_MINUTES); the
-    # rest keep the standing default, since nothing in the cache spans two
-    # seasons for defensive contribution, saves, bonus or cards.
     def prior_for(base: float) -> pd.Series:
         series = pd.Series(base, index=df.index, dtype=float)
         if "moved_club" in df:
@@ -1850,19 +1077,6 @@ def attach_rates(players: pd.DataFrame, strength: pd.DataFrame | None = None,
     }
     default_prior = prior_for(PLAYER_PRIOR_MINUTES)
 
-    # The prior for each rate is the minutes-weighted average among established
-    # players in the same position, so a fringe forward is shrunk toward what
-    # forwards do rather than toward what the league as a whole does.
-    #
-    # Established *by the measure that backs that rate*, and shrunk against the
-    # same. Reading every prior off one fixed 900-minute cut is what emptied the
-    # group the week a season rolled over, and an empty group is a prior of
-    # zero -- which shrinks the entire league toward scoring nothing at the exact
-    # moment the model has least of its own to say.
-    #
-    # Yellow cards are in this list now too. A rate over a small sample is noise
-    # whichever sign it carries, and left raw a player with one booking in a
-    # single 90-minute cameo projected a card every match.
     default_evidence = (minutes, pd.Series(full_fpl, index=df.index))
     rate_evidence = {
         "raw_npxg_per90": (attack_minutes, attack_full),
@@ -1886,18 +1100,6 @@ def attach_rates(players: pd.DataFrame, strength: pd.DataFrame | None = None,
             )
         prior = df["pos"].map(priors).fillna(0.0)
 
-        # Bonus is a fixed pool -- three points per match per side, by rule --
-        # and a prior that does not respect that quietly mints points. Taken as
-        # the minutes-weighted rate among *established* players it is the rate of
-        # a regular, and it was then handed to everyone, including players with
-        # no minutes at all. Summed over expected minutes the league came out
-        # 33% above what the rules actually pay.
-        #
-        # Nothing downstream noticed, because conserve_team_output forced each
-        # club back to its 2.78 anyway -- by scaling the whole squad, so the
-        # invented points were taken back off whoever had really earned them.
-        # That is what made the model pay Haaland half his historical bonus:
-        # not regression, but a biased prior recovered from the wrong player.
         prior_minutes = rate_prior.get(raw, default_prior)
         if target == "bonus_per90" and "exp_minutes" in df:
             prior = _calibrate_bonus_prior(df, df[raw], prior, evidence, prior_minutes)
@@ -1906,13 +1108,6 @@ def attach_rates(players: pd.DataFrame, strength: pd.DataFrame | None = None,
     for target, series in shrunk.items():
         df[target] = series
 
-    # How much of each rate is the player's own record rather than the
-    # positional prior standing in for it. Kept because conserve_team_output
-    # needs to know whose numbers it is allowed to move: a squad's books have to
-    # balance, but the player who should pay for that is the one the model was
-    # guessing about, not the one it measured over three thousand minutes.
-    # Each against the prior that rate was actually shrunk with -- npxG is
-    # believed far sooner than xA is, and conservation has to know which.
     df["attack_evidence_weight"] = (
         attack_minutes / (attack_minutes + rate_prior["raw_npxg_per90"])).fillna(0.0)
     df["xa_evidence_weight"] = (
@@ -1927,26 +1122,7 @@ def attach_rates(players: pd.DataFrame, strength: pd.DataFrame | None = None,
     return df
 
 
-# --------------------------------------------------------------------------- #
-# Layer 3: points
-# --------------------------------------------------------------------------- #
-
 def _minutes_scenarios(player: pd.Series) -> list[tuple[float, float, float]]:
-    """[(probability, minutes, reaches_60)] for the start and substitute cases.
-
-    Clean sheets, goals conceded, saves and defensive contribution are all
-    non-linear in minutes, so they must be evaluated per scenario and then
-    averaged -- evaluating them once at the mean would be wrong.
-
-    `reaches_60` rides along rather than being recovered from `minutes` because
-    the two are not the same question. A start of 78 minutes is a *mean*: it
-    reaches the hour 87% of the time, not always, and a start of 60 reaches it
-    about half the time. A substitute's 22 minutes never does. Carrying it here
-    is also what keeps the appearance term honest -- p60 is the probability-
-    weighted sum of this column, by construction, so the model cannot say a
-    player reaches 60 minutes one often for his appearance point and another
-    often for his clean sheet.
-    """
     p_start = float(player["p_start"])
     p_sub_given_no_start = float(player["p_sub"])
     mins_if_start = _mins_if_start(player)
@@ -1958,11 +1134,9 @@ def _minutes_scenarios(player: pd.Series) -> list[tuple[float, float, float]]:
 
 def _player_fixture_points(player: pd.Series, lam_for: float, lam_against: float,
                            team_npxg: float, team_xgc: float) -> dict[str, float]:
-    """Expected FPL points for one player in one fixture, broken down by source."""
     pos = player["pos"]
     minutes_share = float(player["exp_minutes"]) / 90.0
 
-    # Scale the player's season-average rate to this specific fixture.
     lam_openplay = lam_for * (1 - PENALTY_GOAL_SHARE)
     attack_scale = lam_openplay / team_npxg if team_npxg > 0 else 1.0
     defence_scale = lam_against / team_xgc if team_xgc > 0 else 1.0
@@ -1970,11 +1144,6 @@ def _player_fixture_points(player: pd.Series, lam_for: float, lam_against: float
     exp_goals = float(player["npxg_per90"]) * minutes_share * attack_scale
     exp_assists = float(player["xa_per90"]) * minutes_share * attack_scale
 
-    # Penalties go to the designated taker only, and only while he is on the
-    # pitch. Scaled by minutes share rather than by p_start, like every other
-    # rate here: penalties are awarded across the whole match, but a starter is
-    # only out there for 78 of the 90. Charging the full match to a man who
-    # plays 87% of it overstated every premium penalty taker by about 13%.
     pen_goals = pen_miss = 0.0
     if player.get("penalties_order") == 1:
         awarded = lam_for * PENALTY_GOAL_SHARE / PENALTY_CONVERSION
@@ -1992,8 +1161,6 @@ def _player_fixture_points(player: pd.Series, lam_for: float, lam_against: float
     clean_sheet_pts = concede_pts = saves_pts = dc_pts = 0.0
     exp_clean_sheets = 0.0
     threshold = DEF_CONTRIB_THRESHOLD[pos]
-    # The club's full-match figure, reported for context. What a player is paid
-    # for is the on-pitch one computed per scenario below.
     team_cs_prob = ps.clean_sheet_prob(lam_against)
 
     for probability, minutes, reaches_60 in _minutes_scenarios(player):
@@ -2002,25 +1169,9 @@ def _player_fixture_points(player: pd.Series, lam_for: float, lam_against: float
         share = minutes / 90.0
         lam_on_pitch = lam_against * share
 
-        # A clean sheet needs 60 minutes, and a player who starts does not always
-        # get them -- he is subbed, or injured, or sent off. The appearance term
-        # already prices that in through p60; without the same factor here the
-        # model would say a starter reaches 60 minutes 87% of the time for his
-        # appearance point and 100% of the time for his clean sheet. Handed down
-        # by _minutes_scenarios, which is where the two are kept equal.
 
-        # The rule pays for conceding nothing *while he is on the pitch*, not
-        # for the team keeping a clean sheet: a defender subbed at 78 minutes
-        # keeps his four points if the goal arrives at 85. So this is the same
-        # on-pitch lambda the concession term below already uses -- the two are
-        # the same event counted at zero and at one, and having them read
-        # different lambdas was the model disagreeing with itself.
         cs_prob = ps.clean_sheet_prob(lam_on_pitch)
 
-        # Counted for every position, including forwards who score nothing for
-        # it: the number answers "will this be kept out while he is playing",
-        # which is what you are buying a defender for, and it should not vanish
-        # because the player in front of you does not get paid for it.
         exp_clean_sheets += probability * reaches_60 * cs_prob
 
         if CLEAN_SHEET_POINTS[pos]:
@@ -2057,30 +1208,17 @@ def _player_fixture_points(player: pd.Series, lam_for: float, lam_against: float
     }
 
 
-# --------------------------------------------------------------------------- #
-# Orchestration
-# --------------------------------------------------------------------------- #
-
 def project(horizon: int = 5, start_gw: int | None = None,
             overrides: pd.DataFrame | None = None,
             recency_half_life: float | None = None,
             force_refresh: bool = False,
             calibrate_to_odds: bool = True,
             previous_weight: float = 1.0) -> Projection:
-    """Run the full pipeline and return projected points over the horizon.
-
-    `previous_weight` scales what last season's evidence counts for once this
-    season is under way -- see SeasonBasis.previous_scale."""
     fpl_players = fpl_api.players(force_refresh)
     fpl_teams = fpl_api.teams(force_refresh)
     all_fixtures = fpl_api.fixtures(force_refresh)
     notes: list[str] = []
 
-    # Two seasons of everything. The season the API is serving names both: the
-    # one before it is complete and is the bulk of the evidence; the one under
-    # way is pooled in at the weight the calendar gives it (PREVIOUS_SEASON_
-    # MATCHES). Preseason the API's own totals are still last season's, so the
-    # archive is not read for them -- that would count the same season twice.
     year = fpl_api.season_start_year(force_refresh)
     us_stats = understat.player_stats(UNDERSTAT_SEASON or str(year - 1),
                                       force_refresh=force_refresh)
@@ -2088,12 +1226,9 @@ def project(horizon: int = 5, start_gw: int | None = None,
 
     team_names = fpl_teams["name"].tolist()
     id_to_name = dict(zip(fpl_teams["team_id"], fpl_teams["name"]))
-    # How far into the season the totals in hand actually are. Everything that
-    # divides a season total by something reads this rather than assuming 38.
     basis = season_basis(all_fixtures, id_to_name, us_stats, us_current, previous_weight)
     start_gw = start_gw or fpl_api.next_gameweek(force_refresh)
 
-    # Clubs that were relegated map to nothing and are simply dropped.
     us_clubs = sorted({club for clubs in us_stats["us_team_list"] for club in clubs})
     team_map = {club: match_team(club, team_names) for club in us_clubs}
 
@@ -2117,13 +1252,6 @@ def project(horizon: int = 5, start_gw: int | None = None,
             notes.append("last season's archived totals were unavailable; rates "
                          "rest on this season's alone")
 
-    # Per-gameweek rows, read for who has been starting lately, how long his
-    # shifts are, and the optional form tilt. In season they come from the
-    # API's own event/{gw}/live endpoint, which cannot lag the calendar;
-    # preseason, when the question is how last season ended, from the
-    # community archive of it. Either can be unavailable, and every reading
-    # then degrades to the season-long behaviour rather than taking the
-    # projection down.
     latest = None if basis.preseason else start_gw - 1
     if basis.preseason:
         gw_history = history.gameweek_history(force_refresh=force_refresh)
@@ -2136,28 +1264,20 @@ def project(horizon: int = 5, start_gw: int | None = None,
     if not len(gw_history) and not notes:
         notes.append("per-gameweek history unavailable: recent-form tilt off")
 
-    # Optional: tilt rates toward how players have been performing lately.
     if recency_half_life:
         multipliers = history.recency_multipliers(gw_history, recency_half_life,
                                                   latest=latest)
         if len(multipliers):
             players = players.merge(multipliers, on="code", how="left")
 
-    # Not optional, unlike the tilt above. Who has been starting lately is not a
-    # stylistic preference about form, it is the difference between a start rate
-    # that answers this week's question and one that answers last season's.
     form = history.start_form(gw_history, START_FORM_HALF_LIFE, latest=latest)
     if len(form):
         players = players.merge(form, on="code", how="left")
 
-    # Same archive, same recency weighting, a different question: not how often
-    # he starts but how long the shift is once he does. See MINUTES_FORM_PRIOR_MATCHES.
     mins_form = history.minutes_form(gw_history, START_FORM_HALF_LIFE, latest=latest)
     if len(mins_form):
         players = players.merge(mins_form, on="code", how="left")
 
-    # Team strength has to be known before player rates, because adjusting a
-    # transferred player's output needs the ratings of both clubs involved.
     strength = team_strength(players, us_stats, team_map, basis,
                              us_current, team_map_current)
     us_teams = understat.team_rates(us_stats)
@@ -2165,29 +1285,10 @@ def project(horizon: int = 5, start_gw: int | None = None,
     us_attack_rating = (us_teams.set_index("us_team")["team_npxg_per_match"]
                         / league_mean).to_dict() if league_mean else {}
 
-    # Minutes before rates. The two stages are independent -- neither reads the
-    # other's output -- but a rate only becomes points by way of expected
-    # minutes, and the bonus prior is calibrated against the pool those minutes
-    # imply, so it needs them in hand.
     players = minutes_model(players, basis=basis, horizon=horizon)
     players = attach_rates(players, strength, us_attack_rating, basis)
-    # renormalise_minutes prefers the same position as whoever an override
-    # moved, which means it needs to know what that position had *before* the
-    # override -- captured here, since apply_overrides is about to overwrite
-    # the very column it would otherwise have to read that from.
     minutes_baseline = players["p_start"].copy()
-    # Applied after every rate has been derived and shrunk, so that an asserted
-    # number is the one the model actually uses.
     players = apply_overrides(players, overrides)
-    # An override moves one player; these two put the club back together around
-    # him. Minutes are a fixed pool, so asserting that somebody starts takes the
-    # minutes from a team-mate rather than inventing a twelfth starter -- and
-    # the books are balanced afterwards rather than before, so a squad edited
-    # into a different shape still adds up to what the fixtures say it scores.
-    #
-    # Neither step can touch what was asserted: renormalise_minutes pins the
-    # overridden players, and conserve_team_output sees an asserted rate as
-    # fully evidenced and takes its correction from the modelled ones instead.
     players = renormalise_minutes(players, minutes_baseline)
     players = conserve_team_output(players, strength)
     per_gameweek = gameweek_overrides(overrides, players)
@@ -2219,9 +1320,6 @@ def project(horizon: int = 5, start_gw: int | None = None,
             team_xgc = float(strength_by_team.loc[team, "xgc_per_match"])
 
             for _, player in squad.iterrows():
-                # Per-match opinions land here, before the availability check:
-                # "he is back for gameweek 8" has to be able to bring in a
-                # player the season-level numbers say cannot play at all.
                 match_fields = per_gameweek.get((int(player["fpl_id"]), int(fixture["gw"])))
                 scored = apply_fields(player, match_fields) if match_fields else player
                 if scored["p_play"] <= 0:
@@ -2249,10 +1347,6 @@ def project(horizon: int = 5, start_gw: int | None = None,
     totals = per_fixture.groupby("fpl_id", as_index=False)[breakdown_cols].sum()
     totals["n_fixtures"] = per_fixture.groupby("fpl_id").size().values
 
-    # Left join, not inner: a player nobody expects to feature still belongs in
-    # the table on zero points. Dropping him would silently hide every summer
-    # signing with no Premier League minutes, which is exactly the group the
-    # user most needs to see in order to override him.
     summary = players.merge(totals, on="fpl_id", how="left")
     for column in breakdown_cols:
         summary[column] = summary[column].fillna(0.0)
@@ -2267,21 +1361,10 @@ def project(horizon: int = 5, start_gw: int | None = None,
     summary["xpts_per_m"] = summary["xpts"] / summary["price"]
     summary["value_rank"] = summary["xpts_per_m"].rank(ascending=False)
 
-    # Flag players the model cannot see: priced as though they will play, but
-    # with too little Premier League history to project from. A share of the
-    # season rather than a fixed 450 minutes, so the list still means the same
-    # thing in September as it does in May.
     evidence = summary.get("evidence_minutes", summary["minutes"])
     summary["needs_override"] = ((evidence < BLINDSPOT_SHARE * basis.pooled_fpl_minutes)
                                  & (summary["price"] >= 5.0))
 
-    # How much of each club's expected goals the model actually manages to
-    # attribute to somebody. A squad full of players with no Premier League
-    # history -- a promoted club, or one that rebuilt over the summer -- has
-    # goals the model knows the team will score but cannot assign, so its
-    # attackers look collectively cheaper than they are. This does not distort
-    # any individual player's projection, but it tells you where the pool is
-    # incomplete and an override would earn its keep.
     scored = per_fixture.merge(summary[["fpl_id", "team"]], on="fpl_id")
     team_goals = scored.groupby(["team", "fixture_id"])["exp_goals"].sum()
     expected = []
@@ -2293,7 +1376,6 @@ def project(horizon: int = 5, start_gw: int | None = None,
                 "attributed": float(team_goals.get((team, fixture["fixture_id"]), 0.0)),
                 "expected": float(lam),
             })
-    # Named distinctly: `coverage` already means odds coverage in this function.
     goals_covered = pd.DataFrame(expected).groupby("team")[["attributed", "expected"]].sum()
     goals_covered["ratio"] = (goals_covered["attributed"]
                               / goals_covered["expected"].replace(0, np.nan))
@@ -2314,9 +1396,6 @@ def project(horizon: int = 5, start_gw: int | None = None,
 
 def _understat_current(season: str, force_refresh: bool,
                        notes: list[str]) -> pd.DataFrame:
-    """The season under way on Understat, or an empty frame before it has one
-    -- the endpoint answers a season that has not started with nothing, or
-    with an error, and either way this season simply contributes no minutes."""
     try:
         stats = understat.player_stats(season, force_refresh=force_refresh)
     except Exception as error:
@@ -2329,17 +1408,6 @@ def _understat_current(season: str, force_refresh: bool,
 
 def reproject_player(projection: Projection, fpl_id: int,
                      overrides: dict[str, Any]) -> dict:
-    """Recompute one player's points after editing his inputs.
-
-    Re-running the whole pipeline to change one number takes seconds and refetches
-    nothing useful; every other player's answer is unchanged. This walks the same
-    `_player_fixture_points` the full run uses, so an edited player is scored by
-    exactly the same code as an unedited one -- the alternative, a simplified
-    "quick" path, is how a UI and its model quietly drift apart.
-
-    `overrides` may carry a `gw` key mapping a gameweek to its own fields, which
-    are layered on top of the player-level ones for that fixture only.
-    """
     players = projection.players
     row = players[players["fpl_id"] == fpl_id]
     if row.empty:
@@ -2380,8 +1448,6 @@ def reproject_player(projection: Projection, fpl_id: int,
         "breakdown": {k: round(v, 4) for k, v in breakdown.items()},
         "inputs": {k: (None if pd.isna(player.get(k)) else float(player[k]))
                    for k in OVERRIDABLE if k in player.index},
-        # The minutes family is derived, never typed, so it is absent from
-        # `inputs` -- and p_play is what the optimiser filters its pool on.
         "derived": {k: (None if pd.isna(player.get(k)) else float(player[k]))
                     for k in ("p_sub", "p_play", "p60", "exp_minutes")
                     if k in player.index},

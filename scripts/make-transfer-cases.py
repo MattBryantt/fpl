@@ -1,19 +1,3 @@
-"""Solve synthetic transfer-and-chip scenarios with CBC, for transfers.js to match.
-
-Same synthetic-league approach as scripts/verify-transfer-rules.py -- a small,
-fully-controlled fixture list rather than real projection data, so both CBC
-and the WASM solver finish in seconds and the case file is reproducible. That
-script proves the *rules* hold; this one proves the *port* agrees with the
-Python it was translated from, case for case, the same relationship
-scripts/make-solver-cases.py has to scripts/verify-solver-port.mjs.
-
-The pool and points handed to each solve are captured and dumped verbatim --
-not rebuilt from a JS port of candidate_pool -- so a disagreement can only mean
-the LP itself was translated wrong, not that the two sides picked a different
-150-odd players to begin with.
-
-    python scripts/make-transfer-cases.py
-"""
 
 from __future__ import annotations
 
@@ -46,8 +30,6 @@ HORIZON = [1, 2, 3]
 
 
 def league(points, price_override=None, missing=None) -> tuple[Projection, pd.DataFrame]:
-    """A small synthetic projection -- see verify-transfer-rules.py's own
-    `league` for the full reasoning; this is the same shape, fewer clubs."""
     prices = lambda pos, rank: {"GKP": 4.5, "DEF": 4.5,  # noqa: E731
                                 "MID": 5.0, "FWD": 5.5}[pos] + rank * 0.5
     rows, fixture_rows = [], []
@@ -95,7 +77,6 @@ def flat(base: dict[str, float]):
 
 
 def dump_case(name: str, projection: Projection, players: pd.DataFrame, **kwargs) -> dict:
-    """Solve one scenario and capture exactly the pool/points/opt transfers.js needs."""
     gameweeks = list(projection.horizon)[:kwargs.get("horizon", len(HORIZON))]
     squad = kwargs.get("squad") or []
     points = transfers.expected_points(projection, gameweeks)
@@ -151,10 +132,6 @@ def dump_case(name: str, projection: Projection, players: pd.DataFrame, **kwargs
         "idleMovePenalty": IDLE_MOVE_PENALTY,
     }
 
-    # Priced off the CBC squads rather than off whatever squad the port lands
-    # on, so this compares the payout maths and nothing else -- two
-    # economically-identical fifteens are a legitimate tie, and letting one
-    # through here would look like a drifting port.
     positions = {int(row["fpl_id"]): str(row["pos"]) for _, row in pool.iterrows()}
     payouts = transfers.chip_payout_series(plan.squads, points, gameweeks, positions)
 
@@ -177,15 +154,6 @@ CHIP_LABELS_REVERSE = {v: k for k, v in CHIP_LABELS.items()}
 def main() -> None:
     cases = []
 
-    # A hand-picked squad (cheapest legal XV) is not a squad the model would
-    # ever choose: it is deliberately excluded from the captain pool (the top
-    # 40 by window points), and with no cash spare an "owned, not preseason"
-    # solve has no way to reach one of them either -- so it is infeasible
-    # rather than merely suboptimal. Real squads don't have this problem
-    # (nobody's real fifteen is the fifteen cheapest legal players), so every
-    # scenario below starts from what the model itself would pick preseason,
-    # same as scripts/verify-transfer-rules.py's oscillation and hit scenarios
-    # do (`owned = solve(...).squads[HORIZON[0]]`).
     base = flat({"GKP": 3.0, "DEF": 3.5, "MID": 4.0, "FWD": 4.2})
     settled, players = league(base)
     owned = transfers.plan_transfers(settled, players, horizon=3, seconds=30,
@@ -193,7 +161,6 @@ def main() -> None:
     cases.append(dump_case("hold — nothing to gain", settled, players,
                            squad=owned, free_transfers=1, bank=0.0, horizon=3, seconds=30))
 
-    # A clean upgrade at two positions, well worth a hit.
     held = players[players["fpl_id"].isin(owned)]
     targets = []
     for _, player in held.iterrows():
@@ -216,7 +183,6 @@ def main() -> None:
     cases.append(dump_case("upgrade too small to hit", small_proj, small_players,
                            squad=owned, free_transfers=1, bank=0.0, horizon=3, seconds=30))
 
-    # Bench boost: one gameweek where the bench is worth a lot.
     def bboost_points(pid, pos, rank, gw):
         return base(pid, pos, rank, gw) + (9.0 if gw == 2 else 0.0)
     bb_proj, bb_players = league(bboost_points)
@@ -224,7 +190,6 @@ def main() -> None:
                            squad=owned, free_transfers=1, bank=2.0, horizon=3, seconds=30,
                            chip_windows={"bboost": (1, 19)}, chip_hold={"bboost": 0.0}))
 
-    # Triple captain: one huge scorer in gameweek one.
     star = int(held[held["pos"] == "MID"].iloc[0]["fpl_id"])
 
     def tc_points(pid, pos, rank, gw):
@@ -234,9 +199,6 @@ def main() -> None:
                            squad=owned, free_transfers=1, bank=0.0, horizon=3, seconds=30,
                            chip_windows={"3xc": (1, 19)}, chip_hold={"3xc": 0.0}))
 
-    # Free hit: most of the league blanks in gameweek two. The owned squad is
-    # the model's own preseason pick for the *undisturbed* calendar, so it is
-    # a real squad that the blank then catches out.
     blank = [(club, 2) for club in CLUBS[:4]]
     fh_proj, fh_players = league(base, missing=blank)
     fh_owned = transfers.plan_transfers(settled, fh_players, horizon=3, seconds=30,
@@ -245,17 +207,11 @@ def main() -> None:
                            squad=fh_owned, free_transfers=1, bank=0.0, horizon=3, seconds=30,
                            chip_windows={"freehit": (1, 19)}, chip_hold={"freehit": 0.0}))
 
-    # Every chip available at once, defaults -- exercises everything together
-    # without any one chip being an obviously forced choice.
     all_windows = {"freehit": (2, 19), "bboost": (1, 19), "3xc": (1, 19)}
     cases.append(dump_case("all chips, defaults", settled, players,
                            squad=owned, free_transfers=1, bank=3.0, horizon=3, seconds=30,
                            chip_windows=all_windows))
 
-    # Forced chips on a calendar with nothing to time them against, where the
-    # reserve prices would otherwise hold both. The `==` on the once-per-window
-    # constraint and the zeroed reserve are what this case is for; without
-    # either, the port silently reverts to holding.
     cases.append(dump_case("forced chips on a flat calendar", settled, players,
                            squad=owned, free_transfers=1, bank=3.0, horizon=3, seconds=30,
                            chip_windows=all_windows, force_chips=["bboost", "3xc"]))

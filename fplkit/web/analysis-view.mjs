@@ -1,7 +1,3 @@
-/* The Analysis tab: the gw line chart, exposure bars, the timeline heatmap,
- * the fixtures card, and the near-miss card (UI presentation only -- the
- * sweep itself runs in transfer-view.mjs, which shares the squad optimiser's
- * worker). See REFACTOR.md for the split this belongs to. */
 "use strict";
 import { $, S, css, fmt, el, showTip, hideTip, calibrateOdds, saveLocal, STORE } from "/assets/state.mjs";
 import { fixtureKey, withOddsCalibration } from "/assets/board.mjs";
@@ -12,7 +8,6 @@ import {
 } from "/assets/squad-view.mjs";
 import { scheduleSolve, nearMissCount, nearMissKey } from "/assets/transfer-view.mjs";
 
-/* -------------------------------------------------------------- gw line chart */
 export function renderGwChart() {
   const host = $("#gwChart");
   host.innerHTML = "";
@@ -20,9 +15,6 @@ export function renderGwChart() {
 
   const gws = S.gameweeks;
   const mine = gws.map((_, i) => gwPoints(S.squad, i));
-  // Once you have pressed "Fill optimal" and not yet edited, the two squads are
-  // the same and the second line would sit exactly under the first -- two keys
-  // in the legend for one visible line reads as a bug. Say so instead.
   const identical = S.optimal.length === 15 && S.squad.length === 15 &&
     S.optimal.slice().sort().join() === S.squad.slice().sort().join();
   const comparing = S.compare.length > 0;
@@ -32,8 +24,6 @@ export function renderGwChart() {
     data: mine, color: slotColor(0), ids: S.squad,
   }];
   if (comparing) {
-    // Ticked drafts replace the optimal overlay: showing both at once would put
-    // five lines on a chart whose palette is validated for four.
     const slots = slotMap();
     S.compare.forEach((name) => {
       const d = S.drafts.find((x) => x.name === name);
@@ -48,9 +38,6 @@ export function renderGwChart() {
                   color: slotColor(1), ids: S.optimal });
   }
 
-  // Two drafts with the same fifteen players draw the same line, and the one
-  // underneath is invisible -- a legend listing three series over two visible
-  // lines reads as a broken chart. Fold duplicates into one key that names both.
   const seen = new Map();
   for (const s of series) {
     const key = (s.ids || []).slice().sort().join(",") || s.data.map((v) => v.toFixed(3)).join(",");
@@ -60,9 +47,6 @@ export function renderGwChart() {
   series.length = 0;
   series.push(...seen.values());
 
-  // A legend is mandatory for two or more series and pointless for one -- with a
-  // single line the heading already names what is plotted, so a lone swatch just
-  // restates it. Use the space for the note instead.
   $("#gwLegend").innerHTML = series.length > 1
     ? series.map((s) => `<span class="key"><i style="background:${s.color}"></i>${s.name}</span>`).join("")
     : `<span class="sub">${identical
@@ -79,7 +63,6 @@ export function renderGwChart() {
   const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img" }, host);
   el("title", {}, svg).textContent = "Projected starting XI points for each gameweek";
 
-  // Recessive solid hairline grid, rounded to clean values.
   const step = Math.max(1, Math.round((hi - lo) / 4));
   for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) {
     el("line", { x1: M.l, x2: W - M.r, y1: y(v), y2: y(v), stroke: css("--grid"), "stroke-width": 1 }, svg);
@@ -99,8 +82,6 @@ export function renderGwChart() {
       fill: "none", stroke: s.color, "stroke-width": 2,
       "stroke-linejoin": "round", "stroke-linecap": "round",
     }, svg);
-    // End marker with a 2px surface ring, plus a direct end-label so identity
-    // never rests on colour alone.
     const last = s.data.length - 1;
     el("circle", { cx: x(last), cy: y(s.data[last]), r: 4.5, fill: s.color,
       stroke: css("--surface-1"), "stroke-width": 2 }, svg);
@@ -109,7 +90,6 @@ export function renderGwChart() {
     lab.textContent = s.data[last].toFixed(1);
   }
 
-  // Crosshair band — hit targets span the whole column, never the 2px line.
   const cross = el("line", { y1: M.t, y2: H - M.b, stroke: css("--axis"), "stroke-width": 1, opacity: 0 }, svg);
   gws.forEach((gw, i) => {
     const half = (W - M.l - M.r) / Math.max(1, gws.length - 1) / 2;
@@ -127,7 +107,6 @@ export function renderGwChart() {
     <tbody>${gws.map((gw, i) => `<tr><td>GW${gw}</td>${series.map((s) => `<td>${s.data[i].toFixed(1)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
 }
 
-/* --------------------------------------------------------------- exposure bars */
 export function renderExposure() {
   const host = $("#expChart");
   host.innerHTML = "";
@@ -142,14 +121,12 @@ export function renderExposure() {
 
   exp.top.forEach((p, i) => {
     const y = M.t + i * rowH;
-    // 24px bar in a 27px band: the leftover is the surface gap between bars.
     const w = (p.exposure / max) * (W - M.l - M.r);
     const label = el("text", { x: M.l - 9, y: y + 17, "text-anchor": "end",
       fill: css("--text-secondary"), "font-size": 12 }, svg);
     label.textContent = p.name;
     el("rect", { x: M.l, y: y + 3, width: Math.max(2, w), height: 18, rx: 4,
       fill: css("--series-1") }, svg);
-    // Square the baseline end: only the data-end is rounded.
     el("rect", { x: M.l, y: y + 3, width: Math.min(4, Math.max(2, w)), height: 18, fill: css("--series-1") }, svg);
     const val = el("text", { x: M.l + w + 8, y: y + 17, fill: css("--text-secondary"),
       "font-size": 11.5, style: "font-variant-numeric:tabular-nums" }, svg);
@@ -166,9 +143,6 @@ export function renderExposure() {
     <tbody>${exp.top.map((p) => `<tr><td>${p.name}</td><td>${p.team_short}</td><td>${p.price.toFixed(1)}</td><td>${p.owned.toFixed(1)}</td><td>${p.xpts_plan.toFixed(1)}</td><td>${p.exposure.toFixed(2)}</td></tr>`).join("")}</tbody></table>`;
 }
 
-/* ------------------------------------------------------------ timeline heatmap
-   Diverging, because the question is polarity: is this gameweek above or below
-   what this player normally does? Blue and red poles, neutral at his own mean. */
 export function renderTimeline() {
   const host = $("#tlChart");
   host.innerHTML = "";
@@ -211,7 +185,6 @@ export function renderTimeline() {
       const rel = r.mean ? (v - r.mean) / r.mean : 0;
       const mag = Math.min(1, Math.abs(rel) / 0.3);
       const hue = rel >= 0 ? css("--pos") : css("--neg");
-      // 2px surface gap on every side does the separating — no borders.
       el("rect", { x: M.l + i * cw + 1, y: y + 2, width: cw - 3, height: rh - 4, rx: 4,
         fill: Math.abs(rel) < 0.02 ? css("--mid") : hue,
         "fill-opacity": Math.abs(rel) < 0.02 ? 1 : (0.13 + mag * 0.42) }, svg);
@@ -234,9 +207,6 @@ export function renderTimeline() {
   renderLineupStrip(gws);
 }
 
-// Same 15-man squad throughout the heatmap above; this is who from it actually
-// starts, who's benched (autosub order) and who wears the armband each of
-// those gameweeks — the CLI's `plan.lineups`, ported.
 function renderLineupStrip(gws) {
   const host = $("#tlLineup");
   const rows = gws.map((gw, i) => {
@@ -261,13 +231,6 @@ function renderLineupStrip(gws) {
     </table></div>`;
 }
 
-/* ------------------------------------------------------------------ fixtures
-   The model's own view of every match in the horizon -- what each side is
-   expected to score, and the clean sheet chance that implies -- with the two
-   xG figures editable in place. An override here is an opinion about a match,
-   not about any one player, so it is applied in derivePool() and reaches every
-   player of both clubs the moment it lands, the same way a bookmaker's price
-   would have. See board.mjs's fixtureKey/applyFixtureEdits for the mechanism. */
 export function fixtureOverrideCount() { return Object.keys(S.fixtureEdits || {}).length; }
 
 export function renderFixtures() {
@@ -325,9 +288,6 @@ export function renderFixtures() {
   </table>`;
 }
 
-/** One fixture's xG typed over, in either direction. Rebuilds the whole pool --
- *  every player of both clubs is affected, not just one row -- the same way
- *  committing a player override does. */
 export async function setFixtureLambda(key, field, raw) {
   if (raw === "" || Number.isNaN(+raw)) { renderFixtures(); return; }
   const value = Math.min(6, Math.max(0, +raw));
@@ -367,16 +327,6 @@ export function resetAllFixtureOverrides() {
   scheduleSolve(400);
 }
 
-/* ------------------------------------------------------------------ nearly in
-   Ranking players cannot answer "who nearly made the squad". A player can be
-   fourth in his position on points and nowhere near it because everyone above
-   him is cheaper, and another can be twentieth and one swap away because he
-   frees exactly the money the other fourteen wanted. The only honest answer is
-   the solver's: force him in, rebuild everything around him, read the drop.
-
-   That is a full re-solve per candidate, so it runs on a button rather than on
-   every settings change -- and it reports each candidate as it lands, because
-   several seconds of spinner is indistinguishable from a hang. */
 export function renderNearMisses() {
   const box = $("#nearBox");
   if (!box) return;
@@ -424,14 +374,7 @@ export function renderNearMisses() {
         : "The price/points frontier: anyone left out is beaten outright by a player at the same price or less, so he cannot be closer than that player is."}</p>`;
 }
 
-/** The ranking itself, shared by the board's answer and the Chips tab's. Only
- *  the column of points differs — the horizon there, one gameweek here — and
- *  the header says which, because a number labelled xPts that turns out to be a
- *  single week is worse than no number. */
 export function nearMissTableHTML(rows, pointsOf, pointsLabel) {
-  // The bar is scaled to the widest gap on show rather than to an absolute
-  // number: the question is which of these men is closest, and a fixed scale
-  // would flatten a tightly packed list into a column of identical stubs.
   const worst = Math.max(...rows.map((r) => r.gap ?? 0), 0.01);
   const name = (id) => S.byId.get(id)?.name ?? "—";
 

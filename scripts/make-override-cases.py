@@ -1,19 +1,3 @@
-"""Score a spread of overrides with the Python model, for the JS port to match.
-
-Deliberately not a handful of round numbers. The cases sweep every overridable
-field, both the outright and the `_mult` form, across players from each position
-and from both ends of the minutes distribution -- a port can agree on a typical
-midfielder and still be wrong for the reserve keeper, the penalty taker or the
-player whose p_start override drags the whole minutes family with it. Per-match
-overrides get the same treatment, including the combinations where a one-week
-opinion contradicts the season-level one it is layered on.
-
-Also asserts that `apply_fields` (single player, used per fixture) agrees with
-`apply_overrides` (whole table). Those are two implementations of one rule, and
-the per-gameweek path depends on the first.
-
-    python scripts/make-override-cases.py
-"""
 
 from __future__ import annotations
 
@@ -32,13 +16,11 @@ OUT = ROOT / "scripts" / "override-cases.json"
 
 
 def check_apply_fields_matches_apply_overrides(players: pd.DataFrame) -> None:
-    """The single-player and whole-table override paths must agree exactly."""
     variants = [
         {"p_start": 0.42}, {"exp_minutes": 90.0}, {"npxg_per90_mult": 1.7},
         {"p_start": 0.9, "npxg_per90": 0.8}, {"exp_minutes": 20.0, "p_start": 0.95},
         {"price": 4.0, "penalties_order": 1}, {"saves_per90_mult": 0.3},
         {"p_start": 0.0}, {"dc_per90": 22.0, "bonus_per90_mult": 2.5},
-        # The shift, on its own and against each of the other two.
         {"mins_if_start": 60.0}, {"p_start": 0.95, "mins_if_start": 55.0},
         {"mins_if_start": 90.0, "exp_minutes": 40.0}, {"exp_minutes": 45.0},
     ]
@@ -67,8 +49,6 @@ def main() -> None:
     players = projection.players
     check_apply_fields_matches_apply_overrides(players)
 
-    # One representative per position from each of three minutes bands, so the
-    # sweep covers nailed starters, rotation risks and players with no history.
     picks: list[int] = []
     for pos in ("GKP", "DEF", "MID", "FWD"):
         group = players[players["pos"] == pos]
@@ -76,7 +56,6 @@ def main() -> None:
             band = group[(group["p_play"] >= lo) & (group["p_play"] < hi)]
             if len(band):
                 picks.append(int(band.iloc[0]["fpl_id"]))
-    # And the designated penalty takers, who take a branch nobody else does.
     takers = players[players["penalties_order"] == 1]
     picks += [int(i) for i in takers["fpl_id"].head(3)]
 
@@ -95,36 +74,27 @@ def main() -> None:
             variants.append({field: round(low + span * 0.75, 4)})
             variants.append({f"{field}_mult": 1.6})
             variants.append({f"{field}_mult": 0.4})
-        # Combinations, because the minutes family couples fields together and a
-        # field-at-a-time sweep would never catch it.
         variants += [
             {"p_start": 0.95, "npxg_per90": 0.9},
-            {"exp_minutes": 90.0, "p_start": 0.1},   # exp_minutes must win
-            {"p_start": 0.0},                        # every scenario probability zero
-            # The three minutes fields against each other. exp_minutes is solved
-            # against whatever the two before it left, and it prefers to spend
-            # the shift before it touches the start probability -- so the first
-            # of these must move mins_if_start alone and the second must run out
-            # of shift and fall back to raising p_start.
+            {"exp_minutes": 90.0, "p_start": 0.1},
+            {"p_start": 0.0},
             {"p_start": 0.9, "exp_minutes": 45.0},
             {"p_start": 0.05, "exp_minutes": 75.0},
-            {"mins_if_start": 55.0},                 # nailed, but hooked on the hour
-            {"mins_if_start": 90.0, "p_start": 0.2},  # rare starter, full shift
-            {"mins_if_start": 90.0, "exp_minutes": 30.0},  # exp_minutes still wins
+            {"mins_if_start": 55.0},
+            {"mins_if_start": 90.0, "p_start": 0.2},
+            {"mins_if_start": 90.0, "exp_minutes": 30.0},
             {"penalties_order": 1, "p_start": 1.0},
             {"saves_per90": 6.0, "dc_per90": 20.0},
-            {"price": 3.5, "bonus_per90_mult": 3.0},  # _mult must clip at the cap
+            {"price": 3.5, "bonus_per90_mult": 3.0},
         ]
-        # Per-match opinions, including ones that contradict the season-level
-        # override they sit on top of.
         variants += [
-            {"gw": {str(first): {"p_start": 0.0}}},                     # rested
-            {"gw": {str(mid): {"p_start": 1.0, "npxg_per90": 1.2}}},    # one big week
+            {"gw": {str(first): {"p_start": 0.0}}},
+            {"gw": {str(mid): {"p_start": 1.0, "npxg_per90": 1.2}}},
             {"gw": {str(first): {"p_start": 0.0}, str(last): {"p_start": 1.0}}},
-            {"p_start": 0.1, "gw": {str(mid): {"p_start": 0.95}}},      # match beats season
+            {"p_start": 0.1, "gw": {str(mid): {"p_start": 0.95}}},
             {"p_start": 0.95, "gw": {str(mid): {"exp_minutes": 30.0}}},
             {"npxg_per90_mult": 1.5, "gw": {str(last): {"npxg_per90_mult": 0.5}}},
-            {"gw": {str(gw): {"p_start": 0.5} for gw in gameweeks}},    # every week
+            {"gw": {str(gw): {"p_start": 0.5} for gw in gameweeks}},
         ]
 
         for overrides in variants:

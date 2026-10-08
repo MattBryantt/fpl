@@ -1,14 +1,3 @@
-"""Understat per-player xG data.
-
-Understat stopped embedding its datasets in the league page HTML, but the AJAX
-endpoint the page calls is still open:
-
-    POST https://understat.com/main/getPlayersStats/   league=EPL&season=2025
-
-which returns per-player season totals including npxG, xA, xGChain and xGBuildup.
-Team-level rates are aggregated from the player rows rather than scraped
-separately, since Understat exposes no equivalent team endpoint.
-"""
 
 from __future__ import annotations
 
@@ -32,9 +21,8 @@ NUMERIC = ["games", "time", "goals", "xG", "npg", "npxG", "assists", "xA",
 
 
 def player_stats(season: str | None = None, force_refresh: bool = False) -> pd.DataFrame:
-    """One row per player for the given Understat season (start year)."""
     if season is None:
-        from . import fpl_api  # the completed season, off the API's own calendar
+        from . import fpl_api
         season = UNDERSTAT_SEASON or str(fpl_api.season_start_year() - 1)
 
     def fetch():
@@ -62,14 +50,6 @@ def player_stats(season: str | None = None, force_refresh: bool = False) -> pd.D
     df["shots_per90"] = (df["shots"] / per90).fillna(0.0)
     df["key_passes_per90"] = (df["key_passes"] / per90).fillna(0.0)
 
-    # A player can appear on two rows if he moved club mid-season; keep the club
-    # he played the most minutes for, and sum the underlying totals.
-    #
-    # Grouped on Understat's own player id rather than on the name. Two players
-    # can share a display name -- the league carries a few most seasons -- and
-    # grouping by name welds them into one row holding the pooled xG of both,
-    # which then goes to whichever of them the join happens to reach first. The
-    # id is what actually identifies a player, so it is what groups him.
     totals = df.groupby("us_id", as_index=False)[
         ["us_minutes", "npxG", "xA", "xGChain", "shots", "key_passes", "goals", "assists"]
     ].sum()
@@ -83,9 +63,6 @@ def player_stats(season: str | None = None, force_refresh: bool = False) -> pd.D
                            ("key_passes", "key_passes_per90")]:
         merged[target] = (merged[source] / per90).fillna(0.0)
 
-    # A player who moved mid-season carries a comma-joined team_title, e.g.
-    # "Bournemouth,Manchester City". Keep every club he played for so the player
-    # join can find him under whichever one the FPL API now lists him at.
     merged["us_team_list"] = (merged["us_team"].fillna("")
                               .apply(lambda s: [t.strip() for t in s.split(",") if t.strip()]))
     merged["moved_clubs"] = merged["us_team_list"].apply(len) > 1
@@ -93,14 +70,6 @@ def player_stats(season: str | None = None, force_refresh: bool = False) -> pd.D
 
 
 def team_rates(stats: pd.DataFrame) -> pd.DataFrame:
-    """Per-match attacking rates for each club, aggregated from its players.
-
-    Only players who stayed at one club all season are counted. A transferred
-    player's xG cannot be split between his two clubs from this endpoint, and
-    attributing all of it to either one badly distorts that club's rate. Since
-    the denominator is the players' own minutes rather than a fixed 38 matches,
-    dropping them leaves the resulting per-match rate unbiased.
-    """
     single_club = stats[~stats["moved_clubs"]].copy()
     single_club["club"] = single_club["us_team_list"].str[0]
 

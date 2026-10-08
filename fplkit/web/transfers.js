@@ -1,27 +1,3 @@
-/* Transfers and chips, solved together, as one mixed-integer program — the
- * browser port of fplkit/transfers.py's `plan_transfers`.
- *
- * A classic script, not an ES module, for the same reason solver.js is one:
- * so it can be `importScripts`'d into a worker (which cannot `import` a UMD
- * factory like highs.js) and `require`'d by node for verification. Loads
- * HiGHS through `FplSolver.loadHighs`, already vendored by solver.js — one
- * WASM instance, shared with the squad optimiser rather than duplicated.
- *
- * This file is mechanics only: given a pool of players (each carrying
- * `pts[]`, survival-adjusted points per gameweek — see chips.mjs), an owned
- * squad, and the rule constants read off the snapshot, it builds the LP,
- * solves it, and reads back what was decided. Every judgment call about
- * *which* players belong in the pool, *what* a chip's gameweek is worth, or
- * how to present a transfer as "X → Y" lives in chips.mjs instead, which runs
- * on the main thread where it has room to import things. Nothing here decides
- * what to show a person; it decides what is legal and what scores best.
- *
- * Ported constraint-for-constraint from `plan_transfers` (see that function's
- * docstring for the reasoning behind each piece — the free-transfer state
- * machine, the friction charge, why chips share the objective rather than a
- * separate pass). Verified against CBC-solved reference cases by
- * scripts/verify-transfer-port.mjs.
- */
 
 (function (root) {
   "use strict";
@@ -37,8 +13,6 @@
   };
   const negTerms = (terms) => terms.map((t) => T(-t.coef, t.name));
 
-  // LP variable names. `gw` is a plain gameweek number (small int), always a
-  // valid LP-token suffix; `id` is an FPL player id, likewise.
   const SQ = (id, gw) => `sq_${id}_${gw}`;
   const XI = (id, gw) => `xi_${id}_${gw}`;
   const BN = (slot, id, gw) => `bn${slot}_${id}_${gw}`;
@@ -56,7 +30,6 @@
   const UNDER = (gw) => `un_${gw}`;
   const USE = (chip, gw) => `use_${chip}_${gw}`;
 
-  /** Geometric discount per gameweek. Port of `transfers.decay_factors`. */
   function decayFactors(gameweeks, halfLife) {
     const decay = {};
     gameweeks.forEach((gw, step) => {
@@ -66,11 +39,6 @@
     return decay;
   }
 
-  /** Build the LP text for one solve. `pool` rows need: id, pos, team, price,
-   *  pts[] (index-aligned to `opt.gameweeks`). `opt` carries every rule
-   *  constant and every ownership fact — see the module docstring; nothing
-   *  here has a default, so a missing field fails loudly rather than quietly
-   *  drifting from the rule it was supposed to mirror. */
   function buildLp(pool, opt) {
     const {
       gameweeks, budget, squad = [], bank = 0, freeTransfers = 1, sellPrices = {},
@@ -90,8 +58,6 @@
     const ownedSet = new Set(owned);
     const preseason = owned.length === 0;
     const wildcardGw = wildcardFirst && !preseason ? gameweeks[0] : null;
-    // What a player raises when sold: his purchase price plus half the rise,
-    // where that is known (see live.mjs's sellPrice), else his listed price.
     const sellOf = (p) => sellPrices[p.id] ?? p.price;
 
     const first = gameweeks[0], last = gameweeks[gameweeks.length - 1];
@@ -112,19 +78,17 @@
     const cons = [];
     const addCon = (name, terms, op, rhs) => cons.push({ name, terms, op, rhs });
     const bin = new Set();
-    const genBounds = new Map(); // name -> [lo, hi]
+    const genBounds = new Map();
 
     const idxOf = (p, gw) => gameweeks.indexOf(gw);
     const ptsAt = (p, gw) => p.pts[idxOf(p, gw)] || 0;
 
-    /** 1 if `chip` may be played in `gw` — a real variable term, or null. */
     const playedVar = (chip, gw) => (chips[chip] && chips[chip].includes(gw)) ? USE(chip, gw) : null;
     const playedTerm = (chip, gw, coef = 1) => {
       const v = playedVar(chip, gw);
       return v ? [T(coef, v)] : [];
     };
 
-    // --- squad legality ----------------------------------------------------
     for (const gw of gameweeks) {
       addCon(`sqsize_${gw}`, pool.map((p) => T(1, SQ(p.id, gw))), "=", squadSize);
       for (const [pos, count] of Object.entries(squadByPos)) {
@@ -140,7 +104,6 @@
       for (const p of pool) bin.add(SQ(p.id, gw));
     }
 
-    // --- the free-hit squad --------------------------------------------------
     if (hasFreeHit) {
       for (const gw of chips.freehit) {
         const flag = USE("freehit", gw);
@@ -153,8 +116,6 @@
           const members = pool.filter((p) => p.team === tm);
           addCon(`fhclub_${ti}_${gw}`, [...members.map((p) => T(1, FH(p.id, gw))), T(-maxPerClub, flag)], "<=", 0);
         });
-        // Affordable out of what selling the real squad that week would
-        // raise, plus the bank.
         const afford = [
           ...pool.map((p) => T(p.price, FH(p.id, gw))),
           ...pool.map((p) => T(-sellOf(p), SQ(p.id, gw))),
@@ -172,7 +133,6 @@
       }
     }
 
-    // --- lineup --------------------------------------------------------------
     for (const gw of gameweeks) {
       const boost = playedVar("bboost", gw);
       const hit = playedVar("freehit", gw);
@@ -193,16 +153,11 @@
 
       for (const p of pool) {
         const benchTerms = slots.map((s) => T(1, BN(s, p.id, gw)));
-        // xi <= squad + hit
         addCon(`xicap_${p.id}_${gw}`,
           [T(1, XI(p.id, gw)), T(-1, SQ(p.id, gw)), ...(hit ? [T(-1, hit)] : [])], "<=", 0);
-        // benched <= squad + hit
         addCon(`bncap_${p.id}_${gw}`,
           [...benchTerms, T(-1, SQ(p.id, gw)), ...(hit ? [T(-1, hit)] : [])], "<=", 0);
         if (hasFreeHit) {
-          // xi <= free_hit_squad + (1 - hit)  ->  xi - fh + hit <= 1 (RHS is 1
-          // whether or not `hit` exists this gw -- outside the chip's window
-          // it is the constant 0, and 1 - 0 is still 1).
           addCon(`xifh_${p.id}_${gw}`,
             [T(1, XI(p.id, gw)), T(-1, FH(p.id, gw)), ...(hit ? [T(1, hit)] : [])],
             "<=", 1);
@@ -216,9 +171,6 @@
       for (const pos of ["GKP", "DEF", "MID", "FWD"]) {
         const members = pool.filter((p) => p.pos === pos);
         addCon(`ximin_${pos}_${gw}`, members.map((p) => T(1, XI(p.id, gw))), ">=", xiMinByPos[pos]);
-        // Under a bench boost the ceiling is the squad's own count for the
-        // position, not the ordinary cap plus one -- see the same constraint in
-        // transfers.py for why the two come apart once a formation is pinned.
         const relax = squadByPos[pos] - xiMaxByPos[pos];
         addCon(`ximax_${pos}_${gw}`,
           [...members.map((p) => T(1, XI(p.id, gw))), ...(boost ? [T(-relax, boost)] : [])],
@@ -242,7 +194,6 @@
       }
     }
 
-    // --- transfers -------------------------------------------------------
     gameweeks.forEach((gw, step) => {
       const hit = playedVar("freehit", gw);
       for (const p of pool) {
@@ -256,7 +207,6 @@
           ? [T(1, SQ(p.id, gameweeks[step - 1]))]
           : [];
         const previousConst = (!step && ownedSet.has(p.id)) ? 1 : 0;
-        // squad[gw] == previous + bought - sold
         addCon(`tr_${p.id}_${gw}`,
           [T(1, SQ(p.id, gw)), ...negTerms(previous), T(-1, BU(p.id, gw)), T(1, SO(p.id, gw))],
           "=", previousConst);
@@ -273,7 +223,6 @@
       addCon(`noTr_${gw}`, pool.map((p) => T(1, BU(p.id, gw))), "=", 0);
     }
 
-    // --- money -------------------------------------------------------------
     gameweeks.forEach((gw, step) => {
       const raised = pool.map((p) => T(sellOf(p), SO(p.id, gw)));
       const outlay = pool.map((p) => T(-p.price, BU(p.id, gw)));
@@ -290,53 +239,35 @@
       }
     });
 
-    // --- the free-transfer state machine ------------------------------------
     for (const gw of gameweeks) {
       const moves = pool.map((p) => T(1, BU(p.id, gw)));
-      // spent = moves: every transfer made comes out of the allowance, and a
-      // free-hit week makes none (BU is pinned to zero above).
       addCon(`spent_${gw}`, [T(1, SPENT(gw)), ...negTerms(moves)], "=", 0);
-      // paid >= spent - ft
       if (gw !== wildcardGw) addCon(`paidmin_${gw}`, [T(1, HITS(gw)), T(-1, SPENT(gw)), T(1, FT(gw))], ">=", 0);
       genBounds.set(SPENT(gw), [0, squadSize]);
       genBounds.set(HITS(gw), [0, gw === wildcardGw ? 0 : squadSize]);
       bin.add(OVER(gw)); bin.add(UNDER(gw));
     }
 
-    // Opening on what is banked, whether or not there is a squad: a from-scratch
-    // first week is a wildcard (or the opening deadline) and carries them over.
     addCon(`ftopen`, [T(1, FT(first))], "=", freeTransfers);
 
     gameweeks.forEach((gw, step) => {
       const nxt = step + 1 < gameweeks.length ? gameweeks[step + 1] : terminal;
-      // raw = ft[gw] - spent[gw] + earned, earned = freeTransfersPerGw - freehit?
-      // A from-scratch first week earns none, like a free hit week.
       const wc = gw === wildcardGw;
       const rv = wc ? [T(1, FT(gw))] : [T(1, FT(gw)), T(-1, SPENT(gw)), ...playedTerm("freehit", gw, -1)];
       const rc = (preseason && step === 0) || wc ? 0 : freeTransfersPerGw;
 
-      // raw >= (max+1) - bigM*(1-over)  ->  rv - bigM*over >= (max+1) - bigM - rc
       addCon(`ftover1_${gw}`, [...rv, T(-bigM, OVER(gw))], ">=", (maxFreeTransfers + 1) - bigM - rc);
-      // raw <= max + bigM*over  ->  rv - bigM*over <= max - rc
       addCon(`ftover2_${gw}`, [...rv, T(-bigM, OVER(gw))], "<=", maxFreeTransfers - rc);
-      // raw <= bigM*(1-under)  ->  rv + bigM*under <= bigM - rc
       addCon(`ftunder1_${gw}`, [...rv, T(bigM, UNDER(gw))], "<=", bigM - rc);
-      // raw >= 1 - bigM*under  ->  rv + bigM*under >= 1 - rc
       addCon(`ftunder2_${gw}`, [...rv, T(bigM, UNDER(gw))], ">=", 1 - rc);
       addCon(`ftexcl_${gw}`, [T(1, OVER(gw)), T(1, UNDER(gw))], "<=", 1);
 
-      // ft[nxt] <= max + bigM*(1-over)  ->  ft[nxt] + bigM*over <= max + bigM
       addCon(`ftnxt1_${gw}`, [T(1, FT(nxt)), T(bigM, OVER(gw))], "<=", maxFreeTransfers + bigM);
-      // ft[nxt] >= max - bigM*(1-over)  ->  ft[nxt] - bigM*over >= max - bigM
       addCon(`ftnxt2_${gw}`, [T(1, FT(nxt)), T(-bigM, OVER(gw))], ">=", maxFreeTransfers - bigM);
-      // ft[nxt] <= 1 + bigM*(1-under)  ->  ft[nxt] + bigM*under <= 1 + bigM
       addCon(`ftnxt3_${gw}`, [T(1, FT(nxt)), T(bigM, UNDER(gw))], "<=", 1 + bigM);
-      // ft[nxt] >= 1 - bigM*(1-under)  ->  ft[nxt] - bigM*under >= 1 - bigM
       addCon(`ftnxt4_${gw}`, [T(1, FT(nxt)), T(-bigM, UNDER(gw))], ">=", 1 - bigM);
-      // ft[nxt] - raw <= bigM*(over+under)  ->  ft[nxt] - rv - bigM*over - bigM*under <= rc
       addCon(`fteq1_${gw}`,
         [T(1, FT(nxt)), ...negTerms(rv), T(-bigM, OVER(gw)), T(-bigM, UNDER(gw))], "<=", rc);
-      // raw - ft[nxt] <= bigM*(over+under)  ->  rv - ft[nxt] - bigM*over - bigM*under <= -rc
       addCon(`fteq2_${gw}`,
         [...rv, T(-1, FT(nxt)), T(-bigM, OVER(gw)), T(-bigM, UNDER(gw))], "<=", -rc);
     });
@@ -351,9 +282,6 @@
       genBounds.set(FT(gw), [0, maxFreeTransfers]);
     }
 
-    // --- chips ---------------------------------------------------------------
-    // Once each, and a forced chip exactly once: the solver still picks the
-    // gameweek and still builds the squad around it, it just may not decline.
     for (const [chip, allowed] of Object.entries(chips)) {
       addCon(`chiponce_${chip}`, allowed.map((gw) => T(1, USE(chip, gw))),
         forcedSet.has(chip) ? "=" : "<=", 1);
@@ -370,7 +298,6 @@
       addCon(`hitlimit`, gameweeks.map((gw) => T(1, HITS(gw))), "<=", hitLimit);
     }
 
-    // --- objective -----------------------------------------------------------
     const decay = decayFactors(gameweeks, halfLife);
     const obj = new Map();
     const addObj = (name, coef) => { if (coef !== 0) obj.set(name, (obj.get(name) || 0) + coef); };
@@ -404,9 +331,6 @@
       for (const p of pool) addObj(BU(p.id, gw), dw * -idleMovePenalty);
       for (const chip of Object.keys(chips)) {
         const v = playedVar(chip, gw);
-        // A forced chip pays no reserve: the reserve is a charge for playing at
-        // all, and leaving it in would only push a chip already decided on into
-        // the last gameweek of the window, where the discount makes it cheapest.
         if (v && !forcedSet.has(chip)) addObj(v, dw * -(holdValue[chip] || 0));
       }
       for (const t of bankedTerms(gw)) addObj(t.name, dw * t.coef);
@@ -424,7 +348,6 @@
     const objTerms = [...obj.entries()].filter(([, c]) => c !== 0).map(([name, c]) => T(c, name));
     const objLine = objTerms.length ? renderTerms(objTerms) : "0 zero_obj";
 
-    // --- render --------------------------------------------------------------
     const consText = cons.map((c) => `${c.name}: ${renderTerms(c.terms)} ${c.op} ${n(c.rhs)}`).join("\n ");
     const boundsText = [...genBounds.entries()]
       .map(([name, [lo, hi]]) => `${n(lo)} <= ${name} <= ${n(hi)}`).join("\n ");
@@ -437,9 +360,6 @@
     return { lp, objConstant, meta: { gameweeks, terminal, decay, slots, captainPool, chips, hasTriple, hasFreeHit } };
   }
 
-  /** Turn a solved LP back into one result object per gameweek. Presentation
-   *  (pairing sales to purchases, chip verdicts, formatting) happens in
-   *  chips.mjs on the main thread; this only reads variables. */
   function readSolution(result, pool, opt, meta) {
     const on = (name) => (result.Columns[name]?.Primal ?? 0) > 0.5;
     const val = (name) => result.Columns[name]?.Primal ?? 0;
@@ -509,8 +429,6 @@
     throw new Error("solver.js must be loaded before transfers.js");
   }
 
-  /** Build, solve, and read back one transfer-and-chip plan. `pool` rows need
-   *  id/pos/team/price/pts[]; `opt` is documented at `buildLp`. */
   async function planTransfers(pool, opt, base) {
     const highs = await loadHighs(base);
     const { lp, objConstant, meta } = buildLp(pool, opt);

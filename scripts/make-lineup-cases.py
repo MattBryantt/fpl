@@ -1,17 +1,3 @@
-"""Score club rebalances with the Python model, for the JS port to match.
-
-Overriding a player's minutes is not a statement about him alone: a club fields
-eleven, so asserting that one man starts takes the minutes off somebody else.
-`model.renormalise_minutes` decides who, and `board.mjs` has to reach the same
-answer or the board will show a lineup the projection does not believe in.
-
-The cases deliberately include the awkward shapes: a single promotion, a whole
-XI pinned at once, a demotion, a keeper (whose pool is one, not ten), and an
-over-pinned club where the assertions already exceed eleven and the model is
-supposed to keep them rather than scale them back.
-
-    python scripts/make-lineup-cases.py
-"""
 
 from __future__ import annotations
 

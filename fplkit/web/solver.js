@@ -1,30 +1,12 @@
-/* Squad selection as a mixed-integer program — the browser port of
- * fplkit/optimise.py, solved by HiGHS compiled to WebAssembly.
- *
- * Same variables, same constraints, same objective as the Python. That is the
- * whole point: the board's premise is that the answer is *exact*, so that "is
- * he worth the money?" can be answered by forcing a player in and re-optimising
- * everything around him. A heuristic that gets close would quietly break the
- * one question the tool exists to answer. Verified squad-for-squad against CBC
- * over randomised settings by scripts/verify-solver-port.mjs.
- *
- * A classic script, not an ES module, so that one file can be importScripts'd
- * into the worker and required by node. The solve is 0.2-3s at full pool size,
- * which is a visible freeze on a phone, so it always runs off the main thread.
- */
 
 (function (root) {
   "use strict";
 
   const SLOTS = ["GKP", "1", "2", "3"];
 
-  // LP format reads exactly what you print, so print enough. Six decimals is
-  // far inside the noise on a projection and keeps the file ~90KB.
   const n = (v) => String(Math.round(v * 1e6) / 1e6);
   const term = (coef, name) => `${coef < 0 ? "-" : "+"} ${n(Math.abs(coef))} ${name}`;
 
-  /** Build the CPLEX LP text for one set of settings.
-   *  `pool` rows need: id, pos, team, price, pts, own, p_play. */
   function buildLp(pool, opt) {
     opt = opt || {};
     const budget = opt.budget ?? 100;
@@ -32,10 +14,6 @@
     const benchWeight = opt.benchWeight ?? 0.12;
     const profile = opt.benchSlotProfile || { GKP: 0.25, "1": 2.0, "2": 0.85, "3": 0.35 };
     const ownershipWeight = opt.ownershipWeight ?? 0;
-    // 2 is an ordinary armband, 3 a triple captain. It is the one chip rule the
-    // single-week squad model needs of its own: a bench boost is already
-    // expressible as four bench slots weighted 1.0, and a free hit or wildcard
-    // is just this model under that week's budget.
     const captainMultiplier = opt.captainMultiplier ?? 2;
     const minStart = opt.minStart ?? 0;
     const include = opt.include || [], exclude = opt.exclude || [];
@@ -48,8 +26,6 @@
 
     const inc = new Set(include), exc = new Set(exclude);
     let players = pool.filter((p) => !exc.has(p.id));
-    // Keep fringe players out of the "free" bench slots, but never drop one the
-    // user has explicitly required — the Python makes the same exception.
     if (minStart > 0) players = players.filter((p) => p.p_play >= minStart || inc.has(p.id));
 
     const have = new Set(players.map((p) => p.id));
@@ -86,8 +62,6 @@
         if (w) obj.push(term(w, B(p, s)));
       }
     }
-    // An all-zero objective is not valid LP text, and happens the moment every
-    // bench weight is zeroed on an empty pool.
     if (!obj.length) obj.push("0 zero_obj");
 
     const cons = [];
@@ -95,7 +69,6 @@
       const elig = players.filter((p) => eligible(p, s));
       cons.push(`slot${s}: ${elig.map((p) => `+ ${B(p, s)}`).join(" ")} = 1`);
     }
-    // On exactly one bench slot iff in the squad and not in the XI.
     for (const p of players) {
       const bs = SLOTS.filter((s) => eligible(p, s)).map((s) => `+ ${B(p, s)}`).join(" ");
       cons.push(`bn_${p.id}: ${bs} - ${S(p)} + ${X(p)} = 0`);
@@ -119,7 +92,6 @@
         cons.push(`xmx${pos}: ${xi} <= ${xiMax[pos]}`);
       }
     }
-    // Constraint names must be unique and LP-safe; club names are neither.
     const teams = [...new Set(players.map((p) => p.team))];
     teams.forEach((team, i) => {
       const members = players.filter((p) => p.team === team);
@@ -168,14 +140,6 @@
 
   let highsPromise = null;
 
-  /** Load the WASM solver once and keep it. `base` is where highs.js and
-   *  highs.wasm live, relative to whoever is loading them.
-   *
-   *  Three ways in, because highs.js is a UMD bundle and each environment
-   *  reaches it differently: node requires it, a worker importScripts it, and a
-   *  page has to inject a tag. The verifier runs the first, the board runs the
-   *  second, and the third exists so a solve still works if the worker ever
-   *  cannot start. */
   function loadHighs(base) {
     if (highsPromise) return highsPromise;
     base = base || "./vendor/";
@@ -198,8 +162,6 @@
         factory = root.Module;
       }
 
-      // `Module` is far too generic a name to leave on the global object, and
-      // emscripten only needs it long enough to be called once.
       if (root.Module) { try { delete root.Module; } catch (_) { root.Module = undefined; } }
       if (typeof factory !== "function") throw new Error("HiGHS did not expose a factory");
       return factory({ locateFile: (file) => base + file });
@@ -219,22 +181,6 @@
     return readSolution(result, players, slotWeight, captainMultiplier);
   }
 
-  /** Who is worth testing for a near miss — the port of
-   *  optimise.near_miss_candidates, and see its docstring for why this is not
-   *  simply "everyone who missed out".
-   *
-   *  Testing a player means a whole fresh solve, so testing the pool is minutes
-   *  of work for an answer most of it cannot win. A player is ruled out without
-   *  solving anything when some other missing player of the same position costs
-   *  no more and projects no fewer points: any squad built around the beaten man
-   *  becomes a squad built around the better one by swapping the two, so the
-   *  better one is at least as close and the loser's number says nothing new.
-   *  What survives is the price/points frontier — best-in-class at his price.
-   *
-   *  `perClub` narrows the comparison to team-mates as well, which closes the
-   *  one hole in that argument (the swap can break the three-per-club cap when
-   *  the dominant player's club is already full) at roughly seven times the
-   *  candidates. */
   function nearMissCandidates(pool, opt, squadIds, perClub) {
     opt = opt || {};
     const held = new Set(squadIds || []);
@@ -261,19 +207,6 @@
     return chosen;
   }
 
-  /** For each candidate, the exact xPts the squad gives up to hold him.
-   *
-   *  The port of optimise.near_misses. One full re-solve per candidate with him
-   *  forced in — nothing cheaper answers the question, because the point is that
-   *  the other fourteen get to rearrange themselves around him and the money he
-   *  ties up. `stopped()` lets a superseded run give up at the next boundary
-   *  rather than run the set out.
-   *
-   *  `onProgress(done, total, row)` carries the candidate that just landed, not
-   *  only the count. A full pool is seconds per solve and tens of seconds for
-   *  the sweep, and every row is a finished answer the moment it exists —
-   *  holding them all back until the last one is done would be a blank table
-   *  for half a minute with the interesting names already known. */
   async function nearMisses(pool, opt, settings, base) {
     settings = settings || {};
     const optimal = await solveSquad(pool, opt, base);
@@ -290,25 +223,16 @@
         const forced = await solveSquad(pool, { ...opt, include: [...include, id] }, base);
         const got = new Set(forced.squad);
         const pos = byId.get(id)?.pos;
-        // Room is made in his own position first and paid for elsewhere second,
-        // so the man he actually displaces leads the list.
         const out = [...held].filter((x) => !got.has(x))
           .sort((a, b) => (byId.get(a)?.pos === pos ? 0 : 1) - (byId.get(b)?.pos === pos ? 0 : 1));
         rows.push({
           id,
-          // Clamped at zero: a constrained solve cannot beat the unconstrained
-          // one, so anything below is the solver's own tolerance, not an edge.
           gap: Math.max(0, optimal.objective - forced.objective),
           starting: forced.starting.includes(id),
           captain: forced.captain === id,
           replaces: out,
         });
       } catch (error) {
-        // No legal fifteen holds him at all: too expensive once the rest is
-        // legal, or his club is spoken for by players you have required. A real
-        // answer about him, and a different one from "far away" -- but only
-        // when it is the solver saying so. Anything else is a broken sweep and
-        // must not be dressed up as a fact about a player.
         if (!/No legal squad found/.test(String(error && error.message))) throw error;
         rows.push({ id, gap: null, starting: false, captain: false, replaces: [] });
       }
