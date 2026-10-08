@@ -146,8 +146,7 @@ VICE_CAPTAIN_WEIGHT = 0.1
 # you have decided, the rebuild *is* `plan_transfers` with no squad: the opening
 # fifteen is a free choice out of what selling the old one raises plus the
 # bank, the banked free transfers carry over, and the weeks after it are
-# planned as usual. That is the board's from-scratch Chips mode and
-# `fpl.py transfers` without `--squad`.
+# planned as usual. That is the board's from-scratch Chips mode.
 CHIPS = ("freehit", "bboost", "3xc")
 CHIP_LABELS = {"freehit": "Free Hit",
                "bboost": "Bench Boost", "3xc": "Triple Captain"}

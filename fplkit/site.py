@@ -184,7 +184,7 @@ def _check_shell_covers_assets() -> None:
 def _write_service_worker(out: Path) -> str:
     """Stamp the computed shell version into sw.js on the way to `out`.
 
-    The source file keeps a literal placeholder -- `fpl.py serve` reads it
+    The source file keeps a literal placeholder -- a source-served copy reads it
     unstamped, which is fine, since local dev never needs the cache-busting a
     hash provides. Only the built copy, the one an installed phone actually
     runs, carries the real version.

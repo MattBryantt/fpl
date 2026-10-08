@@ -15,10 +15,10 @@
  * replayed one would be a lie.
  */
 
-// Stamped by `python fpl.py build` (site.py: _write_service_worker) with a
+// Stamped by `python scripts/build.py` (site.py: _write_service_worker) with a
 // hash of the shell files, so a built copy always carries the right version
 // without anyone having to remember to bump it. This literal only shows up
-// when serving straight from source (`fpl.py serve`), where a stale shell
+// when serving straight from source (source-served), where a stale shell
 // cache was never the failure mode a hash needed to guard against.
 const SHELL_VERSION = "fpl-shell-dev";
 const DATA_CACHE = "fpl-data-v1";

@@ -113,8 +113,7 @@ input{background:#1a1a19;border-color:#fff3}}</style>
   <button type="submit">Open</button>
 </form>
 <p>The full link looks like <code>https://&lt;host&gt;/?t=&lt;token&gt;</code>. If a chat app
-mangled it, the token is the part after <code>?t=</code> — paste just that above.</p>
-<p>It is printed in the terminal running <code>fpl.py serve</code>.</p>"""
+mangled it, the token is the part after <code>?t=</code> — paste just that above.</p>"""
 
 WEB_DIR = ROOT / "fplkit" / "web"
 OVERRIDES_PATH = OUT_DIR / "overrides.csv"

@@ -319,8 +319,7 @@ or a key is missing, it says so here.</p>
   Every response is cached to <code>.cache/</code> on disk with a TTL: FPL for 3
   hours, odds for 6, Understat for 24. This is not just politeness — the odds free
   tier is 500 requests a month, and an uncached UI would burn it in an afternoon.
-  <code>python fpl.py cache-clear</code> empties it; <code>--refresh</code> on any
-  command bypasses it for that run.
+  Refreshing from Settings bypasses it for that run.
 </p>
 
 <h2 id="limits">What none of it can tell you</h2>
@@ -432,7 +431,7 @@ api("/api/provenance").then((r) => r.json()).then((d) => {
   if (TOKEN) document.getElementById("backLink").href = "/?t=" + encodeURIComponent(TOKEN);
 }).catch(() => {
   document.getElementById("liveCards").innerHTML =
-    `<div class="sub">Could not reach the server — is <code>fpl.py serve</code> running?</div>`;
+    `<div class="sub">Could not reach the server.</div>`;
 });
 </script>
 </body>

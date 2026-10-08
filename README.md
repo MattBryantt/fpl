@@ -37,11 +37,7 @@ Flags: `--horizon N`, `--start-gw N`, `--recency N`, `--refresh`, `--snapshot fi
 
 ## The squad board
 
-```bash
-python fpl.py serve          # → http://127.0.0.1:8000
-```
-
-A local page for building squads by hand and watching every number move as you
+A page for building squads by hand and watching every number move as you
 do. The first thing on it is the squad, drawn as a team: the eleven the
 projection would start, in the shape it would start them, with the four
 substitutes ranked beneath in the order FPL's auto-subs actually work down. Each
@@ -93,7 +89,6 @@ second one opens it. Every number the board holds on both, side by side, with
 the gap signed so the better one reads as the better one — which for price and
 ownership is the *smaller* figure — and then the horizon gameweek by gameweek,
 because two players with the same total can have it arranged very differently.
-It is `fpl.py compare` without the terminal.
 
 ### The pool, and the tabs
 
@@ -201,8 +196,7 @@ browser's arithmetic and its MILP against the Python, on real data, every time.
 The price is that the data is only as fresh as the last **Sync**, and the header
 says how stale it is rather than letting you assume it is live.
 
-**More options**, inside Settings, opens two more rows. The first has everything else the CLI
-exposes: first gameweek, max per club, recent-form half-life, a forced
+**More options**, inside Settings, opens two more rows. The first has everything else: first gameweek, max per club, recent-form half-life, a forced
 formation, a button to bypass the cache and refetch every source, and
 **Restore defaults**, which puts every knob on the board back to its default and
 leaves your squad, drafts and edits alone. The ⊕ and
@@ -434,7 +428,7 @@ rather than left looking like knobs that quietly do nothing.
 
 Drafts and overrides live in `localStorage`, because saving a squad has to work
 on a train. They are pushed back to `out/drafts.json` and merged by name
-whenever the laptop is reachable, so the CLI keeps seeing the same squads.
+whenever the laptop is reachable.
 
 Settings live there too, under `fpl.settings`, written as you touch them: every
 knob in the settings rows, the bench weights, the theme, the tab you were on,
@@ -488,10 +482,6 @@ on every chart so no value is reachable only through colour. Light and dark are
 separately stepped, not flipped.
 
 ## Recent form: weighting the end of the season above the start
-
-```bash
-python fpl.py plan --recency 10        # half-life in gameweeks; 0 (default) = off
-```
 
 Neither live source can do this on its own, which is worth knowing before you
 trust it. The FPL API wipes `element-summary` history at a season rollover and
@@ -567,7 +557,7 @@ unordered set, with relative weights in `BENCH_SLOT_PROFILE`:
 | 3rd sub | 0.35 | 0.04 |
 | Reserve GK | 0.25 | 0.03 |
 
-`bench_weight` scales the whole profile, so the CLI knob still means "how much do
+`bench_weight` scales the whole profile, so the knob still means "how much do
 I care about the bench" while the slots stay weighted relative to each other.
 The effect is that the solver spends real money on the first substitute and
 takes cheap bodies for the last two, instead of paying the same for all four.
@@ -651,7 +641,7 @@ The editor shows both halves whenever they disagree by more than 0.05
 know before deciding whether to override him.
 
 **One limitation, stated plainly.** The blend is applied when the projection is
-built, so `--horizon` on the CLI changes it and the horizon slider on the board
+built, so the build-time horizon changes it and the horizon slider on the board
 does not — the board's snapshot is frozen at 12 gameweeks, and the slider
 reweights points that are already known rather than re-deriving minutes. Press
 Sync, or re-run `snapshot --horizon N`, to see pStart itself move. Making it
@@ -679,7 +669,7 @@ above). The measured 12% Brier improvement came from data already on disk.
 
 ## Where the data comes from
 
-`python fpl.py serve` then **/data** — a full provenance page: every field traced
+The board's **/data** page is — a full provenance page: every field traced
 to its source, how the three sources are joined, what is assumed rather than
 measured, and what none of it can tell you.
 
@@ -784,9 +774,8 @@ Everything else follows: an edited week moves the fixture timeline, the weekly
 chart, xPPG and the optimiser's view of him — including his eligibility, because
 overriding `p_start` re-derives `p_play`, which is what the solver filters on.
 
-**From the CLI**, it is one extra column. A row with a `gw` is about that match;
-a row without one is about the player. An existing `overrides.csv` still loads
-unchanged.
+In an overrides CSV it is one extra column. A row with a `gw` is about that match;
+a row without one is about the player.
 
 ```csv
 fpl_id,web_name,gw,p_start,npxg_per90
@@ -802,9 +791,8 @@ drafting carries over to `plan`, `squad` and the rest.
 in the editor and `Save to overrides.csv` in the banner — and both were the
 wrong shape for what they did. Edits go to `localStorage` the moment you make
 them, which is the copy that is always there, including on a phone on a train;
-the file is only ever a mirror of that for the CLI to read. So a button marked
-save was a button that felt load-bearing and wasn't, and forgetting the second
-one meant the CLI quietly planned off numbers you had already corrected.
+the file is only ever a mirror of that. So a button marked save was a button
+that felt load-bearing and wasn't.
 
 Now the drawer commits as you drag, debounced, and the CSV mirrors itself a
 beat later. When the laptop is not reachable the mirror is skipped silently and
@@ -816,17 +804,6 @@ The escape hatch that makes live commit safe is `Undo changes`, which puts the
 player back to how he was when you opened the drawer. That is a different thing
 from `Reset player`, which throws away every edit you have ever made to him,
 including ones from last week.
-
-**From the CLI:**
-
-```bash
-python fpl.py overrides                      # list every field and its range
-python fpl.py overrides Senesi Rashford      # write a template with current values
-python fpl.py plan --overrides out/overrides.csv
-```
-
-The CSV identifies players by `fpl_id` or `web_name`; every other column is
-optional.
 
 One deliberate behaviour: **an override bypasses shrinkage**. Raw rates are
 pulled toward the positional average because a small sample shouldn't speak too
@@ -847,8 +824,6 @@ which sits at the rounding floor of the reference data (5e-7 raw, 5e-5 through
 at every horizon and the answer never stops moving:
 
 ```text
-$ python fpl.py horizon
-
   horizon   last_gw   churn   ∩ plan
         1         1       -       10
         2         2       6       13
@@ -943,8 +918,6 @@ projection, solved with the pricing switched off, brings the oscillation
 straight back. If it did not, the scenario would not be testing anything.
 
 ```text
-$ python fpl.py transfers --squad out/squad.csv --free-transfers 2 --bank 1.5
-
 gw  chip  TRs  FT  hits  bank  XI xPts  weight
  1           1   2     0   0.5     55.8    1.00
  2           0   2     0   0.5     52.3    0.90
@@ -1101,8 +1074,7 @@ The wildcard is not modelled at all. It is not a chip you time against a
 gameweek; it is a week of unlimited transfers, so a solver handed one always
 answers "rebuild now", and that answer is only ever as good as a six-gameweek
 projection of a fifteen-player restructure. Deciding *whether* to wildcard is a
-judgement about the season; once you have made it, `fpl.py plan` builds the
-squad you are rebuilding to.
+judgement about the season; once you have made it, the board's squad is what you are rebuilding to.
 
 The result preseason is the same "hold" the heuristic printed, now as an
 arithmetic comparison rather than a hard-coded refusal — which means it also
@@ -1143,7 +1115,7 @@ barely differ — the earliest gameweek wins on the discount alone. That is the
 tell that nothing in the fixture list is choosing for you, and it is why every
 row still says hold.
 
-`--ignore-chip-hold` sets every reservation price to zero and asks the narrower
+Setting every reservation price to zero asks the narrower
 question the heuristic was asking, which spends them into exactly those early
 gameweeks. An `edge` of a point or two over the median gameweek is not a reason
 to spend a chip you can hold for a double.
@@ -1179,11 +1151,6 @@ already decided to bench boost. `--force-chip` makes the plan play a chip
 somewhere in the window whether or not it beats holding, and then solves
 everything else around that — which gameweek, and which fifteen to own going
 into it:
-
-```bash
-python fpl.py transfers --squad out/squad.csv --force-chip bboost
-python fpl.py transfers --squad out/squad.csv --force-chip bboost 3xc
-```
 
 Forcing a chip drops its reservation price to zero. The reserve is a charge for
 playing at all, so leaving it in would push a chip you have already committed to
@@ -1225,8 +1192,8 @@ deadline), so nothing needs editing at a rollover. `plan`, `snapshot` and the
 
 **How much last season counts is a knob**, because the fade above is a judgement
 rather than a measurement and the right answer depends on how much a squad
-changed over the summer. `--last-season W` on the CLI and *Last season's weight*
-in the board's Settings scale it, from 1 (a minute of last season is worth a
+changed over the summer. *Last season's weight*
+in the board's Settings scales it, from 1 (a minute of last season is worth a
 minute of this one, fading to nothing by gameweek 38) down to 0 (this season
 only, once it has started). It changes the underlying rates, so like the
 recent-form control it takes a Sync to apply. Who has been starting lately is a
@@ -1369,8 +1336,6 @@ charges him for the money he ties up, because the squad without him got to spend
 those millions on somebody else:
 
 ```text
-$ python fpl.py compare Haaland Thiago --squad-test
-
 Haaland costs £7.5m more than Thiago and is projected +7.20 xPts better over GW1–5.
   That is +0.96 xPts per extra £m. Median xPts/£m in the pool is 2.53.
 
@@ -1389,8 +1354,6 @@ once, the other way round. For each player left out, it forces him in, rebuilds
 the other fourteen around him, and reports the drop:
 
 ```text
-$ python fpl.py nearmiss --limit 5
-
      Player   Pos   Team     £    xPts    gap    role       in place of
      Crooks   MID    HUL   4.5    7.38   0.00   bench            Hughes
  F.Kadıoğlu   DEF    BHA   4.5   15.51   0.01   bench              Shaw
@@ -1444,14 +1407,9 @@ season's at the same club — which cannot see transfers, new managers, or a
 changed pecking order until they have happened, and in preseason that is a lot
 of what matters.
 
-`blindspots` lists every priced player with too little Premier League history to
-project (summer signings, returning loanees) and writes an overrides template:
-
-```bash
-python fpl.py blindspots                                    # writes out/overrides-template.csv
-# edit p_start (0-1), mins_if_start (0-90) or exp_minutes (0-90), drop the rest
-python fpl.py squad --overrides out/overrides-template.csv
-```
+The blindspots list has every priced player with too little Premier League history to
+project (summer signings, returning loanees). Override `p_start` (0-1),
+`mins_if_start` (0-90) or `exp_minutes` (0-90) for them on the board.
 
 Those players score zero until you override them. That is a gap in the data, not
 a prediction — treat it as such.
@@ -1464,8 +1422,7 @@ Other known limitations, roughly in order of how much they cost you:
   published aggregates for chips played on doubles and blanks, not from anything
   this model measures, and it is deliberately set at the low end of the case for
   waiting. Preseason it is doing almost all the work, because nothing else in a
-  flat six-gameweek window can tell one gameweek from another. It is a knob;
-  `--ignore-chip-hold` sets it to zero.
+  flat six-gameweek window can tell one gameweek from another. It is a knob.
 - **Future prices are held fixed in the transfer plan.** A move planned for
   gameweek five is costed at today's price, and the price forecast that sits
   next to it is not fed into the budget. That understates the cost of waiting on
@@ -1491,8 +1448,7 @@ Other known limitations, roughly in order of how much they cost you:
   summer has goals it knows the team will score but cannot assign to anybody.
   Non-promoted clubs sit around 0.94; Coventry, Hull and Ipswich are near zero.
   This does not distort the players you *can* see — each is projected from his
-  own rate — but their team-mates are invisible. `blindspots` lists the worst
-  clubs, and `--overrides` is the fix.
+  own rate — but their team-mates are invisible. Overriding them on the board is the fix.
 - **Rotation and cup congestion** are invisible beyond the flat hazard rate.
 - **Promoted clubs** get flat assumed ratings (80% attack, 125% defence) until
   they have Premier League xG.
@@ -1619,7 +1575,7 @@ a pure function of the same inputs and no tie can excuse a difference.
 
 ## Chips and transfers in the board
 
-`fpl.py transfers` solves the whole window and prints a ledger; the board's
+The board's
 Chips tab runs the same model — `transfers.js`, the browser port of
 `plan_transfers` — against the fifteen currently on screen, capped to a
 six-gameweek horizon (`DEFAULT_TRANSFER_HORIZON`) because the candidate pool
@@ -1660,15 +1616,13 @@ the price he was listed at in gameweek 1, which is what the opening squad paid.
 The budget it sets is that selling value plus the bank, which is exactly what a
 wildcard or free hit has to spend. A player you add by hand is taken as bought
 at today's price. Purchase prices are saved and synced with the squad, and
-`fpl.py transfers --squad` reads a `purchase_price` column the same way.
+
 
 **The wildcard is the from-scratch mode**, not a chip the plan times: with no
 squad the opening fifteen is a free choice out of the budget, nothing is charged
 for reaching it, your banked free transfers carry over that week (and none is
 earned in it, as under a free hit), and the weeks after are planned as usual.
-On the board that is the Chips tab as it opens after Sync; on the CLI it is
-`fpl.py transfers` without `--squad` and `--budget` set to selling value plus
-bank.
+That is the Chips tab as it opens after Sync.
 
 ### Why the board now does re-solve several times over
 

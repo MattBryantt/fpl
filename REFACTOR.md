@@ -25,7 +25,7 @@ you think it's warranted rather than sneaking it in here.
   `fplkit/web/transfers.js`, `fplkit/optimise.py` ↔ `fplkit/web/solver.js`,
   `fplkit/model.py`/`fplkit/poisson.py` ↔ `fplkit/web/points.mjs`/`poisson.mjs`
   are **intentional** duplication: one Python implementation (the source of
-  truth, used server-side and by the CLI) and one hand-ported JS
+  truth, used server-side) and one hand-ported JS
   implementation (used by the static/offline board), kept in agreement by the
   `scripts/verify-*-port.mjs`/`.py` scripts. This is not drift to clean up —
   merging them would mean either putting Python in the browser or JS on the
@@ -147,9 +147,6 @@ nothing calls it. Two starting pointers:
   `verify-transfer-port.mjs` — rerun after touching anything that reaches
   `points.mjs`, `solver.js`, or `transfers.js`, even indirectly through a
   moved caller.
-- `python fpl.py build --out /tmp/check && python -m http.server -d /tmp/check`
+- `python scripts/build.py --out /tmp/check && python -m http.server -d /tmp/check`
   — build the static site and click through Squad / Analysis / Chips / Drafts
   by hand. There is no automated UI test suite; this is the real check.
-- `python fpl.py serve` — the local dev path exercises different code
-  (`/api/pool`, `/api/live`, `/api/optimise`) than the static build does
-  (everything client-side against `snapshot.json`) — check both, not just one.
