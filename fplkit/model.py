@@ -48,6 +48,7 @@ PLAYER_PRIOR_MINUTES = 1200
 
 NPXG_PRIOR_MINUTES = 550
 XA_PRIOR_MINUTES = 1000.0
+DC_PRIOR_MINUTES = 300
 TEAM_PRIOR_MATCHES = 8.0
 
 MOVER_PRIOR_MULTIPLIER = 1.8
@@ -1074,6 +1075,7 @@ def attach_rates(players: pd.DataFrame, strength: pd.DataFrame | None = None,
     rate_prior = {
         "raw_npxg_per90": prior_for(NPXG_PRIOR_MINUTES),
         "raw_xa_per90": prior_for(XA_PRIOR_MINUTES),
+        "raw_dc_per90": prior_for(DC_PRIOR_MINUTES),
     }
     default_prior = prior_for(PLAYER_PRIOR_MINUTES)
 
